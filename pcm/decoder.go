@@ -31,6 +31,9 @@ const (
 	maxChannels = 2
 	// bytesPerS16Sample is the size of one interleaved S16 sample.
 	bytesPerS16Sample = 2
+	// bytesPerF32Sample is the size of one interleaved float32 sample
+	// (WithF32 output).
+	bytesPerF32Sample = 4
 	// readerBufSize backs the bufio.Reader; large enough that the 10-byte
 	// ID3v2 and 4-byte frame-header peeks never hit bufio.ErrBufferFull.
 	readerBufSize = 1 << 16
@@ -77,21 +80,25 @@ func (i Info) Duration() time.Duration {
 	return time.Duration(ns + remNs)
 }
 
-// config holds decoder options. No options are defined yet; WithF32 (native
-// float32 passthrough) arrives in a later task and flips a field here.
-type config struct{}
+// config holds decoder options. f32 selects native float32 output
+// (WithF32) over the default S16 conversion.
+type config struct {
+	f32 bool
+}
 
 // Option configures a Decoder.
 type Option func(*config)
 
-// Decoder decodes an MP3 stream into interleaved little-endian S16 PCM. It
-// implements io.Reader and io.WriterTo, mirroring the sibling pcm.Decoder
-// shape (NewDecoder, Reset, Info, Read, WriteTo).
+// Decoder decodes an MP3 stream into interleaved little-endian PCM: S16 (2
+// bytes/sample) by default, or native float32 (4 bytes/sample) with
+// WithF32. It implements io.Reader and io.WriterTo, mirroring the sibling
+// pcm.Decoder shape (NewDecoder, Reset, Info, Read, WriteTo).
 //
 // A Decoder is not safe for concurrent use.
 type Decoder struct {
 	br   *bufio.Reader
 	dec  *mp3.Decoder
+	cfg  config
 	info Info
 
 	// frameBuf holds raw MP3 bytes read ahead of the decoder but not yet
@@ -169,6 +176,7 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 	for _, o := range opts {
 		o(&c)
 	}
+	d.cfg = c
 
 	if d.br == nil {
 		d.br = bufio.NewReaderSize(r, readerBufSize)
@@ -500,12 +508,22 @@ func (d *Decoder) estimateCBRDuration(r io.Reader) {
 	d.info.TotalSamples = uint64(frames) * uint64(samplesPerFrame(d.info.SampleRate))
 }
 
-// packOutput quantizes the given interleaved float32 samples (a sub-slice of
-// sampleBuf, already narrowed to the gapless keep-window) to S16 little-endian
-// bytes and points pending at them. It is the single place that knows the
-// output byte format, so a later task can branch here for native float32
-// passthrough (WithF32) without touching the decode loop.
+// packOutput packs the given interleaved float32 samples (a sub-slice of
+// sampleBuf, already narrowed to the gapless keep-window) into pending, in
+// the byte format d.cfg selects. It is the single place that knows the
+// output byte format: everything upstream (the gapless trim, the decode
+// loop, pending buffering) is unaware of the pack width or format.
 func (d *Decoder) packOutput(samples []float32) {
+	if d.cfg.f32 {
+		d.packOutputF32(samples)
+		return
+	}
+	d.packOutputS16(samples)
+}
+
+// packOutputS16 quantizes samples to S16 little-endian bytes (the default
+// output) and points pending at them.
+func (d *Decoder) packOutputS16(samples []float32) {
 	ns := len(samples)
 	if cap(d.s16Buf) < ns {
 		d.s16Buf = make([]int16, ns)
@@ -524,11 +542,26 @@ func (d *Decoder) packOutput(samples []float32) {
 	d.pending = d.outBuf
 }
 
-// Read fills p with interleaved little-endian S16 PCM. It returns (0, io.EOF)
-// at a clean stream end and returns any latched terminal error on every later
-// call. Short reads across a p that is not a whole number of samples are fine:
-// pending is byte-granular, so a partial sample simply resumes on the next
-// call.
+// packOutputF32 packs samples as native little-endian float32 bytes (the
+// WithF32 output, bypassing S16 conversion entirely) and points pending at
+// them.
+func (d *Decoder) packOutputF32(samples []float32) {
+	need := len(samples) * bytesPerF32Sample
+	if cap(d.outBuf) < need {
+		d.outBuf = make([]byte, need)
+	}
+	d.outBuf = d.outBuf[:need]
+	for i, v := range samples {
+		binary.LittleEndian.PutUint32(d.outBuf[i*bytesPerF32Sample:], math.Float32bits(v))
+	}
+	d.pending = d.outBuf
+}
+
+// Read fills p with interleaved little-endian PCM (S16 by default, or
+// float32 with WithF32). It returns (0, io.EOF) at a clean stream end and
+// returns any latched terminal error on every later call. Short reads across
+// a p that is not a whole number of samples are fine: pending is
+// byte-granular, so a partial sample simply resumes on the next call.
 func (d *Decoder) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil

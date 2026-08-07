@@ -137,20 +137,19 @@ var psnrSkipVectors = map[string]string{
 	"l3-nonstandard-big-iscf": "no .pcm reference file present in the fetched vector corpus",
 }
 
-// decodeFullStream drives a fresh stateful Decoder across data the same way
-// TestFullStreamMatchesOracle (decode_test.go) does: advance by
-// info.FrameBytes, append only when the decoder returned samples, and stop
-// when no further progress is possible. It also reports whether any
-// decoded frame used intensity stereo or a mixed block, so
-// TestConformanceVectors can assert that the ISO corpus actually exercises
-// those two faithfully-ported paths the LAME fixture corpus never reaches
-// (see CLAUDE.md's Task 11 carry-forward note), and whether any frame was
-// Layer III at all, so callers can self-validate a layer1And2Vectors skip
-// (see validateLayer1And2Skip) instead of trusting the static map blindly.
-func decodeFullStream(data []byte) (pcm []float32, sawIStereo, sawMixed, sawLayer3 bool) {
-	d := NewDecoder()
+// decodeAllFrames drives d across data the same way tools/oracle/mp3dump.c:
+// 233-249 does, and both TestFullStreamMatchesOracle (decode_test.go) and
+// decodeFullStream below need: advance by info.FrameBytes (which already
+// includes FrameOffset), append only when the decoder returned samples, and
+// stop when no further progress is possible. After every DecodeFrame call it
+// invokes onFrame, if non-nil, with that frame's info; d is still live at
+// that point (header and scratch reflect the frame just decoded), so a
+// caller that needs per-frame introspection layers it on without
+// duplicating the loop.
+func decodeAllFrames(d *Decoder, data []byte, onFrame func(info *FrameInfo)) []float32 {
 	buf := make([]float32, maxSamplesPerFrame)
 	var info FrameInfo
+	var pcm []float32
 
 	pos := 0
 	for pos < len(data) {
@@ -158,6 +157,28 @@ func decodeFullStream(data []byte) (pcm []float32, sawIStereo, sawMixed, sawLaye
 		if n > 0 {
 			pcm = append(pcm, buf[:n*info.Channels]...)
 		}
+		if onFrame != nil {
+			onFrame(&info)
+		}
+		if info.FrameBytes <= 0 {
+			break
+		}
+		pos += info.FrameBytes
+	}
+	return pcm
+}
+
+// decodeFullStream drives a fresh stateful Decoder across data via
+// decodeAllFrames. It also reports whether any decoded frame used intensity
+// stereo or a mixed block, so TestConformanceVectors can assert that the ISO
+// corpus actually exercises those two faithfully-ported paths the LAME
+// fixture corpus never reaches (see CLAUDE.md's Task 11 carry-forward note),
+// and whether any frame was Layer III at all, so callers can self-validate a
+// layer1And2Vectors skip (see validateLayer1And2Skip) instead of trusting
+// the static map blindly.
+func decodeFullStream(data []byte) (pcm []float32, sawIStereo, sawMixed, sawLayer3 bool) {
+	d := NewDecoder()
+	pcm = decodeAllFrames(d, data, func(info *FrameInfo) {
 		if info.Layer == 3 {
 			sawLayer3 = true
 			if hdrTestIStereo(d.header[:]) {
@@ -169,11 +190,7 @@ func decodeFullStream(data []byte) (pcm []float32, sawIStereo, sawMixed, sawLaye
 				}
 			}
 		}
-		if info.FrameBytes <= 0 {
-			break
-		}
-		pos += info.FrameBytes
-	}
+	})
 	return pcm, sawIStereo, sawMixed, sawLayer3
 }
 
@@ -309,10 +326,7 @@ func TestConformanceVectors(t *testing.T) {
 
 			refPath := filepath.Join("..", "..", "testdata", "vectors", name+".pcm")
 			ref := readPCM16Reference(t, refPath)
-			n := len(got)
-			if len(ref) < n {
-				n = len(ref)
-			}
+			n := min(len(got), len(ref))
 			if n == 0 {
 				t.Skipf("nothing to compare: got %d samples, reference has %d", len(got), len(ref))
 			}

@@ -51,6 +51,42 @@ func TestFastPathFreeFormatNoPanic(t *testing.T) {
 	}
 }
 
+// TestFastPathFreeFormatQueryMode documents and locks query-mode (pcm == nil)
+// behavior for the same undersized fast-path free-format frame as
+// TestFastPathFreeFormatNoPanic above: it must not panic, and it must return
+// the header's nominal frame sample count, not 0.
+//
+// Upstream returns hdr_frame_samples(hdr) in query mode
+// (tools/oracle/minimp3.h:1748-1751), before bs_init ever runs, so the
+// frameSize < hdrSize guard in DecodeFrame (which sits after the pcm == nil
+// return, by design; see decode.go) is never reached in query mode. A
+// reviewer bot flagged the early return as skipping the guard as if it were
+// a bug; it is deliberate oracle fidelity, and this test pins the observable
+// behavior it produces.
+func TestFastPathFreeFormatQueryMode(t *testing.T) {
+	// Same crafted input as TestFastPathFreeFormatNoPanic: FF FB 00 repeated
+	// at byte 3 so the fast path latches a sticky free-format size (3) below
+	// hdrSize (4).
+	mp3 := []byte{
+		0xFF, 0xFB, 0x00,
+		0xFF, 0xFB, 0x00, 0x00,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	}
+
+	d := &Decoder{}
+	d.header = [4]byte{0xFF, 0xFB, 0x00, 0x00} // cached header matches mp3
+	d.freeFormatBytes = 3                      // sticky free-format size < hdrSize
+
+	want := int(hdrFrameSamples(d.header[:]))
+
+	var info FrameInfo
+	n := d.DecodeFrame(mp3, nil, &info) // query mode: must not panic
+
+	if n != want {
+		t.Fatalf("query-mode samples = %d, want %d (hdr_frame_samples, per the oracle's pre-bs_init return)", n, want)
+	}
+}
+
 // The frame walk here reuses decodeFullStream (conformance_test.go), which
 // mirrors tools/oracle/mp3dump.c:235-249 exactly (advance by info.FrameBytes,
 // append n*channels only when a frame decoded, stop when no progress is
@@ -206,10 +242,7 @@ func TestRobustnessNoPanic(t *testing.T) {
 		})
 
 		// (c) truncation at every length across the first 200 bytes
-		limit := 200
-		if limit > len(data) {
-			limit = len(data)
-		}
+		limit := min(200, len(data))
 		for k := 0; k <= limit; k++ {
 			mustNotPanic(t, base+" trunc", func() {
 				decodeFullStream(data[:k])

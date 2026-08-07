@@ -206,20 +206,21 @@ func l3IntensityStereo(left, right []float32, istPos []uint8, gr []grInfo, hdr [
 // grbuf[17-i] = u*g_aa[1][i] + d*g_aa[0][i] are each a difference/sum of
 // two independent float32 products, not a single a*b+c fusion site, but
 // the same arm64-fusion risk applies to product-pair patterns (the
-// hardware can fuse the second multiply into an FMA against the first
-// product): each product is bound to its own named float32 variable
-// before combining, so the combine is a separate rounding step from
-// either multiply, matching unfused upstream semantics exactly.
+// hardware can fuse either multiply into an FMA against the other product).
+// A bare local assignment does not block that fusion; the Go compiler fuses
+// across statements. The only reliable barrier is the explicit float32()
+// conversion on each product, which forces a rounding step so the combine
+// is a separate operation, matching unfused upstream semantics exactly.
 func l3Antialias(grbuf []float32, nbands int) {
 	for b := range nbands {
 		g := grbuf[b*18:]
 		for i := range 8 {
 			u := g[18+i]
 			d := g[17-i]
-			up0 := u * gAA[0][i]
-			dp1 := d * gAA[1][i]
-			up1 := u * gAA[1][i]
-			dp0 := d * gAA[0][i]
+			up0 := float32(u * gAA[0][i])
+			dp1 := float32(d * gAA[1][i])
+			up1 := float32(u * gAA[1][i])
+			dp0 := float32(d * gAA[0][i])
 			g[18+i] = up0 - dp1
 			g[17-i] = up1 + dp0
 		}

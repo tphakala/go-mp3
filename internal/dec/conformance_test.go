@@ -340,10 +340,24 @@ func TestConformanceVectors(t *testing.T) {
 // TestConformanceVectors, so this loop cannot quietly widen its Layer I/II
 // exclusion either.
 func TestConformanceVectorsExerciseIntensityStereoAndMixedBlocks(t *testing.T) {
+	vectors := vectorPaths(t)
+	// An absent corpus is a skip, not a failure, mirroring the dump-absence
+	// convention in dumps_test.go / decode_test.go: a plain checkout (or the
+	// ci.yml Test job, which does not fetch the ISO vectors) has nothing to
+	// exercise, while MP3_REQUIRE_DUMPS (set by oracle.yml, where the vectors
+	// are present) turns the absence into a hard failure so CI proves the
+	// coverage assertion actually ran.
+	if len(vectors) == 0 {
+		if os.Getenv("MP3_REQUIRE_DUMPS") != "" {
+			t.Fatal("conformance vectors required but none found (run scripts/fetch-vectors.sh first)")
+		}
+		t.Skip("no conformance vectors found (run scripts/fetch-vectors.sh first)")
+	}
+
 	anyIStereo, anyMixed := false, false
 	var iStereoVectors, mixedVectors []string
 
-	for _, fx := range vectorPaths(t) {
+	for _, fx := range vectors {
 		name := strings.TrimSuffix(filepath.Base(fx), ".bit")
 		data := readFile(t, fx)
 		_, sawIStereo, sawMixed, sawLayer3 := decodeFullStream(data)

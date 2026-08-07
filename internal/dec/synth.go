@@ -50,12 +50,15 @@ func mp3dScalePcm(sample float32) float32 {
 // grbuf, each column strided 18 floats apart. The pin's flat t[4][8] scratch
 // (indexed x[0]/x[8]/x[16]/x[24] as t[0..3][i]) is a plain [4][8] here.
 //
-// Float discipline: the three "rotate by PI/8" lines are the a*b+c / a*b-c
-// sites arm64 can fuse; each product is bound to its own named float32
-// variable before the combine, so the combine is a separate rounding step,
-// matching the pin under -ffp-contract=off. Every other combine is either a
-// plain add/sub of already-materialized variables (t[2][i]+t[3][i] etc.) or a
-// single (sum)*coeff product with no trailing add, so no other site can fuse.
+// Float discipline: several products feed a later + or - (t2/t3 into
+// mat[2]/mat[3], the x6/x3 rotations into x0/xt and mat[2]/mat[6], and the
+// three "rotate by PI/8" products into x5/x7), any of which arm64 can fuse
+// into an FMA. A bare local assignment does NOT block that fusion; the Go
+// compiler fuses across statements. Each such product carries an explicit
+// float32() conversion, the only reliable barrier, forcing a separate
+// rounding step to match the pin under -ffp-contract=off. Combines of
+// already-materialized add/sub results (t[2][i]+t[3][i] etc.) and a single
+// (sum)*coeff product with no trailing add cannot fuse and are left bare.
 //
 //nolint:gocognit,gocyclo // faithful port of mp3d_DCT_II's three fixed loops; restructuring would break the bit-exact operation order.
 func mp3dDctII(grbuf []float32, n int) {
@@ -70,8 +73,8 @@ func mp3dDctII(grbuf []float32, n int) {
 			y3 := y[(31-i)*18]
 			t0 := y0 + y3
 			t1 := y1 + y2
-			t2 := (y1 - y2) * gSec[3*i+0]
-			t3 := (y0 - y3) * gSec[3*i+1]
+			t2 := float32((y1 - y2) * gSec[3*i+0])
+			t3 := float32((y0 - y3) * gSec[3*i+1])
 			mat[0][i] = t0 + t1
 			mat[1][i] = (t0 - t1) * gSec[3*i+2]
 			mat[2][i] = t3 + t2
@@ -97,15 +100,18 @@ func mp3dDctII(grbuf []float32, n int) {
 			mat[r][0] = x0 + x1
 			mat[r][4] = (x0 - x1) * 0.70710677
 			x5 += x6
-			x6 = (x6 + x7) * 0.70710677
+			x6 = float32((x6 + x7) * 0.70710677)
 			x7 += xt
-			x3 = (x3 + x4) * 0.70710677
-			// rotate by PI/8: split each multiply-add to block arm64 FMA fusion.
-			p := x7 * 0.198912367
+			x3 = float32((x3 + x4) * 0.70710677)
+			// rotate by PI/8: the explicit float32() on each product is the
+			// barrier that blocks arm64 FMA fusion against the following +=/-=
+			// (a bare local assignment does not; the Go compiler fuses across
+			// statements).
+			p := float32(x7 * 0.198912367)
 			x5 -= p
-			p = x5 * 0.382683432
+			p = float32(x5 * 0.382683432)
 			x7 += p
-			p = x7 * 0.198912367
+			p = float32(x7 * 0.198912367)
 			x5 -= p
 			x0 = xt - x6
 			xt += x6
@@ -137,44 +143,48 @@ func mp3dDctII(grbuf []float32, n int) {
 // weights are all exactly representable in float32, so multiplying a float32
 // by them stays in float32 with no double promotion.
 //
-// Float discipline: each `a += (...)*w` is a c + a*b site; the product is
-// bound to a named float32 variable before the accumulate, so the accumulate
-// is a plain add of two variables and cannot fuse into an FMA.
+// Float discipline: each `a += (...)*w` is a c + a*b site, and arm64 can
+// fuse the product into an FMA against the accumulator. A bare local
+// assignment does NOT block that (the Go compiler fuses across statements),
+// so every product carries an explicit float32() conversion, the only
+// reliable barrier. The two initial `a = (...)*w` products are wrapped for
+// the same reason: each is used only by the next `a += t`, so without the
+// wrap arm64 fuses that first multiply into the accumulate instead.
 func mp3dSynthPair(pcm []float32, nch int, z []float32) {
 	var a, t float32
 
-	a = (z[14*64] - z[0*64]) * 29
-	t = (z[1*64] + z[13*64]) * 213
+	a = float32((z[14*64] - z[0*64]) * 29)
+	t = float32((z[1*64] + z[13*64]) * 213)
 	a += t
-	t = (z[12*64] - z[2*64]) * 459
+	t = float32((z[12*64] - z[2*64]) * 459)
 	a += t
-	t = (z[3*64] + z[11*64]) * 2037
+	t = float32((z[3*64] + z[11*64]) * 2037)
 	a += t
-	t = (z[10*64] - z[4*64]) * 5153
+	t = float32((z[10*64] - z[4*64]) * 5153)
 	a += t
-	t = (z[5*64] + z[9*64]) * 6574
+	t = float32((z[5*64] + z[9*64]) * 6574)
 	a += t
-	t = (z[8*64] - z[6*64]) * 37489
+	t = float32((z[8*64] - z[6*64]) * 37489)
 	a += t
-	t = z[7*64] * 75038
+	t = float32(z[7*64] * 75038)
 	a += t
 	pcm[0] = mp3dScalePcm(a)
 
 	z = z[2:]
-	a = z[14*64] * 104
-	t = z[12*64] * 1567
+	a = float32(z[14*64] * 104)
+	t = float32(z[12*64] * 1567)
 	a += t
-	t = z[10*64] * 9727
+	t = float32(z[10*64] * 9727)
 	a += t
-	t = z[8*64] * 64019
+	t = float32(z[8*64] * 64019)
 	a += t
-	t = z[6*64] * -9975
+	t = float32(z[6*64] * -9975)
 	a += t
-	t = z[4*64] * -45
+	t = float32(z[4*64] * -45)
 	a += t
-	t = z[2*64] * 146
+	t = float32(z[2*64] * 146)
 	a += t
-	t = z[0*64] * -5
+	t = float32(z[0*64] * -5)
 	a += t
 	pcm[16*nch] = mp3dScalePcm(a)
 }
@@ -191,24 +201,25 @@ const synthZOff = 15 * 64
 // interleaved lanes. mode selects the pattern: 0 assigns (S0), 1 accumulates
 // with a = vz*w0 - vy*w1 (S1), 2 accumulates with a = vy*w1 - vz*w0 (S2).
 //
-// Float discipline: every product is bound to its own named float32 variable,
-// and the two products of each sum are added before being folded into the
-// accumulator, exactly matching the pin's `b[j] += vz[j]*w1 + vy[j]*w0`
-// evaluation order (both products round, then their sum rounds, then the
-// accumulate rounds) with no fusible a*b+c expression anywhere.
+// Float discipline: every product carries an explicit float32() conversion,
+// the only reliable barrier against arm64 fusing it into an FMA against the
+// following combine (a bare local assignment does not; the Go compiler fuses
+// across statements). This forces the pin's `b[j] += vz[j]*w1 + vy[j]*w0`
+// evaluation order exactly (both products round, then their sum rounds, then
+// the accumulate rounds).
 func mp3dSynthStep(a, b *[4]float32, vz, vy []float32, w0, w1 float32, mode int) {
 	for j := range 4 {
-		pzw1 := vz[j] * w1
-		pyw0 := vy[j] * w0
+		pzw1 := float32(vz[j] * w1)
+		pyw0 := float32(vy[j] * w0)
 		sumB := pzw1 + pyw0
 
 		var pa0, pa1 float32
 		if mode == 2 {
-			pa0 = vy[j] * w1
-			pa1 = vz[j] * w0
+			pa0 = float32(vy[j] * w1)
+			pa1 = float32(vz[j] * w0)
 		} else {
-			pa0 = vz[j] * w0
-			pa1 = vy[j] * w1
+			pa0 = float32(vz[j] * w0)
+			pa1 = float32(vy[j] * w1)
 		}
 		diffA := pa0 - pa1
 

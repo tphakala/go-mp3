@@ -23,6 +23,13 @@ func NewReader(buf []byte) Reader {
 // explicit bit limit, for callers that seek into a shared buffer (e.g.
 // the bit reservoir) rather than starting at byte 0.
 func NewReaderBits(buf []byte, posBits, limitBits int) Reader {
+	// Upstream bs_init always derives the limit from the buffer length. A
+	// caller-supplied limit past the buffer would let byteAt return silent
+	// zeros without latching overrun, hiding a bad reservoir seek; clamp so
+	// reads past the buffer latch overrun instead.
+	if limitBits > 8*len(buf) {
+		limitBits = 8 * len(buf)
+	}
 	return Reader{buf: buf, pos: posBits, limit: limitBits}
 }
 

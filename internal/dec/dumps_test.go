@@ -37,6 +37,12 @@ func readDump(t *testing.T, fixture, stage string) []dumpRecord {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// Local runs skip when dumps are absent; CI sets MP3_REQUIRE_DUMPS
+			// so a missing oracle dump fails loudly instead of silently
+			// skipping (the differential gate must give a signal there).
+			if os.Getenv("MP3_REQUIRE_DUMPS") != "" {
+				t.Fatalf("dump required but not found: %s", path)
+			}
 			t.Skipf("dump not found (run `task oracle:dump` first): %s", path)
 		}
 		t.Fatalf("reading dump %s: %v", path, err)

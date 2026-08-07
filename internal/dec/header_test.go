@@ -122,6 +122,10 @@ func TestFindFrameMatchesOracle(t *testing.T) {
 		for _, rec := range recs {
 			var fb int
 			off := findFrame(data[pos:], &free, &fb)
+			if fb == 0 || pos+off+4 > len(data) {
+				t.Fatalf("%s: no frame found at pos %d (off=%d fb=%d), want offset %d size %d",
+					fx, pos, off, fb, rec.I32[0], rec.I32[1])
+			}
 			got := [3]int32{int32(off), int32(fb), int32(hdrSampleRateHz(data[pos+off:]))}
 			want := [3]int32{rec.I32[0], rec.I32[1], rec.I32[2]}
 			if got != want {

@@ -30,3 +30,22 @@ func TestReaderBits(t *testing.T) {
 		t.Fatal("post-overrun reads must return 0")
 	}
 }
+
+// TestReaderExactLimit locks in the two documented boundary cases: a read
+// ending exactly at the limit succeeds without latching overrun, and Bits(0)
+// at the limit returns 0 without panicking (the degenerate case byteAt guards).
+func TestReaderExactLimit(t *testing.T) {
+	r := bits.NewReader([]byte{0xAB})
+	if got := r.Bits(8); got != 0xAB {
+		t.Fatalf("Bits(8) = %#x, want 0xAB", got)
+	}
+	if r.Overrun() {
+		t.Fatal("read ending exactly at limit must not overrun")
+	}
+	if got := r.Bits(0); got != 0 {
+		t.Fatalf("Bits(0) at limit = %#x, want 0", got)
+	}
+	if r.Overrun() {
+		t.Fatal("Bits(0) at limit must not overrun")
+	}
+}

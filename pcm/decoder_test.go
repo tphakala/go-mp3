@@ -19,17 +19,23 @@ const (
 	// sine48m_128.mp3 is 48 kHz mono: 86 frames of 1152 samples/channel on
 	// disk (the count Phase 0+1's mp3 test established), but its first
 	// frame is a LAME Info tag, not audio: pcm.Decoder excludes it, so 85
-	// real audio frames are actually emitted.
-	sine48mSamples  = 85 * 1152              // 97920: real audio frames only, tag excluded
-	sine48mS16Bytes = sine48mSamples * 1 * 2 // mono, 2 bytes/sample (S16)
+	// real audio frames decode (85*1152 = 97920 samples/channel BEFORE gapless
+	// trim; frames field = 85, 0x55, verified at fixture offset 0x1d).
+	//
+	// Its LAME extension carries encoder delay 576 and padding 1344 (bytes
+	// 0xa2..0xa4 = 24 05 40, verified directly). Gapless trim (Task 3,
+	// default-on) drops both from the emitted audio: 97920 - 576 - 1344 =
+	// 96000 samples/channel.
+	sine48mDelay    = 576
+	sine48mPadding  = 1344
+	sine48mSamples  = 85*1152 - sine48mDelay - sine48mPadding // 96000: post-gapless emitted
+	sine48mS16Bytes = sine48mSamples * 1 * 2                  // mono, 2 bytes/sample (S16)
 
-	// sine48mXingTotalSamples is Info().TotalSamples as the fixture's own
-	// Info tag derives it: frames field = 85 (0x55, verified against the
-	// fixture bytes at offset 0x1d: "00 00 00 55"). The LAME/Xing frames
-	// field counts real audio frames only, excluding the tag frame itself,
-	// so 85*1152 = 97920, exactly equal to sine48mSamples above (before
-	// gapless trim, which Task 3 introduces, the two must match exactly).
-	sine48mXingTotalSamples = 85 * 1152
+	// sine48mXingTotalSamples is Info().TotalSamples after gapless trim: the
+	// pre-trim 85*1152 reduced by delay+padding, equal to sine48mSamples. The
+	// T2 invariant (TotalSamples == emitted audio sample count) holds
+	// post-gapless, both sides now the trimmed length.
+	sine48mXingTotalSamples = sine48mSamples
 )
 
 func readFixture(t *testing.T, path string) []byte {
@@ -221,6 +227,10 @@ func TestDecoderStereoByteCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
+	// Gapless trim (default-on) removes the LAME encoder delay and padding from
+	// the emitted audio; subtract them from the independently derived total so
+	// the byte count still catches a double-count or dropped channel.
+	perChannel -= d.Info().EncoderDelay + d.Info().EncoderPadding
 	want := perChannel * channels * bytesPerS16Sample
 	if len(out) != want {
 		t.Errorf("stereo decoded %d bytes, want %d (%d samples/ch * %d ch * %d bytes)",
@@ -267,10 +277,13 @@ func TestDecoderXingDurationAndFirstFrame(t *testing.T) {
 	// fixture bytes at offset 0x2c: "00 00 01 3c"; this expectation does not
 	// call parseXing itself, so it is an independent check). The LAME/Xing
 	// frames field counts real audio frames only, excluding the tag frame
-	// itself, so 316 real audio frames follow the tag with no further
-	// arithmetic needed.
+	// itself, so 316 real audio frames follow the tag. Its LAME extension
+	// carries encoder delay 576 and padding 576 (bytes 0xb1..0xb3 = 24 02 40),
+	// which gapless trim (default-on) removes from the emitted audio.
 	const declaredFrames = 316
-	const wantSamples = uint64(declaredFrames) * 1152 // MPEG1 Layer III: 1152 samples/frame
+	const delay, padding = 576, 576
+	const preTrimSamples = uint64(declaredFrames) * 1152 // MPEG1 Layer III: 1152 samples/frame
+	const wantSamples = preTrimSamples - delay - padding // post-gapless: 362880
 
 	d, err := NewDecoder(bytes.NewReader(raw))
 	if err != nil {
@@ -282,8 +295,15 @@ func TestDecoderXingDurationAndFirstFrame(t *testing.T) {
 	if got := d.Info().Channels; got != 2 {
 		t.Errorf("Info().Channels = %d, want 2", got)
 	}
+	if got := d.Info().EncoderDelay; got != delay {
+		t.Errorf("Info().EncoderDelay = %d, want %d", got, delay)
+	}
+	if got := d.Info().EncoderPadding; got != padding {
+		t.Errorf("Info().EncoderPadding = %d, want %d", got, padding)
+	}
 	if got := d.Info().TotalSamples; got != wantSamples {
-		t.Errorf("Info().TotalSamples = %d, want %d (%d*1152)", got, wantSamples, declaredFrames)
+		t.Errorf("Info().TotalSamples = %d, want %d (%d*1152 - %d delay - %d padding)",
+			got, wantSamples, declaredFrames, delay, padding)
 	}
 
 	// Frame 0 is the tag; decode it and the frame that follows independently
@@ -307,8 +327,15 @@ func TestDecoderXingDurationAndFirstFrame(t *testing.T) {
 	if n1 == 0 {
 		t.Fatal("first real frame decoded 0 samples; test assumption is stale")
 	}
-	wantS16 := make([]int16, n1*fi1.Channels)
-	convertF32toS16(wantS16, scratch[:n1*fi1.Channels])
+	// Gapless head-trim drops the first `delay` samples-per-channel; delay (576)
+	// < 1152, so it lands inside this first real audio frame. The first bytes
+	// pcm.Decoder emits are therefore frame 1 from per-channel offset `delay`,
+	// not from its start: verify both "tag frame excluded" and "head trimmed".
+	if delay >= n1 {
+		t.Fatalf("test assumes the head-trim (%d) lands within the first frame (%d samples/ch)", delay, n1)
+	}
+	wantS16 := make([]int16, (n1-delay)*fi1.Channels)
+	convertF32toS16(wantS16, scratch[delay*fi1.Channels:n1*fi1.Channels])
 	wantBytes := make([]byte, len(wantS16)*bytesPerS16Sample)
 	for i, v := range wantS16 {
 		binary.LittleEndian.PutUint16(wantBytes[i*bytesPerS16Sample:], uint16(v))
@@ -319,14 +346,14 @@ func TestDecoderXingDurationAndFirstFrame(t *testing.T) {
 		t.Fatalf("Read first frame from pcm.Decoder: %v", err)
 	}
 	if !bytes.Equal(got, wantBytes) {
-		t.Fatal("first emitted samples do not match the first real audio frame; the tag frame may have been emitted instead")
+		t.Fatal("first emitted samples do not match frame 1 past the head-trim; the tag frame may have been emitted or the head not trimmed")
 	}
 
-	// Regression invariant: before gapless trim (Task 3), the count of
-	// samples pcm.Decoder actually emits must equal Info().TotalSamples
-	// exactly. This is the check that would have caught the (frames-1) bug:
-	// a future off-by-a-frame in the TotalSamples derivation now fails
-	// loudly here instead of only surfacing downstream.
+	// Regression invariant: the count of samples pcm.Decoder actually emits
+	// must equal Info().TotalSamples exactly, post-gapless (both trimmed by
+	// delay+padding). This is the check that would have caught the (frames-1)
+	// bug and now also guards the gapless trim: a future off-by-a-frame in the
+	// TotalSamples derivation, or a mis-trim, fails loudly here.
 	rest, err := io.ReadAll(d)
 	if err != nil {
 		t.Fatalf("ReadAll (stream remainder): %v", err)

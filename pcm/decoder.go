@@ -115,6 +115,20 @@ type Decoder struct {
 	xing        *xingHeader
 	xingChecked bool
 
+	// Gapless-trim window, in per-channel sample positions of the raw decoded
+	// stream (before any trim). gaplessStart is the LAME encoder delay: samples
+	// before it are dropped from the head (this already covers the decoder's own
+	// ~528-sample filterbank delay, which LAME folds into its delay value, so no
+	// separate offset is added). gaplessEnd is the first sample to drop from the
+	// tail (pre-trim total minus the LAME padding); it stays math.MaxUint64 when
+	// the total is unknown, meaning no tail trim. producedSamples counts the
+	// per-channel samples produced by real audio frames so far, giving each new
+	// frame its position in that raw timeline. All three are set by applyLAME
+	// and reset per Reset.
+	gaplessStart    uint64
+	gaplessEnd      uint64
+	producedSamples uint64
+
 	// initialOffset is the source's absolute byte position when Reset ran,
 	// captured before any read when the source is an io.Seeker (0 otherwise).
 	// audioStart is the absolute offset where the first real audio frame
@@ -178,6 +192,9 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 	d.info = Info{} // cleared up front so a failed Reset leaves no stale metadata
 	d.xing = nil
 	d.xingChecked = false
+	d.gaplessStart = 0
+	d.gaplessEnd = math.MaxUint64 // no tail trim until a LAME tag with a known total arms one
+	d.producedSamples = 0
 	d.initialOffset = 0
 	d.audioStart = 0
 	d.firstFrameBytes = 0
@@ -323,6 +340,12 @@ func (d *Decoder) decodeNextFrame() error {
 			d.xingChecked = true
 			if xh, ok := parseXing(d.frameBuf[:fi.FrameBytes], fi.SampleRate, fi.Channels); ok {
 				d.applyXing(xh, fi.SampleRate)
+				// A LAME extension may follow the Xing fields; its encoder
+				// delay/padding arm the gapless trim. applyXing has already set
+				// the pre-trim TotalSamples applyLAME reads.
+				if delay, padding, lok := parseLAME(d.frameBuf[:fi.FrameBytes], xh.lameStart); lok {
+					d.applyLAME(delay, padding)
+				}
 				// The tag frame is not audio: exclude its bytes from the CBR
 				// audio-byte span so the Step-3b estimate does not count it.
 				d.audioStart += int64(fi.FrameBytes)
@@ -341,7 +364,38 @@ func (d *Decoder) decodeNextFrame() error {
 			d.info.Channels = fi.Channels
 			d.firstFrameBytes = fi.FrameBytes
 		}
-		d.packOutput(n * fi.Channels)
+
+		// Place this frame in the raw (pre-trim) per-channel timeline and
+		// intersect it with the gapless keep-window [gaplessStart, gaplessEnd).
+		frameStart := d.producedSamples
+		frameEnd := frameStart + uint64(n)
+		d.producedSamples = frameEnd
+
+		if frameEnd <= d.gaplessStart {
+			continue // entirely within the head trim: emit nothing, keep decoding
+		}
+		if frameStart >= d.gaplessEnd {
+			// Entirely past the tail-trim boundary. No later frame can survive
+			// either, so end the stream cleanly.
+			d.done = true
+			return io.EOF
+		}
+		lo, hi := frameStart, frameEnd
+		if lo < d.gaplessStart {
+			lo = d.gaplessStart
+		}
+		if hi > d.gaplessEnd {
+			hi = d.gaplessEnd
+		}
+		if lo >= hi {
+			// Degenerate window (e.g. a malformed tag with delay >= end): no
+			// playable audio remains from here on.
+			d.done = true
+			return io.EOF
+		}
+		skip := int(lo-frameStart) * fi.Channels
+		count := int(hi-lo) * fi.Channels
+		d.packOutput(d.sampleBuf[skip : skip+count])
 		return nil
 	}
 }
@@ -360,6 +414,45 @@ func (d *Decoder) applyXing(xh *xingHeader, sampleRate int) {
 		return
 	}
 	d.info.TotalSamples = uint64(xh.frames) * uint64(samplesPerFrame(sampleRate))
+}
+
+// applyLAME records a detected LAME extension's encoder delay and padding and
+// arms the gapless-trim window. The head trim drops the first delay
+// samples-per-channel; the tail trim drops the last padding samples-per-channel
+// at the true end, which needs the stream's total length. It reads the pre-trim
+// total from d.info.TotalSamples as applyXing set it (frames * samplesPerFrame).
+//
+// When that total is known, applyLAME sets gaplessEnd = total - padding and
+// reduces TotalSamples by delay+padding, so Duration reflects the playable
+// length and the emitted count equals TotalSamples. When the total is unknown
+// (no frame count), only the head is trimmed (gaplessEnd stays open) and
+// TotalSamples is left at 0 for Reset's CBR fallback to decide. Negative inputs
+// (a malformed field) are ignored.
+func (d *Decoder) applyLAME(delay, padding int) {
+	if delay < 0 || padding < 0 {
+		return
+	}
+	d.info.EncoderDelay = delay
+	d.info.EncoderPadding = padding
+	d.gaplessStart = uint64(delay)
+
+	preTrim := d.info.TotalSamples
+	if preTrim == 0 {
+		return // total unknown: head-only trim, tail left open, TotalSamples 0
+	}
+
+	pad := uint64(padding)
+	if pad > preTrim {
+		pad = preTrim
+	}
+	d.gaplessEnd = preTrim - pad
+
+	trim := uint64(delay) + uint64(padding)
+	if trim > preTrim {
+		d.info.TotalSamples = 0
+	} else {
+		d.info.TotalSamples = preTrim - trim
+	}
 }
 
 // estimateCBRDuration fills Info.TotalSamples from the audio byte length
@@ -407,16 +500,18 @@ func (d *Decoder) estimateCBRDuration(r io.Reader) {
 	d.info.TotalSamples = uint64(frames) * uint64(samplesPerFrame(d.info.SampleRate))
 }
 
-// packOutput quantizes the first ns interleaved samples of sampleBuf to S16
-// little-endian bytes and points pending at them. It is the single place that
-// knows the output byte format, so a later task can branch here for native
-// float32 passthrough (WithF32) without touching the decode loop.
-func (d *Decoder) packOutput(ns int) {
+// packOutput quantizes the given interleaved float32 samples (a sub-slice of
+// sampleBuf, already narrowed to the gapless keep-window) to S16 little-endian
+// bytes and points pending at them. It is the single place that knows the
+// output byte format, so a later task can branch here for native float32
+// passthrough (WithF32) without touching the decode loop.
+func (d *Decoder) packOutput(samples []float32) {
+	ns := len(samples)
 	if cap(d.s16Buf) < ns {
 		d.s16Buf = make([]int16, ns)
 	}
 	d.s16Buf = d.s16Buf[:ns]
-	convertF32toS16(d.s16Buf, d.sampleBuf[:ns])
+	convertF32toS16(d.s16Buf, samples)
 
 	need := ns * bytesPerS16Sample
 	if cap(d.outBuf) < need {

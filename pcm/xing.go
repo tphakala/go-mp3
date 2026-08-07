@@ -27,6 +27,12 @@ type xingHeader struct {
 	hasTOC  bool
 	quality int  // 0..100; -1 if absent
 	isInfo  bool // "Info" (CBR) vs "Xing" (VBR)
+
+	// lameStart is the byte offset within the frame just past the Xing/Info
+	// fields (magic, flags, and whichever of frames/bytes/toc/quality the
+	// flags selected). A LAME extension tag, when present, begins here; it is
+	// the xingEnd argument parseLAME expects.
+	lameStart int
 }
 
 // sideInfoSize returns the MPEG side-information block size, in bytes, that
@@ -125,7 +131,9 @@ func parseXing(frame []byte, sampleRate, channels int) (*xingHeader, bool) {
 			return nil, false
 		}
 		xh.quality = int(binary.BigEndian.Uint32(frame[off:]))
+		off += xingFieldLen
 	}
 
+	xh.lameStart = off
 	return xh, true
 }

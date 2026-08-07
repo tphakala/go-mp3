@@ -118,8 +118,12 @@ type Decoder struct {
 	// xing is the parsed Xing/Info tag from the stream's first frame, or nil
 	// when that frame carried audio instead (or the tag was malformed).
 	// xingChecked marks that the check has already run, so it fires at most
-	// once per Reset, on the very first Layer III frame encountered.
+	// once per Reset, on the very first Layer III frame encountered. vbri is the
+	// Fraunhofer VBRI tag parsed from that same first frame when it was not a
+	// Xing/Info tag; like xing it is metadata, never emitted as audio, and it
+	// supplies the frame count and seek TOC for a VBRI-tagged stream.
 	xing        *xingHeader
+	vbri        *vbriHeader
 	xingChecked bool
 
 	// Gapless-trim window, in per-channel sample positions of the raw decoded
@@ -148,6 +152,12 @@ type Decoder struct {
 	initialOffset   int64
 	audioStart      int64
 	firstFrameBytes int
+
+	// src is the raw source retained from Reset so SeekToSample can re-seek it
+	// (bufio.Reader alone cannot). seekable records whether src implements
+	// io.Seeker; SeekToSample returns ErrSeekUnsupported when it does not.
+	src      io.Reader
+	seekable bool
 
 	done bool
 	err  error // latched terminal error; cleared only by Reset
@@ -192,6 +202,8 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 		d.sampleBuf = make([]float32, maxSamplesPerFrame*maxChannels)
 	}
 
+	d.src = r
+	d.seekable = false
 	d.frameBuf = d.frameBuf[:0]
 	d.pending = nil
 	d.readErr = nil
@@ -199,6 +211,7 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 	d.err = nil
 	d.info = Info{} // cleared up front so a failed Reset leaves no stale metadata
 	d.xing = nil
+	d.vbri = nil
 	d.xingChecked = false
 	d.gaplessStart = 0
 	d.gaplessEnd = math.MaxUint64 // no tail trim until a LAME tag with a known total arms one
@@ -212,6 +225,7 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 	// io.SectionReader is measured correctly. A SectionReader reports 0 here
 	// (its offsets are relative to the section), which is exactly right.
 	if seeker, ok := r.(io.Seeker); ok {
+		d.seekable = true
 		if cur, serr := seeker.Seek(0, io.SeekCurrent); serr == nil {
 			d.initialOffset = cur
 		}
@@ -236,9 +250,9 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 		return d.err // decodeNextFrame already latched d.err
 	}
 
-	// No Xing tag frame count to derive TotalSamples from: fall back to a
-	// CBR estimate from the audio byte length, when the source allows it.
-	if d.xing == nil || d.xing.frames == 0 {
+	// No Xing or VBRI tag frame count to derive TotalSamples from: fall back to
+	// a CBR estimate from the audio byte length, when the source allows it.
+	if (d.xing == nil || d.xing.frames == 0) && (d.vbri == nil || d.vbri.frames == 0) {
 		d.estimateCBRDuration(r)
 	}
 	return nil
@@ -360,6 +374,15 @@ func (d *Decoder) decodeNextFrame() error {
 				d.consume(fi.FrameBytes)
 				continue // tag frame: metadata only, never emitted as audio
 			}
+			// A Fraunhofer VBRI tag sits at a fixed offset (36) rather than after
+			// the side info, so it is a distinct check. Like a Xing tag frame it
+			// carries metadata, not audio, and is excluded the same way.
+			if vh, ok := parseVBRI(d.frameBuf[:fi.FrameBytes]); ok {
+				d.applyVBRI(vh, fi.SampleRate)
+				d.audioStart += int64(fi.FrameBytes)
+				d.consume(fi.FrameBytes)
+				continue // VBRI tag frame: metadata only, never emitted as audio
+			}
 		}
 
 		d.consume(fi.FrameBytes)
@@ -424,6 +447,19 @@ func (d *Decoder) applyXing(xh *xingHeader, sampleRate int) {
 	d.info.TotalSamples = uint64(xh.frames) * uint64(samplesPerFrame(sampleRate))
 }
 
+// applyVBRI records a detected Fraunhofer VBRI tag and, when its frame count is
+// present and no length was established yet, derives TotalSamples from it (audio
+// frames times samples-per-frame, the tag frame already excluded). The parsed
+// header, including its byte-cumulative TOC, is retained for SeekToSample. A
+// VBRI stream carries no LAME gapless extension, so no head/tail trim is armed
+// here.
+func (d *Decoder) applyVBRI(vh *vbriHeader, sampleRate int) {
+	d.vbri = vh
+	if d.info.TotalSamples == 0 && vh.frames > 0 {
+		d.info.TotalSamples = uint64(vh.frames) * uint64(samplesPerFrame(sampleRate))
+	}
+}
+
 // applyLAME records a detected LAME extension's encoder delay and padding and
 // arms the gapless-trim window. The head trim drops the first delay
 // samples-per-channel; the tail trim drops the last padding samples-per-channel
@@ -482,7 +518,9 @@ func (d *Decoder) applyLAME(delay, padding int) {
 // was left.
 func (d *Decoder) estimateCBRDuration(r io.Reader) {
 	seeker, ok := r.(io.Seeker)
-	if !ok || d.firstFrameBytes <= 0 {
+	if !ok || d.firstFrameBytes <= 0 || d.info.TotalSamples != 0 {
+		// A VBRI (or any) tag may already have supplied the length; never let the
+		// CBR estimate overwrite a total derived from a real frame count.
 		return
 	}
 	cur, err := seeker.Seek(0, io.SeekCurrent)

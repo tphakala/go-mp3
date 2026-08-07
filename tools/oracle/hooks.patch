@@ -1,5 +1,5 @@
---- minimp3.h	2026-08-07 09:29:19.975215243 +0300
-+++ build/minimp3.h	2026-08-07 09:31:16.722441771 +0300
+--- minimp3.h	2026-08-07 10:13:50.104326374 +0300
++++ build/minimp3.h	2026-08-07 10:27:49.840313034 +0300
 @@ -1,3 +1,11 @@
 +#ifdef MP3DUMP
 +#include "../dump.h"
@@ -12,3 +12,11 @@
  #ifndef MINIMP3_H
  #define MINIMP3_H
  /*
+@@ -1737,6 +1745,7 @@
+     }
+ 
+     hdr = mp3 + i;
++    { int32_t v[3] = {i, frame_size, (int32_t)hdr_sample_rate_hz(hdr)}; DUMPI("frames", 0x4652414d /* 'FRAM' */, v, 3); }
+     memcpy(dec->header, hdr, HDR_SIZE);
+     info->frame_bytes = i + frame_size;
+     info->frame_offset = i;

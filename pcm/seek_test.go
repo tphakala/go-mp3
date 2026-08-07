@@ -101,6 +101,69 @@ func TestSeekToSampleWithTOC(t *testing.T) {
 	}
 }
 
+// TestSeekAfterLeadingGarbage prefixes a tag-less CBR stream with leading
+// garbage (no sync word). T6 makes such a stream decode by resyncing to the
+// first real frame; this asserts the seek path stays consistent. audioStart
+// must advance past the garbage so the frame-header walk starts at the first
+// real frame (otherwise frameOffsets reads a garbage byte as a header,
+// frameLength fails, and SeekToSample latches "undecodable frame header"), and
+// firstFrameBytes must exclude the garbage so the CBR total is right and the
+// target is not wrongly clamped. Landing must be bit-exact vs a clean decode.
+func TestSeekAfterLeadingGarbage(t *testing.T) {
+	raw := readFixture(t, sine44s32)
+	whole, ch, total := readAllFloat32(t, bytes.NewReader(raw))
+	if total == 0 {
+		t.Fatalf("%s has no known TotalSamples; the seek test needs one", sine44s32)
+	}
+
+	garbage := make([]byte, 1000) // zero bytes: no frame sync anywhere
+	stream := make([]byte, 0, len(garbage)+len(raw))
+	stream = append(stream, garbage...)
+	stream = append(stream, raw...)
+
+	for _, tc := range []struct {
+		name     string
+		num, den int64
+	}{
+		{"quarter", 1, 4},
+		{"midpoint", 1, 2},
+		{"three-quarter", 3, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := total * tc.num / tc.den
+
+			d, err := NewDecoder(bytes.NewReader(stream), WithF32())
+			if err != nil {
+				t.Fatalf("NewDecoder(WithF32): %v", err)
+			}
+			if got := int64(d.Info().TotalSamples); got != total {
+				t.Fatalf("TotalSamples with leading garbage = %d, want %d (garbage not excluded from the CBR span)", got, total)
+			}
+			landed, err := d.SeekToSample(target)
+			if err != nil {
+				t.Fatalf("SeekToSample(%d): %v", target, err)
+			}
+			if landed != target {
+				t.Fatalf("SeekToSample landed on %d, want %d", landed, target)
+			}
+			gotBytes, err := io.ReadAll(d)
+			if err != nil {
+				t.Fatalf("ReadAll after seek: %v", err)
+			}
+			got := float32BytesFromLE(t, gotBytes)
+			want := whole[target*int64(ch):]
+			if len(got) != len(want) {
+				t.Fatalf("post-seek sample count = %d, want %d", len(got), len(want))
+			}
+			for i := range want {
+				if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
+					t.Fatalf("post-seek sample %d bits %#x, want %#x", i, math.Float32bits(got[i]), math.Float32bits(want[i]))
+				}
+			}
+		})
+	}
+}
+
 // TestSeekToSampleClamp asserts that seeking to or past the known playable
 // length lands at the stream end (returning the total) and that the next read
 // reports a clean io.EOF.
@@ -204,7 +267,7 @@ func TestDecoderExcludesVBRITagFrame(t *testing.T) {
 func buildVBRITagFrame(header []byte, flen, frames int) []byte {
 	buf := make([]byte, flen)
 	copy(buf, header[:4])
-	buf[1] |= 0x01 // clear protection: no CRC follows the header
+	buf[1] |= 0x01 // protection bit = 1: no CRC, so no 2-byte CRC follows the header
 	copy(buf[vbriOffset:], vbriMagic)
 	p := vbriOffset + vbriMagicLen
 	be16 := func(v uint16) {

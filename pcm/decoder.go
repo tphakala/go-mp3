@@ -55,14 +55,21 @@ const (
 	// maxFrameBytes window, so this larger buffer is allocated only when a
 	// stream actually contains garbage.
 	resyncWindowBytes = 16 * 1024
+	// frameHeaderSize is the MPEG frame header length in bytes: the sync word
+	// plus the version/layer/bitrate/sample-rate fields frameLength reads.
+	frameHeaderSize = 4
 	// resyncRetainBytes is the tail kept when a full resync window turns out to
-	// be all garbage. A real frame can begin anywhere in the window; keeping a
-	// whole max-frame tail guarantees a frame whose header lands near the window
-	// end (its body overrunning the window, so DecodeFrame could not confirm it)
-	// is not lost across the discard boundary. Because it is strictly smaller
-	// than resyncWindowBytes, discarding (window - retain) always makes forward
-	// progress, so the resync can never spin.
-	resyncRetainBytes = maxFrameBytes
+	// be all garbage. An unconfirmable real frame (one DecodeFrame could not
+	// confirm because its body, plus the following header matchFrame needs to
+	// confirm it, overran the window) can have its own header as low as
+	// resyncWindowBytes - maxFrameBytes - frameHeaderSize: a max-size frame plus
+	// that following header just reaches the window end. Retaining
+	// maxFrameBytes + frameHeaderSize keeps the whole of any such header across
+	// the discard boundary; retaining only maxFrameBytes could chop a header in
+	// the last frameHeaderSize bytes and drop the frame during recovery. It stays
+	// strictly below resyncWindowBytes, so discarding (window - retain) always
+	// makes forward progress and the resync can never spin.
+	resyncRetainBytes = maxFrameBytes + frameHeaderSize
 	// resyncBudgetBytes bounds the total bytes skipped while hunting for the
 	// next frame sync. Past it the stream is declared corrupt rather than
 	// scanned without limit, so a pure-garbage or badly-damaged source fails
@@ -443,7 +450,17 @@ func (d *Decoder) decodeNextFrame() error {
 			// First audio frame establishes the stream configuration.
 			d.info.SampleRate = fi.SampleRate
 			d.info.Channels = fi.Channels
-			d.firstFrameBytes = fi.FrameBytes
+			// fi.FrameBytes and fi.FrameOffset both count any leading garbage
+			// DecodeFrame skipped to resync onto this first frame. audioStart must
+			// point at the frame itself (so the T4 seek header-walk starts on a real
+			// sync word, not in the garbage, where frameLength would fail), and
+			// firstFrameBytes is the frame's own size so the CBR span
+			// (end - audioStart) and its divisor stay in the same units. The
+			// tag-frame branches above already fold FrameOffset into audioStart via
+			// FrameBytes; this is the tag-less counterpart and fires once, here, so
+			// nothing is double-counted.
+			d.audioStart += int64(fi.FrameOffset)
+			d.firstFrameBytes = fi.FrameBytes - fi.FrameOffset
 		}
 
 		// Place this frame in the raw (pre-trim) per-channel timeline and
@@ -564,10 +581,10 @@ func (d *Decoder) applyXing(xh *xingHeader, sampleRate int) {
 
 // applyVBRI records a detected Fraunhofer VBRI tag and, when its frame count is
 // present and no length was established yet, derives TotalSamples from it (audio
-// frames times samples-per-frame, the tag frame already excluded). The parsed
-// header, including its byte-cumulative TOC, is retained for SeekToSample. A
-// VBRI stream carries no LAME gapless extension, so no head/tail trim is armed
-// here.
+// frames times samples-per-frame, the tag frame already excluded). Only the
+// frame count is used; SeekToSample lands via the frameOffsets header walk and
+// never consults the VBRI TOC. A VBRI stream carries no LAME gapless extension,
+// so no head/tail trim is armed here.
 func (d *Decoder) applyVBRI(vh *vbriHeader, sampleRate int) {
 	d.vbri = vh
 	if d.info.TotalSamples == 0 && vh.frames > 0 {

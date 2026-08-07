@@ -143,6 +143,33 @@ func TestStreamingResyncBudget(t *testing.T) {
 	}
 }
 
+// TestStreamingResyncDiscardAndRetain drives the discard-and-retain branch that
+// TestStreamingLeadingGarbage (1000 bytes) never reaches: more than
+// resyncWindowBytes of leading garbage, so a full resync window is all garbage
+// and its head is discarded while a frame-sized tail is retained. The first real
+// frame is positioned near a window's end so it is unconfirmable there and is
+// carried across the discard boundary in the retained tail, then confirmed and
+// decoded in the next window. The recovered audio must be bit-exact to a clean
+// decode, proving nothing is lost across the discard.
+func TestStreamingResyncDiscardAndRetain(t *testing.T) {
+	raw := plainCBRFrames(t, fixturesDir+"/sine44s_32.mp3")
+	clean := decodeAllBytes(t, bytes.NewReader(raw))
+
+	// 29800 > resyncWindowBytes (16384) and < resyncBudgetBytes (131072): the
+	// first real frame lands past the first window (a full-garbage discard) and,
+	// with 144-byte frames, near the second window's end so its header sits in
+	// the retained tail rather than being confirmable in place.
+	garbage := make([]byte, 29800)
+	stream := make([]byte, 0, len(garbage)+len(raw))
+	stream = append(stream, garbage...)
+	stream = append(stream, raw...)
+
+	got := decodeAllBytes(t, bytes.NewReader(stream))
+	if !bytes.Equal(got, clean) {
+		t.Fatalf("audio after >16KiB garbage differs from clean decode: got %d bytes, want %d", len(got), len(clean))
+	}
+}
+
 // TestStreamingTruncatedFrameAtEOF cuts a valid stream mid-final-frame, leaving
 // a valid frame header whose declared length overruns the remaining bytes. That
 // is a truncated frame, which must surface as ErrCorruptStream, not a clean end.

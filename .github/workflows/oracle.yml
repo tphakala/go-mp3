@@ -34,3 +34,12 @@ jobs:
       - run: tools/oracle/build.sh
       - run: tools/oracle/dump-all.sh
       - run: go test ./... -run 'Oracle|Conformance' -v
+        env:
+          # This is the one job that builds and dumps the oracle, so it is
+          # the one place a missing dump must fail loudly instead of
+          # skipping quietly: without this, a drifted dump path or an
+          # empty dump-all.sh run would make every subtest t.Skip and the
+          # job would go green on the arm64 FMA-parity leg this workflow
+          # exists to guarantee. dumps_test.go and decode_test.go both
+          # document this contract already; this is where it is enforced.
+          MP3_REQUIRE_DUMPS: '1'

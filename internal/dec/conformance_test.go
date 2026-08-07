@@ -27,9 +27,14 @@ func vectorPaths(t *testing.T) []string {
 // layer1And2Vectors lists every ISO vector whose bitstream carries Layer I
 // and/or Layer II content only (confirmed by decoding every vector with
 // this package's own DecodeFrame and recording info.Layer per frame; none
-// of these ever produced a Layer III frame). DecodeFrame's declared scope
-// is Layer III only (see its doc comment in decode.go): a non-Layer-III
-// frame is recognized and sized but always yields 0 samples. The pinned
+// of these ever produced a Layer III frame). This is a static, filename-keyed
+// map, but it is not trusted blindly: validateLayer1And2Skip re-decodes each
+// listed vector on every test run and fails loudly (t.Fatalf) if it now
+// produces a Layer III frame, so a future vectors-corpus pin bump that
+// changes a vector's content cannot silently widen the skip list.
+// DecodeFrame's declared scope is Layer III only (see its doc comment in
+// decode.go): a non-Layer-III frame is recognized and sized but always
+// yields 0 samples. The pinned
 // oracle, built from tools/oracle/mp3dump.c which defines only
 // MINIMP3_IMPLEMENTATION (not MINIMP3_ONLY_MP3), still decodes Layer I/II
 // in full. So for every vector below, this decoder's PCM output is
@@ -139,8 +144,10 @@ var psnrSkipVectors = map[string]string{
 // decoded frame used intensity stereo or a mixed block, so
 // TestConformanceVectors can assert that the ISO corpus actually exercises
 // those two faithfully-ported paths the LAME fixture corpus never reaches
-// (see CLAUDE.md's Task 11 carry-forward note).
-func decodeFullStream(data []byte) (pcm []float32, sawIStereo, sawMixed bool) {
+// (see CLAUDE.md's Task 11 carry-forward note), and whether any frame was
+// Layer III at all, so callers can self-validate a layer1And2Vectors skip
+// (see validateLayer1And2Skip) instead of trusting the static map blindly.
+func decodeFullStream(data []byte) (pcm []float32, sawIStereo, sawMixed, sawLayer3 bool) {
 	d := NewDecoder()
 	buf := make([]float32, maxSamplesPerFrame)
 	var info FrameInfo
@@ -152,6 +159,7 @@ func decodeFullStream(data []byte) (pcm []float32, sawIStereo, sawMixed bool) {
 			pcm = append(pcm, buf[:n*info.Channels]...)
 		}
 		if info.Layer == 3 {
+			sawLayer3 = true
 			if hdrTestIStereo(d.header[:]) {
 				sawIStereo = true
 			}
@@ -166,7 +174,21 @@ func decodeFullStream(data []byte) (pcm []float32, sawIStereo, sawMixed bool) {
 		}
 		pos += info.FrameBytes
 	}
-	return pcm, sawIStereo, sawMixed
+	return pcm, sawIStereo, sawMixed, sawLayer3
+}
+
+// validateLayer1And2Skip fails the test loudly if a vector listed in
+// layer1And2Vectors as Layer I/II-only actually produced a Layer III frame
+// on this decode. layer1And2Vectors is a static, filename-keyed map built
+// once by inspection; this is what stops it from drifting silently (e.g. a
+// vectors-corpus pin bump that changes a vector's content) into quietly
+// excluding a vector that should be gated by TestConformanceVectors.
+func validateLayer1And2Skip(t *testing.T, name string, layer int, sawLayer3 bool) {
+	t.Helper()
+	if sawLayer3 {
+		t.Fatalf("layer1And2Vectors marks %q as Layer %d only, but decoding it produced a Layer III frame; "+
+			"the skip list is stale (corpus pin bump?) and must be updated", name, layer)
+	}
 }
 
 // f32ToS16 mirrors upstream mp3dec_f32_to_s16's scalar path exactly
@@ -264,13 +286,15 @@ func TestConformanceVectors(t *testing.T) {
 		name := strings.TrimSuffix(filepath.Base(fx), ".bit")
 
 		t.Run(name, func(t *testing.T) {
+			data := readFile(t, fx)
+			got, sawIStereo, sawMixed, sawLayer3 := decodeFullStream(data)
+
 			if layer, skip := layer1And2Vectors[name]; skip {
+				validateLayer1And2Skip(t, name, layer, sawLayer3)
 				t.Skipf("Layer %d content, outside this decoder's Layer III scope", layer)
 			}
 
-			data := readFile(t, fx)
 			want := readF32File(t, dumpPath(fx, "pcm.f32le"))
-			got, sawIStereo, sawMixed := decodeFullStream(data)
 			compareBitExact(t, fx, got, want)
 			if sawIStereo {
 				t.Log("exercised intensity stereo")
@@ -311,19 +335,24 @@ func TestConformanceVectors(t *testing.T) {
 // corpus; this is the coverage assertion that closes that gap, so a future
 // change that silently dropped ISO vectors from the corpus (rather than
 // merely a single test's skip) would fail loudly here instead of quietly
-// losing the coverage TestConformanceVectors above depends on.
+// losing the coverage TestConformanceVectors above depends on. It also
+// self-validates every layer1And2Vectors skip it encounters, the same as
+// TestConformanceVectors, so this loop cannot quietly widen its Layer I/II
+// exclusion either.
 func TestConformanceVectorsExerciseIntensityStereoAndMixedBlocks(t *testing.T) {
 	anyIStereo, anyMixed := false, false
 	var iStereoVectors, mixedVectors []string
 
 	for _, fx := range vectorPaths(t) {
 		name := strings.TrimSuffix(filepath.Base(fx), ".bit")
-		if _, skip := layer1And2Vectors[name]; skip {
+		data := readFile(t, fx)
+		_, sawIStereo, sawMixed, sawLayer3 := decodeFullStream(data)
+
+		if layer, skip := layer1And2Vectors[name]; skip {
+			validateLayer1And2Skip(t, name, layer, sawLayer3)
 			continue
 		}
 
-		data := readFile(t, fx)
-		_, sawIStereo, sawMixed := decodeFullStream(data)
 		if sawIStereo {
 			anyIStereo = true
 			iStereoVectors = append(iStereoVectors, name)

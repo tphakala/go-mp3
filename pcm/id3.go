@@ -14,6 +14,9 @@ const (
 	// id3FooterFlag is the bit in the flags byte that signals a 10-byte
 	// footer follows the tag body (ID3v2.4).
 	id3FooterFlag = 0x10
+	// id3v1Size is the fixed size of an ID3v1 trailer, a "TAG" magic followed by
+	// 125 bytes of fixed metadata fields, appended after the last audio frame.
+	id3v1Size = 128
 )
 
 // skipID3v2 consumes a leading ID3v2 tag from br, if present, and returns the
@@ -48,4 +51,29 @@ func skipID3v2(br *bufio.Reader) (int64, error) {
 		return 0, err
 	}
 	return total, nil
+}
+
+// id3v1TrailerBytes reports the size of a trailing ID3v1 tag (128 bytes, magic
+// "TAG") at the end of a seekable source, or 0 when it is absent, the stream is
+// too short to hold one, or the probe fails. end is the source's byte length. It
+// seeks to read the trailer and leaves the read position at the probe point; the
+// caller is expected to restore its own position afterward (estimateCBRDuration
+// does, via its final SeekStart). The trailer is metadata, not audio, so
+// excluding it keeps a CBR frame-count estimate from being inflated by roughly
+// one frame.
+func id3v1TrailerBytes(rs io.ReadSeeker, end int64) int64 {
+	if end < id3v1Size {
+		return 0
+	}
+	if _, err := rs.Seek(end-id3v1Size, io.SeekStart); err != nil {
+		return 0
+	}
+	var magic [3]byte
+	if _, err := io.ReadFull(rs, magic[:]); err != nil {
+		return 0
+	}
+	if magic[0] == 'T' && magic[1] == 'A' && magic[2] == 'G' {
+		return id3v1Size
+	}
+	return 0
 }

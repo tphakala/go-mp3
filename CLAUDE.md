@@ -12,9 +12,12 @@ IMDCT with overlap, synthesis filterbank, and full-frame decode
 (mp3dec_decode_frame). It is fuzzed, resync-tested, zero-alloc in steady
 state, and exposed through the public package `mp3` (NewDecoder / DecodeFrame
 returning (n, FrameInfo, error) / Reset, sibling-faithful to
-go-flac/go-aac/go-wav). Next up is Phase 2 (pcm container: S16 output,
-Xing/Info/VBRI/TOC, streaming/seek), then Phases 3-5 (encoder). No encoder
-exists yet.**
+go-flac/go-aac/go-wav). Phase 2 (pcm container) is UNDERWAY: PRs 8-9 merged, a
+streaming `pcm.Decoder` (io.Reader + io.WriterTo) with ID3v2 skip, S16 default
+plus a WithF32 option, Xing/Info/VBRI/LAME tag parsing, and gapless trim (the
+LAME-gapless conformance discrepancy closes to zero). Remaining Phase 2: PR10
+(SeekToSample + streaming robustness) and PR11 (fuzz + streaming conformance),
+then Phases 3-5 (encoder). No encoder exists yet.**
 
 ## Start here (fresh session)
 
@@ -22,25 +25,28 @@ exists yet.**
    (`mcp__hindsight-memory-go-mp3__recall`), query "resume". The bank holds
    the authoritative resume state: merged commits, conventions, and the
    carry-forward items below.
-2. Read the peer-reviewed Phase 0+1 plan (13 tasks):
-   `docs/superpowers/plans/2026-08-06-go-mp3-phase0-1-decoder.md`, and the
-   SDD progress ledger at
-   `.superpowers/sdd/2026-08-06-go-mp3-phase0-1-decoder/progress.md` (local,
-   gitignored), which records each task's status, commit range, and the
-   review findings folded in.
-3. Phase 0+1 is DONE (all 13 tasks merged: PR1 T2+T3 d3332ff, PR2 T4+T5
-   3c8887a, PR3 T6+T7 d14215f, PR4 T8+T9 9da8297, PR5 T10+T11 797a712, PR6
-   T12+T13 e6ab8b5). NEXT is Phase 2: write the pcm-container plan with
-   superpowers:writing-plans, have agy review it, then execute it the same way.
-   Phase 2 scope: S16 output, Xing/Info/VBRI/TOC parsing (imports internal/dec
-   hdr* helpers), streaming decoder + seek in a `pcm/` subpackage matching the
-   siblings. Carry-forward hardening items for Phase 2 (from PR5/PR6 reviews):
-   bound the free-format findFrame O(n*2304) scan at the public boundary now
-   that DecodeFrame is public (do NOT alter pin-derived header.go DSP); add a
-   public-DecodeFrame zero-alloc test; optional free-format Reset test case;
-   wire mp3.ErrCorruptStream into the streaming layer. Minor cleanups: oracle.yml
-   drops unused lame/ffmpeg + add apt-get update; min() builtins in
-   conformance/robustness tests; consolidate the duplicated frame-advance loop.
+2. The active plan is Phase 2 (pcm container):
+   `docs/superpowers/plans/2026-08-07-go-mp3-phase2-pcm-container.md`
+   (agy-reviewed), ledger
+   `.superpowers/sdd/2026-08-07-go-mp3-phase2-pcm-container/progress.md`
+   (local, gitignored), which records each task's status, commit range, the
+   review findings folded in, and the authoritative carry-forward list. The
+   completed Phase 0+1 plan/ledger (dated 2026-08-06) remain for history.
+3. Phase 0+1 is DONE (13 tasks, PRs 1-6 + cleanup PR7). Phase 2 is UNDERWAY.
+   DONE: PR8 = T1 streaming skeleton + T2 Xing/Info (fbd786f); PR9 = T3
+   VBRI/LAME/gapless + T5 WithF32 (d3c03aa). NEXT: PR10 = T4 (SeekToSample) +
+   T6 (streaming robustness); then PR11 = T7 (fuzz + streaming conformance).
+   KEY carry-forwards (full list in the Phase 2 ledger): T4 must wire
+   parseVBRI into the decode loop AND exclude the VBRI tag frame (currently a
+   VBRI-tagged stream emits its tag frame as audio; no fixture yet), and must
+   prime the bit reservoir + MDCT overlap on seek (step back ~10 frames and
+   decode silently forward, do NOT just Reset at the landing frame), with a
+   TOC-narrowed binary search. T6 must bound the free-format findFrame
+   O(n*2304) scan at the streaming boundary (retain the last 2880 bytes on
+   discard), handle parseXing FrameOffset!=0, add the ID3v1 trailer, and
+   reconsider Layer I/II skip-and-continue. Execute PR10/PR11 the same way:
+   plan is written and agy-reviewed, so branch, implement, review, gate,
+   watch-pr, merge.
 4. Execute task by task with superpowers:subagent-driven-development (a fresh
    implementer subagent per task, then a task review, following the ledger's
    established pattern).

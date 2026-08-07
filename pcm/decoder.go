@@ -45,6 +45,29 @@ const (
 	// finish mistake the give-up for a clean end and silently truncate a
 	// merely-bursty source.
 	maxZeroReads = 100
+
+	// resyncWindowBytes is the search window mp3.DecodeFrame is handed while
+	// recovering from a run of mid-stream garbage. It is far larger than a
+	// single frame (maxFrameBytes) so DecodeFrame can skip the junk AND confirm
+	// the next real frame within one window: confirmation needs the recovered
+	// frame's body plus a following header, so a one-frame window could never
+	// resync across garbage. The normal, non-garbage decode stays on the small
+	// maxFrameBytes window, so this larger buffer is allocated only when a
+	// stream actually contains garbage.
+	resyncWindowBytes = 16 * 1024
+	// resyncRetainBytes is the tail kept when a full resync window turns out to
+	// be all garbage. A real frame can begin anywhere in the window; keeping a
+	// whole max-frame tail guarantees a frame whose header lands near the window
+	// end (its body overrunning the window, so DecodeFrame could not confirm it)
+	// is not lost across the discard boundary. Because it is strictly smaller
+	// than resyncWindowBytes, discarding (window - retain) always makes forward
+	// progress, so the resync can never spin.
+	resyncRetainBytes = maxFrameBytes
+	// resyncBudgetBytes bounds the total bytes skipped while hunting for the
+	// next frame sync. Past it the stream is declared corrupt rather than
+	// scanned without limit, so a pure-garbage or badly-damaged source fails
+	// fast instead of streaming megabytes of junk.
+	resyncBudgetBytes = 128 * 1024
 )
 
 // Info describes the decoded stream. SampleRate and Channels are populated at
@@ -261,22 +284,28 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 // Info returns the stream configuration. Valid after NewDecoder or Reset.
 func (d *Decoder) Info() Info { return d.info }
 
-// fill tops frameBuf up toward maxFrameBytes from the underlying reader, so a
+// fill tops frameBuf up toward maxFrameBytes, the small window a steady decode
+// needs. See fillTo.
+func (d *Decoder) fill() { d.fillTo(maxFrameBytes) }
+
+// fillTo tops frameBuf up toward target bytes from the underlying reader, so a
 // following mp3.DecodeFrame always sees a complete frame while the source
-// still has bytes. It records the first read error (including io.EOF) in
-// readErr and then does nothing on later calls.
-func (d *Decoder) fill() {
-	if d.readErr != nil || len(d.frameBuf) >= maxFrameBytes {
+// still has bytes. The steady decode passes maxFrameBytes; the mid-stream
+// resync passes the larger resyncWindowBytes so DecodeFrame has room to skip a
+// garbage run and still confirm the next frame. It records the first read error
+// (including io.EOF) in readErr and then does nothing on later calls.
+func (d *Decoder) fillTo(target int) {
+	if d.readErr != nil || len(d.frameBuf) >= target {
 		return
 	}
-	if cap(d.frameBuf) < maxFrameBytes {
-		grown := make([]byte, len(d.frameBuf), maxFrameBytes)
+	if cap(d.frameBuf) < target {
+		grown := make([]byte, len(d.frameBuf), target)
 		copy(grown, d.frameBuf)
 		d.frameBuf = grown
 	}
 	zeroReads := 0
-	for len(d.frameBuf) < maxFrameBytes {
-		n, err := d.br.Read(d.frameBuf[len(d.frameBuf):maxFrameBytes])
+	for len(d.frameBuf) < target {
+		n, err := d.br.Read(d.frameBuf[len(d.frameBuf):target])
 		d.frameBuf = d.frameBuf[:len(d.frameBuf)+n]
 		if err != nil {
 			d.readErr = err
@@ -339,33 +368,54 @@ func (d *Decoder) decodeNextFrame() error {
 	if d.done {
 		return io.EOF
 	}
+	// window is the byte span handed to DecodeFrame: the small maxFrameBytes for
+	// a steady decode, widened to resyncWindowBytes while skipping garbage.
+	// garbageSkipped is the running total of bytes discarded during a resync run,
+	// bounded by resyncBudgetBytes. Both reset the moment a real frame is found.
+	window, garbageSkipped := maxFrameBytes, 0
 	for {
-		d.fill()
+		d.fillTo(window)
 		if len(d.frameBuf) == 0 {
 			return d.finish() // reader exhausted, nothing buffered
 		}
 
 		n, fi, err := d.dec.DecodeFrame(d.frameBuf, d.sampleBuf)
 		if err != nil {
-			d.err = err // e.g. mp3.ErrUnsupported for a Layer I/II frame
+			// A Layer I/II frame yields mp3.ErrUnsupported. This is terminal by
+			// choice: skipping and continuing would mask a malformed or mixed
+			// stream, so the decoder stops here rather than dropping frames.
+			d.err = err
 			return d.err
 		}
-		if fi.FrameBytes == 0 {
-			// No progress possible from the buffered bytes: with a full window
-			// this is a partial/garbage frame at end of input. finish surfaces
-			// a mid-stream read failure here too, rather than reporting the
-			// truncated tail of a failed source as a clean end.
-			return d.finish()
+		if fi.FrameBytes == 0 || (n == 0 && fi.Layer == 0) {
+			// No confirmable frame in the buffered window: mid-stream garbage, a
+			// truncated final frame, or a clean end of trailing non-frame bytes.
+			var proceed bool
+			if window, garbageSkipped, proceed, err = d.handleNoFrame(window, garbageSkipped); err != nil {
+				return err
+			}
+			if proceed {
+				continue // buffer advanced; retry the (possibly widened) window
+			}
+			return d.finish() // clean end (or a latched read error)
 		}
+
+		// A confirmable frame (audio, or a resync frame that yields no samples):
+		// any garbage run is over, so return to the steady, small window.
+		window, garbageSkipped = maxFrameBytes, 0
 
 		if !d.xingChecked && fi.Layer == 3 {
 			d.xingChecked = true
-			if xh, ok := parseXing(d.frameBuf[:fi.FrameBytes], fi.SampleRate, fi.Channels); ok {
+			// The frame's own bytes start at fi.FrameOffset, not index 0: with
+			// leading garbage (or bytes DecodeFrame skipped to resync) the header
+			// is offset, so every tag parse must slice from there.
+			frame := d.frameBuf[fi.FrameOffset:fi.FrameBytes]
+			if xh, ok := parseXing(frame, fi.SampleRate, fi.Channels); ok {
 				d.applyXing(xh, fi.SampleRate)
 				// A LAME extension may follow the Xing fields; its encoder
 				// delay/padding arm the gapless trim. applyXing has already set
 				// the pre-trim TotalSamples applyLAME reads.
-				if delay, padding, lok := parseLAME(d.frameBuf[:fi.FrameBytes], xh.lameStart); lok {
+				if delay, padding, lok := parseLAME(frame, xh.lameStart); lok {
 					d.applyLAME(delay, padding)
 				}
 				// The tag frame is not audio: exclude its bytes from the CBR
@@ -377,7 +427,7 @@ func (d *Decoder) decodeNextFrame() error {
 			// A Fraunhofer VBRI tag sits at a fixed offset (36) rather than after
 			// the side info, so it is a distinct check. Like a Xing tag frame it
 			// carries metadata, not audio, and is excluded the same way.
-			if vh, ok := parseVBRI(d.frameBuf[:fi.FrameBytes]); ok {
+			if vh, ok := parseVBRI(frame); ok {
 				d.applyVBRI(vh, fi.SampleRate)
 				d.audioStart += int64(fi.FrameBytes)
 				d.consume(fi.FrameBytes)
@@ -429,6 +479,71 @@ func (d *Decoder) decodeNextFrame() error {
 		d.packOutput(d.sampleBuf[skip : skip+count])
 		return nil
 	}
+}
+
+// handleNoFrame decides what to do when mp3.DecodeFrame found no confirmable
+// frame in the buffered window (mid-stream garbage, a truncated final frame, or
+// a clean end). It returns the possibly-widened resync window, the running total
+// of garbage bytes skipped, whether the caller should retry, and a terminal
+// error.
+//
+// While the source still has bytes, the miss is treated as recoverable garbage:
+// the search window widens to resyncWindowBytes (giving DecodeFrame room to skip
+// the junk and confirm the next frame in one pass), and once a full window is
+// still all garbage the confirmed-garbage head is discarded while a frame-sized
+// tail is retained, so a frame bridging the discard boundary is not lost. It
+// gives up with mp3.ErrCorruptStream only after skipping more than
+// resyncBudgetBytes, so a pure-garbage source fails fast rather than scanning
+// without limit. At true EOF a leftover whose frame header overruns the
+// remaining bytes is a truncated frame (mp3.ErrCorruptStream); any other
+// leftover (an ID3v1 tag, trailing padding) is a clean end, left for finish.
+func (d *Decoder) handleNoFrame(window, skipped int) (newWindow, newSkipped int, proceed bool, err error) {
+	if d.readErr == nil {
+		window = resyncWindowBytes
+		if len(d.frameBuf) < resyncWindowBytes {
+			return window, skipped, true, nil // read more before judging this garbage
+		}
+		discard := len(d.frameBuf) - resyncRetainBytes
+		skipped += discard
+		if skipped > resyncBudgetBytes {
+			d.err = fmt.Errorf("%w: no frame sync within %d bytes", mp3.ErrCorruptStream, skipped)
+			return window, skipped, false, d.err
+		}
+		d.consume(discard)
+		return window, skipped, true, nil
+	}
+	if errors.Is(d.readErr, io.EOF) && truncatedFrame(d.frameBuf) {
+		d.err = wrapTruncation(io.ErrUnexpectedEOF)
+		return window, skipped, false, d.err
+	}
+	d.frameBuf = d.frameBuf[:0]
+	return window, skipped, false, nil
+}
+
+// truncatedFrame reports whether buf holds a valid MPEG frame header whose
+// declared length runs past the bytes present, i.e. a frame cut short at end of
+// input. It returns the verdict at the first header frameLength accepts, so
+// trailing non-frame bytes (an ID3v1 tag, padding) report false and a clean end
+// is never mistaken for corruption, while a complete-but-unconfirmable final
+// frame (its bytes all present) likewise reports false.
+func truncatedFrame(buf []byte) bool {
+	for i := range len(buf) {
+		if length, ok := frameLength(buf[i:]); ok {
+			return i+length > len(buf)
+		}
+	}
+	return false
+}
+
+// wrapTruncation maps an unexpected end of input to mp3.ErrCorruptStream and
+// passes any other error through unchanged, mirroring go-aac's helper of the
+// same name: a stream that ends inside a frame it promised is corrupt, while a
+// genuine I/O failure keeps its own identity.
+func wrapTruncation(err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("%w: truncated frame at end of stream", mp3.ErrCorruptStream)
+	}
+	return err
 }
 
 // applyXing records a detected Xing/Info tag's metadata and, when its frame
@@ -531,11 +646,18 @@ func (d *Decoder) estimateCBRDuration(r io.Reader) {
 	if err != nil {
 		return
 	}
+	// A trailing 128-byte ID3v1 tag is metadata, not audio; exclude it so the
+	// CBR frame count is not inflated by roughly one frame. The probe reads at
+	// end-128 and the SeekStart below restores the read position regardless.
+	var trailer int64
+	if rs, ok := r.(io.ReadSeeker); ok {
+		trailer = id3v1TrailerBytes(rs, end)
+	}
 	if _, err := seeker.Seek(cur, io.SeekStart); err != nil {
 		return
 	}
 
-	audioBytes := end - d.audioStart
+	audioBytes := end - trailer - d.audioStart
 	if audioBytes <= 0 {
 		return
 	}

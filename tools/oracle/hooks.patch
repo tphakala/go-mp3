@@ -1,5 +1,5 @@
 --- minimp3.h	2026-08-07 10:13:50.104326374 +0300
-+++ build/minimp3.h	2026-08-07 10:27:49.840313034 +0300
++++ build/minimp3.h	2026-08-07 11:28:29.663270547 +0300
 @@ -1,3 +1,11 @@
 +#ifdef MP3DUMP
 +#include "../dump.h"
@@ -12,7 +12,49 @@
  #ifndef MINIMP3_H
  #define MINIMP3_H
  /*
-@@ -1737,6 +1745,7 @@
+@@ -529,6 +537,7 @@
+         main_data_begin = get_bits(bs, 8 + gr_count) >> gr_count;
+     }
+ 
++    { int mp3dump_orig_gr_count = gr_count;
+     do
+     {
+         if (HDR_IS_MONO(hdr))
+@@ -603,6 +612,25 @@
+         return -1;
+     }
+ 
++    { int32_t v[2] = { main_data_begin, mp3dump_orig_gr_count }; DUMPI("sideinfo", 0x53494445 /* 'SIDE' */, v, 2); }
++    {
++        int gci;
++        for (gci = 0; gci < mp3dump_orig_gr_count; gci++)
++        {
++            L3_gr_info_t *g = gr - mp3dump_orig_gr_count + gci;
++            int32_t v[21] = {
++                g->part_23_length, g->big_values, g->scalefac_compress,
++                g->global_gain, g->block_type, g->mixed_block_flag,
++                g->n_long_sfb, g->n_short_sfb,
++                g->table_select[0], g->table_select[1], g->table_select[2],
++                g->region_count[0], g->region_count[1], g->region_count[2],
++                g->subblock_gain[0], g->subblock_gain[1], g->subblock_gain[2],
++                g->preflag, g->scalefac_scale, g->count1_table, g->scfsi
++            };
++            DUMPI("sideinfo", 0x53494445 /* 'SIDE' */, v, 21);
++        }
++    }
++    }
+     return main_data_begin;
+ }
+ 
+@@ -1243,6 +1271,7 @@
+     {
+         int layer3gr_limit = s->bs.pos + gr_info[ch].part_23_length;
+         L3_decode_scalefactors(h->header, s->ist_pos[ch], &s->bs, gr_info + ch, s->scf, ch);
++        DUMPF("scf", 0x53434600 /* 'SCF\0' */, s->scf, 40);
+         L3_huffman(s->grbuf[ch], &s->bs, gr_info + ch, s->scf, layer3gr_limit);
+     }
+ 
+@@ -1737,6 +1766,7 @@
      }
  
      hdr = mp3 + i;

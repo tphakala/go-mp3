@@ -5,10 +5,11 @@
     concatenated in a fixed order, to stdout. Not linked against
     build/minimp3.h: these tables are declared `static const` inside
     function bodies in the pinned minimp3.h (CC0-1.0), so they are not
-    externally-linkable symbols; the arrays below are transcribed
-    verbatim from tools/oracle/minimp3.h, with line-number citations, and
-    exist purely so the Go port's tables can be checksummed against an
-    independent transcription.
+    externally-linkable symbols; the arrays below were extracted from
+    tools/oracle/minimp3.h by the same brace-matching script that produced
+    internal/dec/tables.go, so this checksum guards mainly against future
+    accidental edits to either copy, not against a shared extraction bug.
+    Independent correctness rests on the differential decode tests.
 
     Order: g_scf_long (8*23 bytes), g_scf_short (8*40 bytes),
     g_scf_mixed (8*40 bytes), g_scfc_decode (16 bytes), g_pow43

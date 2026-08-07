@@ -221,7 +221,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    mp3dec_t dec;
+    /* Zero-init: mp3dec_init only clears dec.header[0], leaving reserv, the
+       mdct overlap and qmf state as uninitialized stack memory. Zero them so
+       the first frame's reservoir carry-over is deterministic across compilers
+       and platforms; an uninitialized value would make dumps non-reproducible. */
+    mp3dec_t dec = {0};
     mp3dec_init(&dec);
     mp3d_sample_t pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
     mp3dec_frame_info_t info;

@@ -105,7 +105,7 @@ func TestL3HuffmanMatchesOracle(t *testing.T) {
 			if mainDataBegin >= 0 && !bs.Overrun() {
 				mainBS, mainData, ok := l3RestoreReservoir(&res, &bs, bsData, mainDataBegin, maindata)
 				if ok {
-					for g := 0; g < grCount; g++ {
+					for g := range grCount {
 						ch := g % nch
 						gi := &grBuf[g]
 						layer3grLimit := mainBS.Pos() + int(gi.part23Length)

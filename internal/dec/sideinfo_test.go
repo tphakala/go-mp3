@@ -135,7 +135,7 @@ func TestL3ReadSideInfoMatchesOracle(t *testing.T) {
 					fx, pos, got, grCount, hdrRec.I32[0], hdrRec.I32[1])
 			}
 
-			for g := 0; g < grCount; g++ {
+			for g := range grCount {
 				if si >= len(sideRecs) {
 					t.Fatalf("%s: frame at %d granule-ch %d: ran out of sideinfo records", fx, pos, g)
 				}

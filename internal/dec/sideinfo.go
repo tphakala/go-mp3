@@ -151,11 +151,12 @@ func l3ReadSideInfo(bs *bits.Reader, gr []grInfo, hdr []byte, frameBytes int) in
 		g.tableSelect[0] = uint8(tables >> 10)
 		g.tableSelect[1] = uint8((tables >> 5) & 31)
 		g.tableSelect[2] = uint8(tables & 31)
-		if hdrTestMPEG1(hdr) {
+		switch {
+		case hdrTestMPEG1(hdr):
 			g.preflag = uint8(bs.Bits(1))
-		} else if g.scalefacCompress >= 500 {
+		case g.scalefacCompress >= 500:
 			g.preflag = 1
-		} else {
+		default:
 			g.preflag = 0
 		}
 		g.scalefacScale = uint8(bs.Bits(1))

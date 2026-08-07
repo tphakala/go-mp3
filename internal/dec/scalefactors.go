@@ -45,6 +45,11 @@ func hdrIsMsStereo(hdr []byte) bool { return hdr[3]&0xE0 == 0x60 }
 // converts directly to float32 to match it), and this is a chain of two
 // multiplications (a*(b*c)), not a multiply-add, so there is no FMA-fusion
 // site to block.
+//
+// Precondition: expQ2 is non-negative (current callers pass roughly 3..260). A
+// negative expQ2 would make uint(e>>2) wrap to a huge shift count (the shift
+// yields 0, no panic); that path is unreachable from current call sites and is
+// not defended against here.
 func l3LdexpQ2(y float32, expQ2 int) float32 {
 	for {
 		e := min(120, expQ2)
@@ -64,7 +69,7 @@ func l3LdexpQ2(y float32, expQ2 int) float32 {
 // "scf" too (it is called with the local iscf[40] array from
 // L3_decode_scalefactors, not the final float scf array); this port calls
 // it iscf throughout to keep the two arrays textually distinct.
-func l3ReadScalefactorsRaw(iscf, istPos []uint8, scfSize, scfCount []uint8, bitbuf *bits.Reader, scfsi int) {
+func l3ReadScalefactorsRaw(iscf, istPos, scfSize, scfCount []uint8, bitbuf *bits.Reader, scfsi int) {
 	pos := 0
 	for i := 0; i < 4 && scfCount[i] != 0; i, scfsi = i+1, scfsi*2 {
 		cnt := int(scfCount[i])
@@ -73,7 +78,7 @@ func l3ReadScalefactorsRaw(iscf, istPos []uint8, scfSize, scfCount []uint8, bitb
 		} else {
 			bitsN := int(scfSize[i])
 			if bitsN == 0 {
-				for k := 0; k < cnt; k++ {
+				for k := range cnt {
 					iscf[pos+k] = 0
 					istPos[pos+k] = 0
 				}
@@ -82,7 +87,7 @@ func l3ReadScalefactorsRaw(iscf, istPos []uint8, scfSize, scfCount []uint8, bitb
 				if scfsi < 0 {
 					maxScf = (1 << bitsN) - 1
 				}
-				for k := 0; k < cnt; k++ {
+				for k := range cnt {
 					s := int(bitbuf.Bits(bitsN))
 					if s == maxScf {
 						istPos[pos+k] = 0xFF
@@ -163,7 +168,7 @@ func l3ReadScalefactors(hdr []byte, scf []float32, istPos []uint8, gr *grInfo, b
 			iscf[base+2] += gr.subblockGain[2] << sh
 		}
 	} else if gr.preflag != 0 {
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			iscf[11+i] += preampTable[i]
 		}
 	}
@@ -175,7 +180,7 @@ func l3ReadScalefactors(hdr []byte, scf []float32, istPos []uint8, gr *grInfo, b
 	gainExp := int(gr.globalGain) + bitsDequantizerOut*4 - 210 - msAdj
 	gain := l3LdexpQ2(float32(1<<(maxScfi/4)), maxScfi-gainExp)
 	n := int(gr.nLongSfb) + int(gr.nShortSfb)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		scf[i] = l3LdexpQ2(gain, int(iscf[i])<<scfShift)
 	}
 }

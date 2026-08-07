@@ -3,12 +3,14 @@
 Pure-Go MP3 (MPEG Layer III) codec library, `github.com/tphakala/go-mp3`,
 MIT licensed. Sibling of go-flac, go-opus, go-aac, go-wav.
 
-**Status: decoder implementation underway. Phase 0+1 is 9 of 13 tasks done
-(as of 2026-08-07). The decoder is bit-exact with the pinned minimp3 oracle
-through the whole spectral path: frame sync, side info, scalefactors,
-Huffman and dequantization, stereo/reorder/antialias, and hybrid IMDCT with
-overlap. Not yet done: synthesis filterbank + full-frame PCM, conformance
-vectors, robustness gates, and the public API.**
+**Status: decoder implementation underway. Phase 0+1 is 11 of 13 tasks done
+(as of 2026-08-07). The decoder produces full-frame float PCM bit-exact with
+the pinned minimp3 oracle on amd64 AND arm64, across every fixture and the
+ISO conformance vector corpus: frame sync, side info, scalefactors, Huffman
+and dequantization, stereo/reorder/antialias, hybrid IMDCT with overlap,
+synthesis filterbank, and full-frame decode (mp3dec_decode_frame). Conformance
+vectors and the cross-arch oracle differential CI job are in place. Not yet
+done: robustness gates (fuzz/resync/alloc) and the public API.**
 
 ## Start here (fresh session)
 
@@ -25,10 +27,12 @@ vectors, robustness gates, and the public API.**
 3. Resume at the next unstarted task. DONE: T1 scaffold, T2 oracle harness,
    T3 fixtures/vectors, T4 bit reader, T5 header/frame sync, T6 side
    info/scalefactors, T7 Huffman/dequant, T8 stereo/reorder/antialias, T9
-   IMDCT/windowing. NEXT: PR5 = T10 (synthesis filterbank + full-frame
-   decode, including L3_change_sign) + T11 (conformance vectors + arm64
-   oracle differential CI). Then PR6 = T12 (fuzz/resync/alloc gates) + T13
-   (public frame API).
+   IMDCT/windowing, T10 synthesis + full-frame decode (incl. L3_change_sign),
+   T11 conformance vectors + arm64 oracle differential CI (all merged as
+   PR5 = 797a712). NEXT: PR6 = T12 (fuzz/resync/alloc gates) + T13 (public
+   frame API). T12's FIRST item is the deferred decode.go fast-path
+   free-format slice-panic guard (final-review Important, unreachable while
+   internal-only; guard + fuzz-cover it in T12).
 4. Execute task by task with superpowers:subagent-driven-development (a fresh
    implementer subagent per task, then a task review, following the ledger's
    established pattern).

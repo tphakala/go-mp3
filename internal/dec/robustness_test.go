@@ -87,6 +87,39 @@ func TestFastPathFreeFormatQueryMode(t *testing.T) {
 	}
 }
 
+// TestMonoStereoFlagNoPanic pins the intensity/MS-stereo mono guard (l3Decode,
+// decode.go): a malformed single-channel frame carrying a spurious joint-stereo
+// flag must not panic.
+//
+// hdrTestIStereo (scalefactors.go) tests only the I_STEREO mode-extension bit
+// (hdr[3]&0x10); it does not verify the channel mode. A crafted mono frame
+// (mode bits 0b11, hdr[3]&0xC0==0xC0) with that bit set makes the stereo
+// dispatch select intensity stereo, whose l3IntensityStereo reads gr[1] for the
+// MPEG-2 shift bit (stereo.go:193). A mono granule's gr has length 1, so that
+// access panicked ("index out of range [1] with length 1") before the nch==2
+// guard was added. Upstream survives the same input only because its gr_info is
+// a fixed-size C array (gr_info[4]), reading a stale struct instead of
+// overrunning; the Go port's length-nch slice needs the explicit guard. A valid
+// mono stream never signals stereo, so the guard changes no valid output.
+//
+// The input is reachable from the public mp3.NewDecoder().DecodeFrame, hence
+// from pcm.Decoder; Decoder.DecodeFrame here is that same entry point.
+func TestMonoStereoFlagNoPanic(t *testing.T) {
+	// FF FB 38 FF ...: FF FB is the MPEG-1 Layer III sync; byte 3 = FF sets the
+	// channel mode to mono (0b11) and the I_STEREO mode-extension bit (0x10) at
+	// once, the exact combination that steered a mono granule into the
+	// intensity-stereo path.
+	data := []byte("\xff\xfb8\xff\x000A00070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
+
+	d := &Decoder{}
+	pcm := make([]float32, maxSamplesPerFrame)
+	var info FrameInfo
+
+	mustNotPanic(t, "mono frame with spurious stereo flag", func() {
+		d.DecodeFrame(data, pcm, &info)
+	})
+}
+
 // The frame walk here reuses decodeFullStream (conformance_test.go), which
 // mirrors tools/oracle/mp3dump.c:235-249 exactly (advance by info.FrameBytes,
 // append n*channels only when a frame decoded, stop when no progress is

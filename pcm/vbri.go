@@ -75,8 +75,10 @@ func parseVBRI(frame []byte) (*vbriHeader, bool) {
 		return nil, false // a zero-width entry cannot describe a TOC
 	}
 	// The TOC (tocEntries entries, entrySize bytes each) must fit in the frame.
-	tocLen := int(vh.tocEntries) * int(vh.entrySize)
-	if p+tocLen > len(frame) {
+	// Compute in uint64 so the product cannot overflow int on a 32-bit build
+	// (both fields are uint16, so the product can exceed math.MaxInt32).
+	tocLen := uint64(vh.tocEntries) * uint64(vh.entrySize)
+	if uint64(p)+tocLen > uint64(len(frame)) {
 		return nil, false
 	}
 	// Capture the TOC only when each entry fits a uint16 (entrySize 1 or 2).

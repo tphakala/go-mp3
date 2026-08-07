@@ -1,7 +1,9 @@
 package dec
 
-import "os"
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // readFile reads a fixture file's bytes, failing the test on error.
 func readFile(t *testing.T, path string) []byte {

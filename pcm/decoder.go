@@ -88,9 +88,10 @@ type Decoder struct {
 
 	// frameBuf holds raw MP3 bytes read ahead of the decoder but not yet
 	// consumed. The decode loop tops it up toward maxFrameBytes before each
-	// mp3.DecodeFrame call and reslices it forward by the bytes consumed.
-	// Task 6 adds the sliding-window cap and retained-tail resync on top of
-	// this same field.
+	// mp3.DecodeFrame call (fill) and compacts the unconsumed tail forward in
+	// place after each frame (consume), so its backing array is allocated once
+	// and reused. Task 6 adds the sliding-window cap and retained-tail resync
+	// on top of this same field.
 	frameBuf []byte
 	readErr  error // sticky error from filling frameBuf (io.EOF at a clean end)
 
@@ -191,6 +192,17 @@ func (d *Decoder) fill() {
 	}
 }
 
+// consume drops the first n bytes of frameBuf by compacting the unconsumed
+// tail to the front of the same backing array, preserving its full capacity.
+// Reslicing forward instead (frameBuf = frameBuf[n:]) would shrink the
+// capacity below maxFrameBytes, forcing the next fill to re-allocate the whole
+// buffer every frame; compaction keeps the steady-state decode allocation-free
+// and is the same retain-the-tail operation Task 6's resync window needs.
+func (d *Decoder) consume(n int) {
+	remaining := copy(d.frameBuf, d.frameBuf[n:])
+	d.frameBuf = d.frameBuf[:remaining]
+}
+
 // decodeNextFrame advances the stream to the next frame that yields audio,
 // packs its samples into the output buffer, and points pending at them.
 // Valid-but-skippable frames (resync, non-audio, trailing junk) are consumed
@@ -220,7 +232,7 @@ func (d *Decoder) decodeNextFrame() error {
 			return io.EOF
 		}
 
-		d.frameBuf = d.frameBuf[fi.FrameBytes:]
+		d.consume(fi.FrameBytes)
 		if n == 0 {
 			continue // valid-but-skippable frame; keep looking for audio
 		}

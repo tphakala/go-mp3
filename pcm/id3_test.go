@@ -34,6 +34,14 @@ func TestSkipID3v2(t *testing.T) {
 	// footer flag (0x10) adds a second 10-byte trailer after the body.
 	withFooter := append(id3v2Header(0x10, bodyN), make([]byte, bodyN+10+8)...)
 
+	// Multi-group synchsafe sizes exercise the <<7 and <<14 shifts. bodyN above
+	// fits entirely in b[9], so a shift bug (<<8 for <<7, or a b[8]/b[9] byte
+	// swap) would survive it; these two do not.
+	const midBody = 5000  // spans b[8]<<7 and b[9]
+	const bigBody = 20000 // spans b[7]<<14, b[8]<<7 and b[9]
+	withMidBody := append(id3v2Header(0x00, midBody), make([]byte, midBody)...)
+	withBigBody := append(id3v2Header(0x00, bigBody), make([]byte, bigBody)...)
+
 	cases := []struct {
 		name string
 		in   []byte
@@ -44,6 +52,8 @@ func TestSkipID3v2(t *testing.T) {
 		{"empty stream", nil, 0},
 		{"header plus body", withBody, 10 + bodyN},
 		{"footer flag adds ten", withFooter, 10 + bodyN + 10},
+		{"multi-group size", withMidBody, 10 + midBody},
+		{"large multi-group size", withBigBody, 10 + bigBody},
 	}
 
 	for _, tc := range cases {

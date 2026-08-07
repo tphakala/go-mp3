@@ -91,22 +91,46 @@ var streamingTruncatedTailOK = map[string]bool{
 	"l3-nonstandard-compl-sideinfo-size":      true,
 }
 
+// streamingConstructionGap lists ISO vectors where pcm.NewDecoder fails
+// wholesale, before a single sample is emitted, despite the frame API
+// decoding real, oracle-verified audio from those same bytes: a known
+// pcm.Decoder construction-robustness gap, not a missing ground truth.
+//
+// This is NOT the same situation as streamingTruncatedTailOK above: those
+// vectors construct successfully and emit every real frame's audio,
+// erroring only once they reach a genuinely truncated trailing header at
+// EOF. "l3-nonstandard-big-iscf" is short (two decodable frames immediately
+// followed by a truncated third), so NewDecoder's eager first-frame
+// read-ahead (Reset -> decodeNextFrame) reaches that same kind of
+// truncated-final-frame condition WHILE STILL ESTABLISHING the stream: it
+// fails before Info is ever populated and before either of the two real
+// frames' audio (2304 interleaved samples, bit-exact against the pinned
+// oracle per internal/dec's own differential tests) is emitted.
+//
+// The map value is the exact interleaved sample count
+// decodeAllFloat32ViaFrameAPI currently returns for that vector.
+// TestStreamingConformance asserts both halves of the known state
+// (NewDecoder fails with mp3.ErrCorruptStream, and the frame API's count
+// matches the pinned value) before skipping, so a future pcm.Decoder fix to
+// this construction-time handling (tracked as a Task 6 follow-up) makes the
+// assertion fail loudly and forces this entry's removal, rather than this
+// test silently continuing to pass over a closed gap.
+var streamingConstructionGap = map[string]int{
+	"l3-nonstandard-big-iscf": 2304,
+}
+
 // streamingNoAudioSkip lists ISO vectors this decoder's streaming layer
 // correctly refuses to construct a Decoder for (mp3.ErrCorruptStream at
-// NewDecoder, before any Read), each for a specific, verified reason
-// distinct from streamingTruncatedTailOK above: these never produce any
-// usable audio in the first place, on either side.
-//
-// "l3-nonstandard-big-iscf" is the one exception: the reason is not that
-// this decoder is being appropriately strict, but that this vector ships
-// no .pcm reference in the fetched corpus (see internal/dec's
-// psnrSkipVectors, which documents the same gap at the frame-API layer)
-// and its raw frame-API sample count comes from a stream this decoder's
-// own Task 6 hardening does not consider safely decodable; there is
-// nothing here to hold either side to.
-var streamingNoAudioSkip = map[string]string{
-	"l3-nonstandard-big-iscf": "no .pcm reference in the fetched corpus; not a validated ground truth on either side (see internal/dec's psnrSkipVectors)",
-}
+// NewDecoder, before any Read), each for a specific, verified reason: these
+// never produce any usable audio in the first place, on either side, unlike
+// streamingConstructionGap above. It is currently empty: every vector this
+// decoder declines to construct that also has zero frame-API samples (the
+// lone-Xing-tag vectors l3-nonstandard-vbrtag-{empty,noframes,only}, and
+// several others with no decodable frame at all) is already handled by
+// TestStreamingConformance's generic "frame API also finds nothing" skip
+// path, so nothing currently needs an entry here. Kept for the next vector
+// that does.
+var streamingNoAudioSkip = map[string]string{}
 
 // TestStreamingConformance decodes every Layer III ISO conformance vector
 // through pcm.Decoder end-to-end (WithF32, so the comparison is exact
@@ -181,6 +205,19 @@ func checkStreamingConformance(t *testing.T, fx, name string) {
 // frame API disagrees with (a hard failure).
 func skipOrFailConstructionError(t *testing.T, name string, cerr error, frameAPISamples int) {
 	t.Helper()
+	if wantSamples, ok := streamingConstructionGap[name]; ok {
+		if !errors.Is(cerr, mp3.ErrCorruptStream) {
+			t.Fatalf("NewDecoder = %v, want mp3.ErrCorruptStream: the documented construction gap for %s "+
+				"no longer reproduces; remove its streamingConstructionGap entry", cerr, name)
+		}
+		if frameAPISamples != wantSamples {
+			t.Fatalf("frame API found %d samples for %s, want the pinned %d: streamingConstructionGap's "+
+				"count is stale, update or remove the entry", frameAPISamples, name, wantSamples)
+		}
+		t.Skipf("known pcm.Decoder construction-robustness gap (%v): the frame API finds %d real, "+
+			"oracle-verified samples here that NewDecoder currently discards wholesale; tracked as a Task 6 follow-up, not a missing ground truth",
+			cerr, frameAPISamples)
+	}
 	if reason, ok := streamingNoAudioSkip[name]; ok {
 		t.Skipf("streaming construction declined (%v): %s", cerr, reason)
 	}

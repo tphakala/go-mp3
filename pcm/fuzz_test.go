@@ -76,10 +76,29 @@ func FuzzStreamDecode(f *testing.F) {
 	// Seek-index extremes: a negative index (ErrInvalidSeek) and the two
 	// int64 bounds, which must saturate rather than overflow the seek
 	// arithmetic (rawTarget := sampleIndex + gaplessStart, targetFrame :=
-	// rawTarget / spf, and so on in seek.go).
+	// rawTarget / spf, and so on in seek.go). Paired with empty data, these
+	// only reach ErrSeekUnsupported/never construct at all (bytes.Reader over
+	// nothing fails NewDecoder), so they alone never actually run
+	// SeekToSample's clamp/overflow-saturate arithmetic against a live
+	// Decoder in the plain `go test` seed replay; the pairing below with a
+	// real fixture is what exercises it there.
 	f.Add([]byte{}, int64(-1))
 	f.Add([]byte{}, int64(math.MinInt64))
 	f.Add([]byte{}, int64(math.MaxInt64))
+
+	// A real, constructible stream paired with the seek-index extremes, so
+	// SeekToSample's saturate-rather-than-overflow arithmetic runs against a
+	// live Decoder even under plain `go test` (which only replays seeds,
+	// never mutates them): sampleIndex >= 0 and TotalSamples known clamps to
+	// seekToEnd; unknown total instead reaches rawTarget's own overflow
+	// check. sine44s_32.mp3 is a small, tag-less, exact-CBR fixture already
+	// relied on elsewhere in this package (robustness_test.go,
+	// decoder_test.go) for constructing cleanly.
+	if liveStream, ferr := os.ReadFile(filepath.Join("..", "testdata", "fixtures", "sine44s_32.mp3")); ferr == nil {
+		f.Add(bytes.Clone(liveStream), int64(math.MaxInt64))
+		f.Add(bytes.Clone(liveStream), int64(math.MinInt64))
+		f.Add(bytes.Clone(liveStream), int64(-1))
+	}
 
 	f.Fuzz(func(t *testing.T, data []byte, seekIdx int64) {
 		for _, f32 := range [...]bool{false, true} {

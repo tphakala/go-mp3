@@ -100,6 +100,20 @@ type Decoder struct {
 	outBuf    []byte    // reused packed output bytes; pending is a window into it
 	pending   []byte    // decoded output not yet handed to Read/WriteTo
 
+	// xing is the parsed Xing/Info tag from the stream's first frame, or nil
+	// when that frame carried audio instead (or the tag was malformed).
+	// xingChecked marks that the check has already run, so it fires at most
+	// once per Reset, on the very first Layer III frame encountered.
+	xing        *xingHeader
+	xingChecked bool
+
+	// audioStart is the number of bytes skipped before the first frame (the
+	// ID3v2 tag, if any). firstFrameBytes is the FrameBytes of the first
+	// frame emitted as audio. Both feed the CBR duration fallback (Step 3b)
+	// when no Xing tag supplies a frame count.
+	audioStart      int64
+	firstFrameBytes int
+
 	done bool
 	err  error // latched terminal error; cleared only by Reset
 }
@@ -148,20 +162,34 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 	d.done = false
 	d.err = nil
 	d.info = Info{} // cleared up front so a failed Reset leaves no stale metadata
+	d.xing = nil
+	d.xingChecked = false
+	d.audioStart = 0
+	d.firstFrameBytes = 0
 
-	if _, err := skipID3v2(d.br); err != nil {
+	skipped, err := skipID3v2(d.br)
+	if err != nil {
 		d.err = err
 		return d.err
 	}
+	d.audioStart = skipped
 
 	// Eagerly decode the first audio frame so Info() is valid immediately and
-	// its samples are queued for the first Read.
+	// its samples are queued for the first Read. decodeNextFrame checks the
+	// very first Layer III frame for a Xing/Info tag and, if found, skips it
+	// (never emitting its samples) and continues to the first real frame.
 	if err := d.decodeNextFrame(); err != nil {
 		if errors.Is(err, io.EOF) {
 			d.err = fmt.Errorf("%w: no MP3 frame found", mp3.ErrCorruptStream)
 			return d.err
 		}
 		return d.err // decodeNextFrame already latched d.err
+	}
+
+	// No Xing tag frame count to derive TotalSamples from: fall back to a
+	// CBR estimate from the audio byte length, when the source allows it.
+	if d.xing == nil || d.xing.frames == 0 {
+		d.estimateCBRDuration(r)
 	}
 	return nil
 }
@@ -208,6 +236,11 @@ func (d *Decoder) consume(n int) {
 // Valid-but-skippable frames (resync, non-audio, trailing junk) are consumed
 // and skipped. It returns io.EOF at a clean end and latches d.err on a decode
 // error (e.g. an unsupported layer).
+//
+// The very first Layer III frame it sees (per Reset call) is checked for a
+// Xing/Info tag before being consumed. A tag frame is metadata, not audio:
+// applyXing records it and the loop continues to the next frame without ever
+// packing its (meaningless) decoded samples into pending.
 func (d *Decoder) decodeNextFrame() error {
 	if d.done {
 		return io.EOF
@@ -232,6 +265,15 @@ func (d *Decoder) decodeNextFrame() error {
 			return io.EOF
 		}
 
+		if !d.xingChecked && fi.Layer == 3 {
+			d.xingChecked = true
+			if xh, ok := parseXing(d.frameBuf[:fi.FrameBytes], fi.SampleRate, fi.Channels); ok {
+				d.applyXing(xh, fi.SampleRate)
+				d.consume(fi.FrameBytes)
+				continue // tag frame: metadata only, never emitted as audio
+			}
+		}
+
 		d.consume(fi.FrameBytes)
 		if n == 0 {
 			continue // valid-but-skippable frame; keep looking for audio
@@ -240,10 +282,62 @@ func (d *Decoder) decodeNextFrame() error {
 			// First audio frame establishes the stream configuration.
 			d.info.SampleRate = fi.SampleRate
 			d.info.Channels = fi.Channels
+			d.firstFrameBytes = fi.FrameBytes
 		}
 		d.packOutput(n * fi.Channels)
 		return nil
 	}
+}
+
+// applyXing records a detected Xing/Info tag's metadata and, when its frame
+// count is present, derives TotalSamples from it. The frame count includes
+// the tag frame itself, so subtracting one leaves the count of real audio
+// frames that follow. When the flag is absent (or present but zero),
+// TotalSamples is left for Reset's CBR fallback.
+func (d *Decoder) applyXing(xh *xingHeader, sampleRate int) {
+	d.xing = xh
+	if xh.frames == 0 {
+		return
+	}
+	d.info.TotalSamples = uint64(xh.frames-1) * uint64(samplesPerFrame(sampleRate))
+}
+
+// estimateCBRDuration fills Info.TotalSamples from the audio byte length
+// when no Xing tag supplied a frame count. It requires the original source r
+// to be an io.Seeker; anything else leaves TotalSamples at 0 (unknowable
+// without a full scan). It assumes CBR: the first audio frame's byte size
+// divides evenly into the rest of the stream.
+//
+// The probe seeks r to measure its length and then restores r's exact prior
+// read position, so it does not disturb decoding: bufio and frameBuf already
+// hold everything read so far, and reading resumes from precisely where r
+// was left.
+func (d *Decoder) estimateCBRDuration(r io.Reader) {
+	seeker, ok := r.(io.Seeker)
+	if !ok || d.firstFrameBytes <= 0 {
+		return
+	}
+	cur, err := seeker.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return
+	}
+	end, err := seeker.Seek(0, io.SeekEnd)
+	if err != nil {
+		return
+	}
+	if _, err := seeker.Seek(cur, io.SeekStart); err != nil {
+		return
+	}
+
+	audioBytes := end - d.audioStart
+	if audioBytes <= 0 {
+		return
+	}
+	frames := audioBytes / int64(d.firstFrameBytes)
+	if frames <= 0 {
+		return
+	}
+	d.info.TotalSamples = uint64(frames) * uint64(samplesPerFrame(d.info.SampleRate))
 }
 
 // packOutput quantizes the first ns interleaved samples of sampleBuf to S16

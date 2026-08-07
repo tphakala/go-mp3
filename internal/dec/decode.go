@@ -110,6 +110,24 @@ func (d *Decoder) DecodeFrame(mp3 []byte, pcm []float32, info *FrameInfo) int {
 		return int(hdrFrameSamples(hdr))
 	}
 
+	if frameSize < hdrSize {
+		// The fast path can size a repeat frame below the 4-byte header when a
+		// crafted or free-format stream leaves free_format_bytes < HDR_SIZE (see
+		// findFrame, which latches free_format_bytes = k - padding, as low as 3):
+		// frameSize = hdrFrameBytes(mp3, freeFormatBytes) + hdrPadding(mp3) then
+		// undershoots hdrSize, and mp3[i+hdrSize:i+frameSize] would invert its
+		// bounds and panic. Upstream never panics here: bs_init takes a negative
+		// limit (frame_size - HDR_SIZE) and get_bits, which advances pos before
+		// checking it, returns 0 for every read so L3_read_side_info trips the
+		// bs_frame->pos > bs_frame->limit overrun and returns 0 after mp3dec_init
+		// (tools/oracle/minimp3.h:1753,1762-1766). Match that observable outcome
+		// without the negative-limit dance: no samples, info.FrameBytes already
+		// advanced (i+frameSize, set above) so the caller still makes progress,
+		// and header[0] cleared via initState so the next call resyncs.
+		d.initState()
+		return 0
+	}
+
 	bsData := mp3[i+hdrSize : i+frameSize]
 	bsFrame := bits.NewReader(bsData)
 	if hdrIsCRC(hdr) {

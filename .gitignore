@@ -7,6 +7,7 @@ testdata/vectors/
 testdata/corpus/
 tools/oracle/build/
 tools/oracle/dumps/
+tools/oracle/mutated/
 
 # Build artifacts
 /bin/

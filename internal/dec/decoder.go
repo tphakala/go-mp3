@@ -86,3 +86,12 @@ func (d *Decoder) reset() {
 	d.header = [4]byte{}
 	d.freeFormatBytes = 0
 }
+
+// Reset clears all persistent decoder state (overlap memory, filterbank
+// state, bit reservoir, and cached header), so the next DecodeFrame call
+// resyncs from scratch exactly as a freshly constructed Decoder would. It is
+// exported for package mp3's public Decoder.Reset, which cannot call the
+// unexported reset from outside this package.
+func (d *Decoder) Reset() {
+	d.reset()
+}

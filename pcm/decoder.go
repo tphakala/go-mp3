@@ -34,6 +34,11 @@ const (
 	// readerBufSize backs the bufio.Reader; large enough that the 10-byte
 	// ID3v2 and 4-byte frame-header peeks never hit bufio.ErrBufferFull.
 	readerBufSize = 1 << 16
+	// maxZeroReads bounds a run of (0, nil) reads inside fill. io.Reader
+	// permits "nothing happened" returns, and a reader stuck returning them
+	// would otherwise spin fill forever; after this many in a row fill gives
+	// up on the current top-up (a later fill retries the reader).
+	maxZeroReads = 100
 )
 
 // Info describes the decoded stream. SampleRate and Channels are populated at
@@ -107,10 +112,16 @@ type Decoder struct {
 	xing        *xingHeader
 	xingChecked bool
 
-	// audioStart is the number of bytes skipped before the first frame (the
-	// ID3v2 tag, if any). firstFrameBytes is the FrameBytes of the first
-	// frame emitted as audio. Both feed the CBR duration fallback (Step 3b)
-	// when no Xing tag supplies a frame count.
+	// initialOffset is the source's absolute byte position when Reset ran,
+	// captured before any read when the source is an io.Seeker (0 otherwise).
+	// audioStart is the absolute offset where the first real audio frame
+	// begins: initialOffset plus the ID3v2 tag and any consumed Xing/Info tag
+	// frame. firstFrameBytes is the FrameBytes of the first frame emitted as
+	// audio. All three feed the CBR duration fallback (Step 3b) when no Xing
+	// tag supplies a frame count; anchoring on initialOffset makes the byte
+	// span correct for a pre-positioned file or an io.SectionReader, not just
+	// a source that starts at 0.
+	initialOffset   int64
 	audioStart      int64
 	firstFrameBytes int
 
@@ -164,15 +175,26 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 	d.info = Info{} // cleared up front so a failed Reset leaves no stale metadata
 	d.xing = nil
 	d.xingChecked = false
+	d.initialOffset = 0
 	d.audioStart = 0
 	d.firstFrameBytes = 0
+
+	// Anchor the CBR byte-span accounting on the source's true starting
+	// position, captured before any read, so a pre-positioned file or an
+	// io.SectionReader is measured correctly. A SectionReader reports 0 here
+	// (its offsets are relative to the section), which is exactly right.
+	if seeker, ok := r.(io.Seeker); ok {
+		if cur, serr := seeker.Seek(0, io.SeekCurrent); serr == nil {
+			d.initialOffset = cur
+		}
+	}
 
 	skipped, err := skipID3v2(d.br)
 	if err != nil {
 		d.err = err
 		return d.err
 	}
-	d.audioStart = skipped
+	d.audioStart = d.initialOffset + skipped
 
 	// Eagerly decode the first audio frame so Info() is valid immediately and
 	// its samples are queued for the first Read. decodeNextFrame checks the
@@ -210,6 +232,7 @@ func (d *Decoder) fill() {
 		copy(grown, d.frameBuf)
 		d.frameBuf = grown
 	}
+	zeroReads := 0
 	for len(d.frameBuf) < maxFrameBytes {
 		n, err := d.br.Read(d.frameBuf[len(d.frameBuf):maxFrameBytes])
 		d.frameBuf = d.frameBuf[:len(d.frameBuf)+n]
@@ -217,6 +240,18 @@ func (d *Decoder) fill() {
 			d.readErr = err
 			return
 		}
+		if n == 0 {
+			// A (0, nil) read made no progress. Bound a run of them so a
+			// pathological reader cannot spin this loop forever; bail without
+			// inventing a readErr, leaving frameBuf as-is for decodeNextFrame
+			// to handle and the next fill to retry the reader.
+			zeroReads++
+			if zeroReads >= maxZeroReads {
+				return
+			}
+			continue
+		}
+		zeroReads = 0
 	}
 }
 
@@ -229,6 +264,20 @@ func (d *Decoder) fill() {
 func (d *Decoder) consume(n int) {
 	remaining := copy(d.frameBuf, d.frameBuf[n:])
 	d.frameBuf = d.frameBuf[:remaining]
+}
+
+// finish reports the terminal outcome once no further frames can be produced
+// from the buffered bytes. A source that failed mid-stream (a read error other
+// than a clean io.EOF) surfaces that error, latched, so a genuine I/O failure
+// is never silently reported as a clean end. A clean exhaustion marks the
+// decoder done and returns io.EOF.
+func (d *Decoder) finish() error {
+	if d.readErr != nil && !errors.Is(d.readErr, io.EOF) {
+		d.err = d.readErr
+		return d.err
+	}
+	d.done = true
+	return io.EOF
 }
 
 // decodeNextFrame advances the stream to the next frame that yields audio,
@@ -248,8 +297,7 @@ func (d *Decoder) decodeNextFrame() error {
 	for {
 		d.fill()
 		if len(d.frameBuf) == 0 {
-			d.done = true
-			return io.EOF // reader exhausted, nothing buffered
+			return d.finish() // reader exhausted, nothing buffered
 		}
 
 		n, fi, err := d.dec.DecodeFrame(d.frameBuf, d.sampleBuf)
@@ -258,17 +306,20 @@ func (d *Decoder) decodeNextFrame() error {
 			return d.err
 		}
 		if fi.FrameBytes == 0 {
-			// No progress possible from the buffered bytes. With a full window
-			// this means the tail is a partial/garbage frame at end of input;
-			// treat it as a clean end rather than spinning.
-			d.done = true
-			return io.EOF
+			// No progress possible from the buffered bytes: with a full window
+			// this is a partial/garbage frame at end of input. finish surfaces
+			// a mid-stream read failure here too, rather than reporting the
+			// truncated tail of a failed source as a clean end.
+			return d.finish()
 		}
 
 		if !d.xingChecked && fi.Layer == 3 {
 			d.xingChecked = true
 			if xh, ok := parseXing(d.frameBuf[:fi.FrameBytes], fi.SampleRate, fi.Channels); ok {
 				d.applyXing(xh, fi.SampleRate)
+				// The tag frame is not audio: exclude its bytes from the CBR
+				// audio-byte span so the Step-3b estimate does not count it.
+				d.audioStart += int64(fi.FrameBytes)
 				d.consume(fi.FrameBytes)
 				continue // tag frame: metadata only, never emitted as audio
 			}
@@ -306,10 +357,17 @@ func (d *Decoder) applyXing(xh *xingHeader, sampleRate int) {
 }
 
 // estimateCBRDuration fills Info.TotalSamples from the audio byte length
-// when no Xing tag supplied a frame count. It requires the original source r
-// to be an io.Seeker; anything else leaves TotalSamples at 0 (unknowable
-// without a full scan). It assumes CBR: the first audio frame's byte size
-// divides evenly into the rest of the stream.
+// when no Xing/VBRI tag supplied a frame count. It requires the original
+// source r to be an io.Seeker; anything else leaves TotalSamples at 0
+// (unknowable without a full scan).
+//
+// This is a CBR ESTIMATE: it assumes every audio frame is the same size as
+// the first, so the audio byte span divides evenly by firstFrameBytes into a
+// frame count. That holds for CBR streams and is only a guess for VBR without
+// a tag; it is used solely as the fallback when no usable frame count exists.
+// The span is end minus audioStart, and audioStart is the absolute offset of
+// the first audio frame (initialOffset + ID3v2 + any Xing tag frame), so the
+// estimate is correct even when the source did not start at byte 0.
 //
 // The probe seeks r to measure its length and then restores r's exact prior
 // read position, so it does not disturb decoding: bufio and frameBuf already

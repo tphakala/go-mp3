@@ -392,3 +392,165 @@ func TestDecoderCBRDurationNoTag(t *testing.T) {
 		t.Error("ReadAll returned no bytes after the CBR duration probe; reader position not restored?")
 	}
 }
+
+// errBoom is a sentinel non-EOF read failure, used to prove a mid-stream I/O
+// error is surfaced rather than masked as a clean io.EOF.
+var errBoom = errors.New("boom: simulated mid-stream read failure")
+
+// truncatingErrorReader delivers the first `good` bytes of data, then returns
+// errBoom on every later read: a source that fails part way through.
+type truncatingErrorReader struct {
+	data []byte
+	good int
+	pos  int
+}
+
+func (r *truncatingErrorReader) Read(p []byte) (int, error) {
+	if r.pos >= r.good {
+		return 0, errBoom
+	}
+	n := copy(p, r.data[r.pos:r.good])
+	r.pos += n
+	return n, nil
+}
+
+// zeroForeverReader always returns (0, nil): the pathological no-progress case
+// io.Reader permits but discourages.
+type zeroForeverReader struct{}
+
+func (zeroForeverReader) Read([]byte) (int, error) { return 0, nil }
+
+// stallingReader returns (0, nil) on every stallEvery-th call and otherwise
+// delivers up to chunk bytes from r, modelling a source that intermittently
+// reports "nothing right now" without blocking or erroring.
+type stallingReader struct {
+	r          io.Reader
+	chunk      int
+	stallEvery int
+	calls      int
+}
+
+func (s *stallingReader) Read(p []byte) (int, error) {
+	s.calls++
+	if s.stallEvery > 0 && s.calls%s.stallEvery == 0 {
+		return 0, nil
+	}
+	if s.chunk > 0 && len(p) > s.chunk {
+		p = p[:s.chunk]
+	}
+	return s.r.Read(p)
+}
+
+// TestDecoderSurfacesMidStreamReadError checks that a non-EOF read failure part
+// way through the stream is surfaced, not reported as a clean end: the buffered
+// audio decodes first, then the error appears (and latches).
+func TestDecoderSurfacesMidStreamReadError(t *testing.T) {
+	raw := readFixture(t, sine48mono128)
+	// 6000 bytes covers the Info tag frame plus several audio frames (so some
+	// audio decodes) and is far short of the file, so the failure is genuinely
+	// mid-stream, leaving a partial trailing frame in the buffer.
+	r := &truncatingErrorReader{data: raw, good: 6000}
+
+	d, err := NewDecoder(r)
+	if err != nil {
+		t.Fatalf("NewDecoder: %v (the first audio frame is within the good bytes)", err)
+	}
+
+	got, err := io.ReadAll(d)
+	if len(got) == 0 {
+		t.Error("no audio decoded before the failure; the buffered frames should be emitted first")
+	}
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("ReadAll error = %v, want errBoom (a mid-stream failure must not read as io.EOF)", err)
+	}
+	if errors.Is(err, io.EOF) {
+		t.Fatal("mid-stream failure surfaced as io.EOF")
+	}
+
+	// The error latches: it repeats on the next Read rather than flipping to
+	// io.EOF.
+	var scratch [16]byte
+	if _, err := d.Read(scratch[:]); !errors.Is(err, errBoom) {
+		t.Fatalf("latched error on the next Read = %v, want errBoom", err)
+	}
+}
+
+// TestFillNoProgressGuardDoesNotHang checks that a reader stuck returning
+// (0, nil) forever cannot hang the decoder: construction returns (with an
+// error) within the guard's bound instead of spinning.
+func TestFillNoProgressGuardDoesNotHang(t *testing.T) {
+	errc := make(chan error, 1)
+	go func() {
+		_, err := NewDecoder(zeroForeverReader{})
+		errc <- err
+	}()
+
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Error("NewDecoder over a (0,nil)-forever reader returned nil error, want a failure")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("NewDecoder hung on a (0,nil)-forever reader (no-progress guard missing?)")
+	}
+}
+
+// TestDecoderToleratesIntermittentZeroReads checks that occasional (0, nil)
+// reads do not corrupt or truncate the decode: a stall every other read, in
+// small chunks so the stalls actually reach fill, still yields byte-identical
+// output to a clean decode.
+func TestDecoderToleratesIntermittentZeroReads(t *testing.T) {
+	raw := readFixture(t, sine48mono128)
+	want := decodeAllBytes(t, bytes.NewReader(raw))
+
+	sr := &stallingReader{r: bytes.NewReader(raw), chunk: 64, stallEvery: 2}
+	d, err := NewDecoder(sr)
+	if err != nil {
+		t.Fatalf("NewDecoder over an intermittently stalling reader: %v", err)
+	}
+	got, err := io.ReadAll(d)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("intermittent-stall decode differs from clean decode (%d vs %d bytes)", len(got), len(want))
+	}
+}
+
+// TestDecoderCBRDurationInitialOffset checks that the CBR estimate anchors on
+// the source's true start, so a non-zero initial offset is not counted as
+// audio. sine44s_32.mp3 is the tag-less exact-CBR fixture (58 frames * 576
+// samples) used by TestDecoderCBRDurationNoTag.
+func TestDecoderCBRDurationInitialOffset(t *testing.T) {
+	raw := readFixture(t, fixturesDir+"/sine44s_32.mp3")
+	const wantSamples = uint64(58) * 576
+	const prefix = 1000
+
+	t.Run("pre-positioned seeker", func(t *testing.T) {
+		full := append(make([]byte, prefix), raw...)
+		rs := bytes.NewReader(full)
+		if _, err := rs.Seek(prefix, io.SeekStart); err != nil {
+			t.Fatalf("seek: %v", err)
+		}
+		d, err := NewDecoder(rs)
+		if err != nil {
+			t.Fatalf("NewDecoder: %v", err)
+		}
+		if got := d.Info().TotalSamples; got != wantSamples {
+			t.Errorf("TotalSamples = %d, want %d (the %d-byte initial offset must be excluded from the audio span)",
+				got, wantSamples, prefix)
+		}
+	})
+
+	t.Run("section reader", func(t *testing.T) {
+		full := append(make([]byte, prefix), raw...)
+		sr := io.NewSectionReader(bytes.NewReader(full), prefix, int64(len(raw)))
+		d, err := NewDecoder(sr)
+		if err != nil {
+			t.Fatalf("NewDecoder: %v", err)
+		}
+		if got := d.Info().TotalSamples; got != wantSamples {
+			t.Errorf("TotalSamples = %d, want %d (the section base must not inflate the audio span)", got, wantSamples)
+		}
+	})
+}

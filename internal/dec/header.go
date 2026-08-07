@@ -133,7 +133,7 @@ func hdrPadding(h []byte) int {
 // exactly as upstream's hdr pointer is already advanced to that position.
 func matchFrame(hdr []byte, frameBytes int) bool {
 	pos := 0
-	for nmatch := 0; nmatch < maxFrameSyncMatches; nmatch++ {
+	for nmatch := range maxFrameSyncMatches {
 		pos += hdrFrameBytes(hdr[pos:], frameBytes) + hdrPadding(hdr[pos:])
 		if pos+hdrSize > len(hdr) {
 			return nmatch > 0
@@ -148,25 +148,26 @@ func matchFrame(hdr []byte, frameBytes int) bool {
 // findFrame mirrors mp3d_find_frame. Upstream takes (mp3, mp3_bytes,
 // free_format_bytes, ptr_frame_bytes); the Go port drops mp3_bytes since
 // len(mp3) carries it.
-func findFrame(mp3 []byte, freeFormatBytes *int, ptrFrameBytes *int) int {
+func findFrame(mp3 []byte, freeFormatBytes, ptrFrameBytes *int) int {
 	mp3Bytes := len(mp3)
-	for i := 0; i < mp3Bytes-hdrSize; i++ {
+	for i := range mp3Bytes - hdrSize {
 		h := mp3[i:]
 		if hdrValid(h) {
 			frameBytes := hdrFrameBytes(h, *freeFormatBytes)
 			frameAndPadding := frameBytes + hdrPadding(h)
 
 			for k := hdrSize; frameBytes == 0 && k < maxFreeFormatFrameSize && i+2*k < mp3Bytes-hdrSize; k++ {
-				if hdrCompare(h, h[k:]) {
-					fb := k - hdrPadding(h)
-					nextfb := fb + hdrPadding(h[k:])
-					if i+k+nextfb+hdrSize > mp3Bytes || !hdrCompare(h, h[k+nextfb:]) {
-						continue
-					}
-					frameAndPadding = k
-					frameBytes = fb
-					*freeFormatBytes = fb
+				if !hdrCompare(h, h[k:]) {
+					continue
 				}
+				fb := k - hdrPadding(h)
+				nextfb := fb + hdrPadding(h[k:])
+				if i+k+nextfb+hdrSize > mp3Bytes || !hdrCompare(h, h[k+nextfb:]) {
+					continue
+				}
+				frameAndPadding = k
+				frameBytes = fb
+				*freeFormatBytes = fb
 			}
 			if (frameBytes != 0 && i+frameAndPadding <= mp3Bytes && matchFrame(h, frameBytes)) ||
 				(i == 0 && frameAndPadding == mp3Bytes) {

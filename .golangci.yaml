@@ -1,0 +1,74 @@
+# Shared tphakala linting standard, matching go-flac / go-aac / go-wav so the
+# codec libraries lint identically. go-mp3 notes:
+#   - no depguard math boundary yet: add one (like go-aac fences internal/fmath)
+#     once the decoder DSP settles into internal/fmath-style packages
+#   - gocritic's ruleguard is wired to rules/*.go for modern-Go patterns
+#   - modernize stays disabled: it panics on Go 1.26 + atomic types in
+#     golangci-lint v2.11.4 (known bug)
+version: "2"
+output:
+  sort-order:
+    - linter
+    - severity
+    - file
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - dupl
+    - durationcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - fatcontext
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - iface
+    - ineffassign
+    - misspell
+    - nilerr
+    - nilnil
+    - predeclared
+    - prealloc
+    - revive
+    - staticcheck
+    - testifylint
+    - thelper
+    - unconvert
+    - wastedassign
+  disable:
+    - unused
+  settings:
+    gocognit:
+      min-complexity: 50
+    gocritic:
+      # gocritic auto-enables the ruleguard check when settings.ruleguard.rules
+      # is set; the rules/*.go matchers carry the //go:build ruleguard tag so
+      # the normal toolchain ignores them.
+      disabled-checks:
+        - commentFormatting
+        - commentedOutCode
+      enabled-tags:
+        - style
+        - diagnostic
+        - performance
+      settings:
+        ruleguard:
+          rules: "rules/*.go"
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: true
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: true
+    exhaustive:
+      default-signifies-exhaustive: true
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: true
+  new: false

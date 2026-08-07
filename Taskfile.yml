@@ -7,10 +7,14 @@ tasks:
     cmds: [go vet ./...]
   test:
     cmds: [go test ./...]
+  lint:
+    desc: Run golangci-lint (same config as go-flac/go-aac/go-wav)
+    cmds: [golangci-lint run ./...]
   check:
     cmds:
       - task: build
       - task: vet
+      - task: lint
       - task: test
   oracle:build:
     dir: tools/oracle

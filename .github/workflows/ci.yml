@@ -1,17 +1,49 @@
 name: CI
 on:
-  push: {branches: [main]}
+  push:
+    branches: [main]
   pull_request:
+
+env:
+  GO_VERSION: '1.26'
+  # Pinned to match the local toolchain (golangci-lint 2.12.2) so git hooks,
+  # `task lint`, and CI all run the identical linter version.
+  GOLANGCI_LINT_VERSION: 'v2.12.2'
+
+permissions:
+  contents: read
+
 jobs:
   test:
-    strategy:
-      matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    name: Test
     runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # amd64 and arm64 both run: the arm64 leg is the FMA / float-parity
+        # gate for the ported DSP (Go may fuse a*b+c on arm64).
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: {go-version: '1.26'}
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}

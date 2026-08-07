@@ -114,32 +114,79 @@ func TestDecodeFrameEmptyInput(t *testing.T) {
 	}
 }
 
-// TestDecoderResetByteIdentity: Reset between decoding two files must
-// produce output identical to using two fresh Decoders, mirroring go-aac's
-// TestEncoderResetByteIdentity convention.
-func TestDecoderResetByteIdentity(t *testing.T) {
-	data, err := os.ReadFile(sine48m128Fixture)
+// TestDecodeFrameSteadyStateAllocs mirrors internal/dec's
+// TestDecodeSteadyStateAllocs at the public surface: DecodeFrame must not
+// allocate per call in steady state, since Decoder wraps a dec.Decoder that
+// keeps all persistent state as caller-owned fields (see decoder.go). A
+// warmup call primes the fast-path header cache so the measured runs take
+// the steady-state path.
+func TestDecodeFrameSteadyStateAllocs(t *testing.T) {
+	data, err := os.ReadFile("testdata/fixtures/sine44s_128.mp3")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	fresh := mp3.NewDecoder()
-	want, _ := decodeAll(t, fresh, data)
+	d := mp3.NewDecoder()
+	pcm := make([]float32, 1152*2)
 
-	// Prime reused with a full decode so it carries stream state, then
-	// reset it and decode the same file again.
-	reused := mp3.NewDecoder()
-	decodeAll(t, reused, data)
-	reused.Reset()
-
-	got, _ := decodeAll(t, reused, data)
-
-	if len(got) != len(want) {
-		t.Fatalf("post-Reset decode length = %d, want %d", len(got), len(want))
+	if _, _, err := d.DecodeFrame(data, pcm); err != nil { // warmup: prime the fast-path header cache
+		t.Fatalf("warmup DecodeFrame: %v", err)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("post-Reset decode differs at sample %d: got %v, want %v", i, got[i], want[i])
+
+	avg := testing.AllocsPerRun(50, func() {
+		if _, _, err := d.DecodeFrame(data, pcm); err != nil {
+			t.Fatalf("DecodeFrame: %v", err)
 		}
+	})
+	if avg != 0 {
+		t.Fatalf("steady-state allocs = %v, want 0", avg)
+	}
+}
+
+// TestDecoderResetByteIdentity: Reset between decoding two files must
+// produce output identical to using two fresh Decoders, mirroring go-aac's
+// TestEncoderResetByteIdentity convention.
+//
+// The free-format case exercises the Reset()-clears-freeFormatBytes path
+// airtight: a free-format stream latches a sticky per-stream frame size in
+// Decoder.freeFormatBytes (see internal/dec), so a Reset that failed to
+// clear it would carry the first stream's size into the second decode and
+// desync it.
+func TestDecoderResetByteIdentity(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"cbr", sine48m128Fixture},
+		{"freeFormat", "testdata/fixtures/sine44s_free168.mp3"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			fresh := mp3.NewDecoder()
+			want, _ := decodeAll(t, fresh, data)
+
+			// Prime reused with a full decode so it carries stream state, then
+			// reset it and decode the same file again.
+			reused := mp3.NewDecoder()
+			decodeAll(t, reused, data)
+			reused.Reset()
+
+			got, _ := decodeAll(t, reused, data)
+
+			if len(got) != len(want) {
+				t.Fatalf("post-Reset decode length = %d, want %d", len(got), len(want))
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("post-Reset decode differs at sample %d: got %v, want %v", i, got[i], want[i])
+				}
+			}
+		})
 	}
 }

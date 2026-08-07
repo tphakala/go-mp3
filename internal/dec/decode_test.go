@@ -65,7 +65,8 @@ func compareBitExact(t *testing.T, fx string, got, want []float32) {
 // replayFixtures) and byte-compares the concatenated float32 PCM against the
 // oracle's pcm.f32le.
 //
-// The loop replicates tools/oracle/mp3dump.c:233-249 exactly, which is what
+// The frame-advance loop is decodeAllFrames (conformance_test.go), which
+// replicates tools/oracle/mp3dump.c:233-249 exactly, the same code that
 // produced pcm.f32le and is therefore the gate's own reference: advance by
 // info.FrameBytes (which already includes FrameOffset upstream, so adding
 // FrameOffset again would desync), append only when the decoder returned
@@ -79,21 +80,7 @@ func TestFullStreamMatchesOracle(t *testing.T) {
 		data := readFile(t, fx)
 
 		d := NewDecoder()
-		pcm := make([]float32, maxSamplesPerFrame)
-		var info FrameInfo
-		var got []float32
-
-		pos := 0
-		for pos < len(data) {
-			n := d.DecodeFrame(data[pos:], pcm, &info)
-			if n > 0 {
-				got = append(got, pcm[:n*info.Channels]...)
-			}
-			if info.FrameBytes <= 0 {
-				break
-			}
-			pos += info.FrameBytes
-		}
+		got := decodeAllFrames(d, data, nil)
 
 		compareBitExact(t, fx, got, want)
 	}

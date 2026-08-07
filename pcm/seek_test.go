@@ -22,6 +22,19 @@ const (
 	sine44s32 = fixturesDir + "/sine44s_32.mp3"
 )
 
+// seekFraction names a fractional position in a stream for the seek tests.
+type seekFraction struct {
+	name     string
+	num, den int64
+}
+
+// seekFractions are the fractional seek targets the seek tests share.
+var seekFractions = []seekFraction{
+	{"quarter", 1, 4},
+	{"midpoint", 1, 2},
+	{"three-quarter", 3, 4},
+}
+
 // readAllFloat32 decodes the whole seekable stream at path with WithF32 and
 // returns the playable (gapless-trimmed) samples plus the stream's channel
 // count and per-channel total. It is the ground truth a post-seek decode is
@@ -56,14 +69,7 @@ func TestSeekToSampleWithTOC(t *testing.T) {
 				t.Fatalf("%s has no known TotalSamples; the seek test needs one", fixture)
 			}
 
-			for _, tc := range []struct {
-				name     string
-				num, den int64
-			}{
-				{"quarter", 1, 4},
-				{"midpoint", 1, 2},
-				{"three-quarter", 3, 4},
-			} {
+			for _, tc := range seekFractions {
 				t.Run(tc.name, func(t *testing.T) {
 					target := total * tc.num / tc.den
 
@@ -121,14 +127,7 @@ func TestSeekAfterLeadingGarbage(t *testing.T) {
 	stream = append(stream, garbage...)
 	stream = append(stream, raw...)
 
-	for _, tc := range []struct {
-		name     string
-		num, den int64
-	}{
-		{"quarter", 1, 4},
-		{"midpoint", 1, 2},
-		{"three-quarter", 3, 4},
-	} {
+	for _, tc := range seekFractions {
 		t.Run(tc.name, func(t *testing.T) {
 			target := total * tc.num / tc.den
 
@@ -159,6 +158,78 @@ func TestSeekAfterLeadingGarbage(t *testing.T) {
 				if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
 					t.Fatalf("post-seek sample %d bits %#x, want %#x", i, math.Float32bits(got[i]), math.Float32bits(want[i]))
 				}
+			}
+		})
+	}
+}
+
+// TestSeekAfterLeadingGarbageZeroFirstFrame covers the case the raw-fixture test
+// above misses: the first confirmed post-garbage frame decodes with n == 0.
+// plainCBRFrames strips the fixture's own frame 0, so the first remaining frame
+// is reservoir-dependent and yields no samples; with leading garbage, its
+// fi.FrameOffset (the garbage length) must still be folded into audioStart before
+// the n == 0 skip consumes it, or audioStart stays 0 (pointing into the garbage),
+// TotalSamples is inflated, and SeekToSample latches "undecodable frame header".
+//
+// It cannot assert "bit-exact vs decode-from-start-and-slice" the way the raw
+// test does: a leading n == 0 frame makes the CBR TotalSamples (which counts that
+// frame) exceed the emitted sample count, so SeekToSample's frame index is offset
+// by one frame from the sliced timeline even on a clean decode (a pre-existing
+// limitation, orthogonal to this fix). Instead it asserts the garbage stream is
+// indistinguishable from the clean one: identical TotalSamples and identical seek
+// landing and output, which isolates exactly the leading-garbage handling.
+func TestSeekAfterLeadingGarbageZeroFirstFrame(t *testing.T) {
+	base := plainCBRFrames(t, sine44s32)
+
+	clean, err := NewDecoder(bytes.NewReader(base))
+	if err != nil {
+		t.Fatalf("NewDecoder(clean): %v", err)
+	}
+	total := int64(clean.Info().TotalSamples)
+	if total == 0 {
+		t.Fatalf("plainCBRFrames(%s) has no TotalSamples", sine44s32)
+	}
+
+	garbage := make([]byte, 1000) // zero bytes: no frame sync anywhere
+	stream := make([]byte, 0, len(garbage)+len(base))
+	stream = append(stream, garbage...)
+	stream = append(stream, base...)
+
+	garb, err := NewDecoder(bytes.NewReader(stream))
+	if err != nil {
+		t.Fatalf("NewDecoder(garbage): %v", err)
+	}
+	if got := int64(garb.Info().TotalSamples); got != total {
+		t.Fatalf("TotalSamples with leading garbage + n==0 first frame = %d, want %d (garbage not excluded)", got, total)
+	}
+
+	seekRead := func(src []byte, target int64) (int64, []byte) {
+		t.Helper()
+		d, err := NewDecoder(bytes.NewReader(src), WithF32())
+		if err != nil {
+			t.Fatalf("NewDecoder(WithF32): %v", err)
+		}
+		landed, err := d.SeekToSample(target)
+		if err != nil {
+			t.Fatalf("SeekToSample(%d): %v", target, err)
+		}
+		out, err := io.ReadAll(d)
+		if err != nil {
+			t.Fatalf("ReadAll after seek: %v", err)
+		}
+		return landed, out
+	}
+
+	for _, tc := range seekFractions {
+		t.Run(tc.name, func(t *testing.T) {
+			target := total * tc.num / tc.den
+			wantLanded, wantOut := seekRead(base, target)
+			gotLanded, gotOut := seekRead(stream, target)
+			if gotLanded != wantLanded {
+				t.Fatalf("seek landed = %d, want %d (clean-stream landing)", gotLanded, wantLanded)
+			}
+			if !bytes.Equal(gotOut, wantOut) {
+				t.Fatalf("post-seek output differs from clean stream: got %d bytes, want %d", len(gotOut), len(wantOut))
 			}
 		})
 	}
@@ -278,15 +349,15 @@ func buildVBRITagFrame(header []byte, flen, frames int) []byte {
 		binary.BigEndian.PutUint32(buf[p:], v)
 		p += 4
 	}
-	be16(1)                    // version
-	be16(0)                    // delay
-	be16(0)                    // quality
-	be32(uint32(flen))         // bytes (unused by exclusion)
-	be32(uint32(frames))       // frames
-	be16(0)                    // tocEntries (empty TOC)
-	be16(1)                    // tocScale
-	be16(2)                    // entrySize (must be non-zero)
-	be16(1)                    // entryFrames
+	be16(1)              // version
+	be16(0)              // delay
+	be16(0)              // quality
+	be32(uint32(flen))   // bytes (unused by exclusion)
+	be32(uint32(frames)) // frames
+	be16(0)              // tocEntries (empty TOC)
+	be16(1)              // tocScale
+	be16(2)              // entrySize (must be non-zero)
+	be16(1)              // entryFrames
 	return buf
 }
 

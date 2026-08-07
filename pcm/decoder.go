@@ -183,6 +183,12 @@ type Decoder struct {
 	audioStart      int64
 	firstFrameBytes int
 
+	// firstFrameSeen marks that the first confirmed (non-tag) frame has been
+	// accounted for, so audioStart and firstFrameBytes are captured from it
+	// exactly once, whether or not it yielded samples (a reservoir-dependent
+	// first frame decodes with n == 0). See decodeNextFrame.
+	firstFrameSeen bool
+
 	// src is the raw source retained from Reset so SeekToSample can re-seek it
 	// (bufio.Reader alone cannot). seekable records whether src implements
 	// io.Seeker; SeekToSample returns ErrSeekUnsupported when it does not.
@@ -249,6 +255,7 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 	d.initialOffset = 0
 	d.audioStart = 0
 	d.firstFrameBytes = 0
+	d.firstFrameSeen = false
 
 	// Anchor the CBR byte-span accounting on the source's true starting
 	// position, captured before any read, so a pre-positioned file or an
@@ -442,6 +449,26 @@ func (d *Decoder) decodeNextFrame() error {
 			}
 		}
 
+		// Account for the first confirmed (non-tag) frame exactly once, BEFORE the
+		// n == 0 skip below consumes it. fi.FrameOffset is the leading garbage
+		// DecodeFrame skipped to resync onto this frame, and fi.FrameBytes -
+		// fi.FrameOffset is the frame's own size (a valid CBR divisor). audioStart
+		// must point at this frame's start so the T4 seek header-walk begins on a
+		// real sync word, not in the garbage where frameLength fails. This must run
+		// here, not in the SampleRate block, because a reservoir-dependent first
+		// frame decodes with n == 0 (common when frame 0 was stripped, or right
+		// after a resync): the n == 0 continue would otherwise consume it and drop
+		// its offset before SampleRate is ever established, leaving audioStart in
+		// the garbage. Such a frame still counts as a frame in the stream, so
+		// audioStart points at it and later frames are contiguous (FrameOffset ==
+		// 0). Tag frames continue above; normal streams have FrameOffset == 0, so
+		// both updates are no-ops.
+		if !d.firstFrameSeen {
+			d.firstFrameSeen = true
+			d.audioStart += int64(fi.FrameOffset)
+			d.firstFrameBytes = fi.FrameBytes - fi.FrameOffset
+		}
+
 		d.consume(fi.FrameBytes)
 		if n == 0 {
 			continue // valid-but-skippable frame; keep looking for audio
@@ -450,17 +477,6 @@ func (d *Decoder) decodeNextFrame() error {
 			// First audio frame establishes the stream configuration.
 			d.info.SampleRate = fi.SampleRate
 			d.info.Channels = fi.Channels
-			// fi.FrameBytes and fi.FrameOffset both count any leading garbage
-			// DecodeFrame skipped to resync onto this first frame. audioStart must
-			// point at the frame itself (so the T4 seek header-walk starts on a real
-			// sync word, not in the garbage, where frameLength would fail), and
-			// firstFrameBytes is the frame's own size so the CBR span
-			// (end - audioStart) and its divisor stay in the same units. The
-			// tag-frame branches above already fold FrameOffset into audioStart via
-			// FrameBytes; this is the tag-less counterpart and fires once, here, so
-			// nothing is double-counted.
-			d.audioStart += int64(fi.FrameOffset)
-			d.firstFrameBytes = fi.FrameBytes - fi.FrameOffset
 		}
 
 		// Place this frame in the raw (pre-trim) per-channel timeline and

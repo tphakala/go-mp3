@@ -10,12 +10,13 @@ import (
 )
 
 // ErrSeekUnsupported is returned by SeekToSample when the source does not
-// implement io.Seeker. It is a capability error: the decoder is left usable.
-var ErrSeekUnsupported = errors.New("go-mp3: seek unsupported")
+// implement io.Seeker, or cannot be positioned by a frame-header walk (a
+// free-format stream). It is a capability error: the decoder is left usable.
+var ErrSeekUnsupported = errors.New("go-mp3/pcm: seek unsupported")
 
 // ErrInvalidSeek is returned by SeekToSample for a negative sample index. It is
 // an argument error: the decoder is left usable.
-var ErrInvalidSeek = errors.New("go-mp3: invalid seek")
+var ErrInvalidSeek = errors.New("go-mp3/pcm: invalid seek")
 
 // seekPrimeFrames is the number of frames decoded and discarded ahead of the
 // landing frame so its samples come out bit-exact. A frame's main_data can live
@@ -33,13 +34,16 @@ const seekPrimeFrames = 16
 // success. Seeking to or past the known total lands at the stream end and
 // returns the total (the next read is io.EOF).
 //
-// It requires the source to implement io.Seeker; otherwise it returns
-// ErrSeekUnsupported. A negative index returns ErrInvalidSeek. Those two are
-// argument/capability errors that touch no state and leave the decoder usable.
-// Any other mid-seek failure (a Seek or read error, or an undecodable frame at
-// the landing offset) latches sticky, so a later Read returns it rather than
-// resuming from an indeterminate position; a subsequent successful seek clears
-// it.
+// It returns ErrSeekUnsupported when the source is not an io.Seeker, or when the
+// stream cannot be positioned by the frame-header walk (a free-format stream,
+// whose frames carry no size in their headers). A negative index returns
+// ErrInvalidSeek. Both are argument/capability errors that leave the decoder
+// usable. A trailing non-frame header met after at least one real frame (an
+// ID3v1 tag or junk past the last audio frame) is treated like the stream end,
+// landing there rather than failing. Any other mid-seek failure (a Seek or read
+// error, or a landing frame that decodes to no samples) latches sticky, so a
+// later Read returns it rather than resuming from an indeterminate position; a
+// subsequent successful seek clears it.
 //
 // Landing is exact rather than merely frame-accurate: SeekToSample recovers the
 // target frame's exact index by an inexpensive frame-header walk from the first
@@ -68,6 +72,15 @@ func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
 	// already satisfied at the landing sample.
 	spf := int64(samplesPerFrame(d.info.SampleRate))
 	rawTarget := sampleIndex + int64(d.gaplessStart) //nolint:gosec // G115: gaplessStart is the small LAME delay.
+	if rawTarget < sampleIndex {
+		// int64 overflow: sampleIndex plus the (small) gapless delay wrapped past
+		// math.MaxInt64. Only an unknown length (TotalSamples == 0) reaches here
+		// for such an index, since a known length clamps above. Saturate rather
+		// than let a negative rawTarget drive a negative slice index during
+		// priming: targetFrame is then huge-positive, the frame walk runs to EOF,
+		// and the !reached branch lands at the true end.
+		rawTarget = math.MaxInt64
+	}
 	targetFrame := rawTarget / spf
 	intra := rawTarget % spf
 	primeFrame := targetFrame - seekPrimeFrames
@@ -75,8 +88,23 @@ func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
 		primeFrame = 0
 	}
 
+	// Capture the source position so the non-poisoning ErrSeekUnsupported return
+	// below can restore it: frameOffsets seeks the raw source directly, and
+	// leaving it moved would desync the bufio reader for the reads that follow a
+	// failed seek. The normal (reached) path rebinds via reseek, so it needs no
+	// restore.
+	seeker, _ := d.src.(io.Seeker) // guaranteed by the d.seekable check above
+	srcPos, _ := seeker.Seek(0, io.SeekCurrent)
+
 	primeOff, avail, reached, err := d.frameOffsets(primeFrame, targetFrame)
 	if err != nil {
+		if errors.Is(err, ErrSeekUnsupported) {
+			// A free-format stream cannot be header-walked. Leave the decoder
+			// usable rather than latching: restore the source and return the
+			// capability error, exactly like the non-seekable pre-flight check.
+			_, _ = seeker.Seek(srcPos, io.SeekStart)
+			return 0, err
+		}
 		return d.seekFailed(err)
 	}
 	if !reached {
@@ -129,7 +157,18 @@ func (d *Decoder) frameOffsets(prime, target int64) (primeOff, avail int64, reac
 		}
 		length, lok := frameLength(hdr[:])
 		if !lok {
-			return 0, i, false, fmt.Errorf("go-mp3/pcm: seek: undecodable frame header at offset %d", pos)
+			if i == 0 {
+				// The very first audio frame cannot be sized from its header (a
+				// free-format stream, whose bitrate index frameLength cannot size).
+				// This stream is not seekable by header walk: report a
+				// non-poisoning capability error rather than latching d.err.
+				return 0, 0, false, ErrSeekUnsupported
+			}
+			// i > 0: at least one real frame was already walked, so this is a
+			// non-frame header past the last audio frame (an ID3v1 "TAG" trailer or
+			// trailing junk). Treat it like EOF and land at the stream end, mirroring
+			// the streaming path's tolerance of trailing junk as a clean end.
+			return primeOff, i, false, nil
 		}
 		pos += int64(length)
 	}
@@ -202,7 +241,7 @@ func (d *Decoder) primeAndLand(primeFrame, targetFrame, intra, spf int64) (int64
 		return 0, err
 	}
 	if n == 0 {
-		return 0, fmt.Errorf("go-mp3/pcm: seek: landing frame at %d produced no samples", targetFrame)
+		return 0, fmt.Errorf("%w: seek landing frame at %d produced no samples", mp3.ErrCorruptStream, targetFrame)
 	}
 
 	frameStart := targetFrame * spf

@@ -38,7 +38,7 @@ func plainCBRFrames(t *testing.T, path string) []byte {
 // by zero-filled fields. It carries no frame sync word, so a decoder must treat
 // it as a clean end, not audio and not a truncated frame.
 func id3v1Tag() []byte {
-	tag := make([]byte, 128)
+	tag := make([]byte, id3v1Size)
 	copy(tag, "TAG")
 	return tag
 }
@@ -146,27 +146,53 @@ func TestStreamingResyncBudget(t *testing.T) {
 // TestStreamingResyncDiscardAndRetain drives the discard-and-retain branch that
 // TestStreamingLeadingGarbage (1000 bytes) never reaches: more than
 // resyncWindowBytes of leading garbage, so a full resync window is all garbage
-// and its head is discarded while a frame-sized tail is retained. The first real
-// frame is positioned near a window's end so it is unconfirmable there and is
-// carried across the discard boundary in the retained tail, then confirmed and
-// decoded in the next window. The recovered audio must be bit-exact to a clean
-// decode, proving nothing is lost across the discard.
+// and its head is discarded while a frame-sized tail is retained. The garbage
+// length is derived so the first real frame's header lands in the unconfirmable
+// tail of a resync window (its body plus the following header overruns the
+// window, so DecodeFrame cannot confirm it in place). The retained tail must
+// carry that header across the discard boundary to the next window, where it is
+// confirmed and decoded. The recovered audio must be bit-exact to a clean
+// decode.
+//
+// What this pins: the discard-and-retain path preserves a boundary-straddling
+// frame. Dropping the retained tail (retaining nothing) makes the resync skip
+// past that frame and corrupts the output, and this test goes RED for that
+// regression (verified by mutation: discard := len(d.frameBuf)).
+//
+// What this does NOT pin: the exact size of the retained tail. With a fixed-size
+// CBR fixture, retaining maxFrameBytes vs maxFrameBytes+frameHeaderSize, and
+// over-retaining (discard := resyncRetainBytes), are all byte-identical here:
+// the frame header never lands in the last frameHeaderSize bytes of a window,
+// and over-retaining only keeps a superset. Pinning the exact hdrSize margin
+// needs a near-maxFrameBytes free-format frame straddling a 4-byte gap, which no
+// current fixture provides; that discrimination is a T7/fuzz carry-forward.
 func TestStreamingResyncDiscardAndRetain(t *testing.T) {
 	raw := plainCBRFrames(t, fixturesDir+"/sine44s_32.mp3")
 	clean := decodeAllBytes(t, bytes.NewReader(raw))
 
-	// 29800 > resyncWindowBytes (16384) and < resyncBudgetBytes (131072): the
-	// first real frame lands past the first window (a full-garbage discard) and,
-	// with 144-byte frames, near the second window's end so its header sits in
-	// the retained tail rather than being confirmable in place.
-	garbage := make([]byte, 29800)
+	frameLen, ok := frameLength(raw)
+	if !ok {
+		t.Fatalf("first frame header not decodable")
+	}
+	// Land the first real frame's header inside the unconfirmable tail of the
+	// second resync window. Windows the resync advances over end at multiples of
+	// resyncWindowBytes, and a header within a frame length of a window's end
+	// cannot be confirmed in place; half a frame in keeps a margin on both sides
+	// of that tail. This straddles the discard boundary, so only a retained tail
+	// carries it across.
+	garbageLen := 2*resyncWindowBytes - frameLen/2
+	if garbageLen <= resyncWindowBytes || garbageLen >= resyncBudgetBytes {
+		t.Fatalf("derived garbage length %d outside the resync window/budget range", garbageLen)
+	}
+	garbage := make([]byte, garbageLen)
 	stream := make([]byte, 0, len(garbage)+len(raw))
 	stream = append(stream, garbage...)
 	stream = append(stream, raw...)
 
 	got := decodeAllBytes(t, bytes.NewReader(stream))
 	if !bytes.Equal(got, clean) {
-		t.Fatalf("audio after >16KiB garbage differs from clean decode: got %d bytes, want %d", len(got), len(clean))
+		t.Fatalf("audio after %d bytes of garbage differs from clean decode: got %d bytes, want %d",
+			garbageLen, len(got), len(clean))
 	}
 }
 
@@ -195,7 +221,7 @@ func TestStreamingTruncatedFrameAtEOF(t *testing.T) {
 // not a truncated frame: the decode must end cleanly (no ErrCorruptStream).
 func TestStreamingTrailingID3v1Clean(t *testing.T) {
 	plain := plainCBRFrames(t, fixturesDir+"/sine44s_128.mp3")
-	stream := make([]byte, 0, len(plain)+128)
+	stream := make([]byte, 0, len(plain)+id3v1Size)
 	stream = append(stream, plain...)
 	stream = append(stream, id3v1Tag()...)
 
@@ -222,7 +248,7 @@ func TestStreamingID3v1TrailerDuration(t *testing.T) {
 	// mis-counted 128-byte trailer crosses into the next frame.
 	base := plain[:len(plain)-len(plain)%flen-1]
 
-	stream := make([]byte, 0, len(base)+128)
+	stream := make([]byte, 0, len(base)+id3v1Size)
 	stream = append(stream, base...)
 	stream = append(stream, id3v1Tag()...)
 

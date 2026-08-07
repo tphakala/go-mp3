@@ -20,6 +20,10 @@ const (
 	// sine44s32 is a tag-less CBR stream, 16 kHz (MPEG2) stereo, 144-byte
 	// frames and no gapless trim.
 	sine44s32 = fixturesDir + "/sine44s_32.mp3"
+	// sine44sFree is a free-format stream (Xing/LAME tag, but audio frames carry
+	// no bitrate index) at 44.1 kHz stereo. Its frames cannot be sized from their
+	// headers, so the seek frame-header walk cannot position it.
+	sine44sFree = fixturesDir + "/sine44s_free168.mp3"
 )
 
 // seekFraction names a fractional position in a stream for the seek tests.
@@ -297,6 +301,161 @@ func TestSeekNegative(t *testing.T) {
 	}
 }
 
+// TestSeekOverflowSaturates models the one state that reaches the rawTarget
+// addition with the length clamp bypassed: a stream with a real LAME encoder
+// delay (gaplessStart > 0) whose total length could not be determined
+// (TotalSamples == 0, here because the source refuses SeekEnd so the CBR probe
+// fails). Seeking math.MaxInt64 then computes sampleIndex + gaplessStart, which
+// overflows int64 to a negative rawTarget; without the saturation guard that
+// negative target drives a negative slice index panic during priming. The guard
+// must saturate instead, so the frame walk runs to EOF and the seek lands at the
+// true stream end.
+//
+// gaplessStart and the unknown length are forced here (white-box) because the
+// only stream that reaches this state naturally is a LAME-delay stream whose
+// Xing tag omits the frame count and whose length cannot be probed; no fixture
+// carries that combination.
+func TestSeekOverflowSaturates(t *testing.T) {
+	raw := readFixture(t, sine44s32) // tagless CBR, header-walkable, 58 frames
+	full, ch, _ := readAllFloat32(t, bytes.NewReader(raw))
+	const forcedDelay = 576
+
+	d, err := NewDecoder(noLenSeeker{bytes.NewReader(raw)})
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	if d.info.TotalSamples != 0 {
+		t.Fatalf("precondition: TotalSamples = %d, want 0 (unknown length)", d.info.TotalSamples)
+	}
+	d.gaplessStart = forcedDelay // model a LAME head delay on an unknown-length stream
+
+	landed, err := d.SeekToSample(math.MaxInt64)
+	if err != nil {
+		t.Fatalf("SeekToSample(MaxInt64): %v", err)
+	}
+	wantEnd := int64(len(full)/ch) - forcedDelay // true end, less the forced head delay
+	if landed != wantEnd {
+		t.Fatalf("landed = %d, want %d (the true stream end)", landed, wantEnd)
+	}
+	var scratch [16]byte
+	if n, rerr := d.Read(scratch[:]); n != 0 || !errors.Is(rerr, io.EOF) {
+		t.Fatalf("post-seek Read = (%d, %v), want (0, io.EOF)", n, rerr)
+	}
+}
+
+// TestSeekFreeFormatUnsupported seeks a free-format stream, whose frames carry
+// no bitrate index and so cannot be sized by the frame-header walk. The walk
+// fails on the very first audio frame, which SeekToSample must report as the
+// non-poisoning ErrSeekUnsupported (a capability error, like a non-seekable
+// source) rather than latching a sticky error. The decoder must stay fully
+// usable: a full decode after the failed seek matches a clean decode.
+func TestSeekFreeFormatUnsupported(t *testing.T) {
+	raw := readFixture(t, sine44sFree)
+	want := decodeAllBytes(t, bytes.NewReader(raw))
+
+	d, err := NewDecoder(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	total := int64(d.Info().TotalSamples)
+	if total == 0 {
+		t.Fatalf("%s has no TotalSamples; the target cannot be kept below the clamp", sine44sFree)
+	}
+	// A target below the known total so the length clamp does not short-circuit
+	// the walk; the walk itself must then fail on the free-format first frame.
+	if _, err := d.SeekToSample(total / 2); !errors.Is(err, ErrSeekUnsupported) {
+		t.Fatalf("SeekToSample on a free-format stream = %v, want ErrSeekUnsupported", err)
+	}
+	got, err := readAllFromDecoder(d)
+	if err != nil {
+		t.Fatalf("Read after ErrSeekUnsupported: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("decode after failed seek differs from clean decode: got %d bytes, want %d", len(got), len(want))
+	}
+}
+
+// TestSeekTrailerLandsAtEnd exercises the i>0 branch of the header walk: after
+// walking at least one real frame it meets a non-frame header (an ID3v1 "TAG"
+// trailer past the last audio frame). That is treated like EOF, so the seek
+// lands at the stream end rather than latching an undecodable-header error. The
+// stream length is made unknown (the source refuses SeekEnd, so no clamp) and
+// the target is large, driving the walk off the end of the audio into the
+// trailer.
+func TestSeekTrailerLandsAtEnd(t *testing.T) {
+	raw := readFixture(t, sine44s32) // tagless CBR, 58 frames, no gapless trim
+	full, ch, _ := readAllFloat32(t, bytes.NewReader(raw))
+	trueEnd := int64(len(full) / ch)
+
+	stream := make([]byte, 0, len(raw)+id3v1Size)
+	stream = append(stream, raw...)
+	stream = append(stream, id3v1Tag()...)
+
+	d, err := NewDecoder(noLenSeeker{bytes.NewReader(stream)})
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	if d.info.TotalSamples != 0 {
+		t.Fatalf("precondition: TotalSamples = %d, want 0 (unknown length, no clamp)", d.info.TotalSamples)
+	}
+	// A target well past the audio so the walk steps off the last frame and meets
+	// the "TAG" trailer, which is not a frame header.
+	landed, err := d.SeekToSample(trueEnd * 4)
+	if err != nil {
+		t.Fatalf("SeekToSample past end with trailer: %v", err)
+	}
+	if landed != trueEnd {
+		t.Fatalf("landed = %d, want %d (the stream end)", landed, trueEnd)
+	}
+	var scratch [16]byte
+	if n, rerr := d.Read(scratch[:]); n != 0 || !errors.Is(rerr, io.EOF) {
+		t.Fatalf("post-seek Read = (%d, %v), want (0, io.EOF)", n, rerr)
+	}
+}
+
+// TestSeekMidFailureLatchesAndClears drives the sticky-error contract of
+// SeekToSample: a mid-seek failure that is neither a capability nor an argument
+// error (here a source that fails a Seek during the frame-header walk) latches
+// d.err, so a later Read returns that same error; a subsequent successful seek
+// then clears it and normal reads resume. A corrupt frame header no longer
+// triggers this path (it now lands at end), so the failure is injected at the
+// source instead.
+func TestSeekMidFailureLatchesAndClears(t *testing.T) {
+	raw := readFixture(t, sine44s32)
+	_, _, total := readAllFloat32(t, bytes.NewReader(raw))
+	if total == 0 {
+		t.Fatalf("%s has no TotalSamples", sine44s32)
+	}
+
+	gate := &gateSeeker{rs: bytes.NewReader(raw)}
+	d, err := NewDecoder(gate)
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+
+	// Fail the frame-header walk's seeks with a non-EOF error so SeekToSample
+	// latches it. The target stays below total so the length clamp does not
+	// short-circuit the walk.
+	gate.fail = true
+	if _, err := d.SeekToSample(total / 2); !errors.Is(err, errInjectedSeek) {
+		t.Fatalf("SeekToSample with injected seek failure = %v, want errInjectedSeek", err)
+	}
+	// The error is sticky: a later Read returns it, not a clean decode.
+	var scratch [64]byte
+	if _, err := d.Read(scratch[:]); !errors.Is(err, errInjectedSeek) {
+		t.Fatalf("Read after latched seek failure = %v, want errInjectedSeek", err)
+	}
+
+	// A subsequent successful seek clears the latch and reads resume.
+	gate.fail = false
+	if _, err := d.SeekToSample(total / 4); err != nil {
+		t.Fatalf("recovery SeekToSample: %v", err)
+	}
+	if n, err := d.Read(scratch[:]); n == 0 || err != nil {
+		t.Fatalf("Read after recovery = (%d, %v), want data and no error", n, err)
+	}
+}
+
 // TestDecoderExcludesVBRITagFrame prepends a synthetic Fraunhofer VBRI tag
 // frame to a tag-less audio stream and asserts pcm.Decoder treats it as
 // metadata, never emitting its samples: the decoded audio must equal decoding
@@ -367,6 +526,40 @@ type readerOnly struct{ r io.Reader }
 
 func (ro readerOnly) Read(p []byte) (int, error) { return ro.r.Read(p) }
 
+// noLenSeeker is seekable for repositioning but refuses SeekEnd, so a decoder on
+// it cannot probe the stream length and leaves TotalSamples at 0. That bypasses
+// SeekToSample's length clamp and exercises the header-walk-to-end paths.
+type noLenSeeker struct{ *bytes.Reader }
+
+func (n noLenSeeker) Seek(offset int64, whence int) (int64, error) {
+	if whence == io.SeekEnd {
+		return 0, errors.New("pcm_test: seek end unsupported")
+	}
+	return n.Reader.Seek(offset, whence)
+}
+
+// errInjectedSeek is the sentinel a gateSeeker returns while armed, so the
+// sticky-latch test can match it with errors.Is.
+var errInjectedSeek = errors.New("pcm_test: injected seek failure")
+
+// gateSeeker wraps a ReadSeeker and, while fail is set, returns errInjectedSeek
+// from every Seek. It lets a test inject a mid-seek failure and then clear it,
+// to verify SeekToSample's sticky-error latch and its recovery on a later
+// successful seek.
+type gateSeeker struct {
+	rs   io.ReadSeeker
+	fail bool
+}
+
+func (g *gateSeeker) Read(p []byte) (int, error) { return g.rs.Read(p) }
+
+func (g *gateSeeker) Seek(offset int64, whence int) (int64, error) {
+	if g.fail {
+		return 0, errInjectedSeek
+	}
+	return g.rs.Seek(offset, whence)
+}
+
 // mustOpen opens a fixture file (an io.ReadSeeker) and closes it at test end.
 func mustOpen(t *testing.T, path string) *os.File {
 	t.Helper()
@@ -374,6 +567,10 @@ func mustOpen(t *testing.T, path string) *os.File {
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
 	}
-	t.Cleanup(func() { _ = f.Close() })
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close %s: %v", path, err)
+		}
+	})
 	return f
 }

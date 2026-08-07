@@ -151,7 +151,8 @@ type Decoder struct {
 	// once per Reset, on the very first Layer III frame encountered. vbri is the
 	// Fraunhofer VBRI tag parsed from that same first frame when it was not a
 	// Xing/Info tag; like xing it is metadata, never emitted as audio, and it
-	// supplies the frame count and seek TOC for a VBRI-tagged stream.
+	// supplies the frame count for a VBRI-tagged stream. (SeekToSample lands via
+	// the frameOffsets header walk and never reads the VBRI TOC.)
 	xing        *xingHeader
 	vbri        *vbriHeader
 	xingChecked bool
@@ -546,7 +547,7 @@ func (d *Decoder) handleNoFrame(window, skipped int) (newWindow, newSkipped int,
 		return window, skipped, true, nil
 	}
 	if errors.Is(d.readErr, io.EOF) && truncatedFrame(d.frameBuf) {
-		d.err = wrapTruncation(io.ErrUnexpectedEOF)
+		d.err = wrapTruncation()
 		return window, skipped, false, d.err
 	}
 	d.frameBuf = d.frameBuf[:0]
@@ -568,15 +569,12 @@ func truncatedFrame(buf []byte) bool {
 	return false
 }
 
-// wrapTruncation maps an unexpected end of input to mp3.ErrCorruptStream and
-// passes any other error through unchanged, mirroring go-aac's helper of the
-// same name: a stream that ends inside a frame it promised is corrupt, while a
-// genuine I/O failure keeps its own identity.
-func wrapTruncation(err error) error {
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return fmt.Errorf("%w: truncated frame at end of stream", mp3.ErrCorruptStream)
-	}
-	return err
+// wrapTruncation reports a stream that ends inside a frame it promised as
+// mp3.ErrCorruptStream. It is only ever called at a confirmed truncation (the
+// io.EOF branch of handleNoFrame), so it takes no argument: the outcome is
+// always the corrupt-stream sentinel wrapping a fixed message.
+func wrapTruncation() error {
+	return fmt.Errorf("%w: truncated frame at end of stream", mp3.ErrCorruptStream)
 }
 
 // applyXing records a detected Xing/Info tag's metadata and, when its frame
@@ -656,40 +654,49 @@ func (d *Decoder) applyLAME(delay, padding int) {
 // the first, so the audio byte span divides evenly by firstFrameBytes into a
 // frame count. That holds for CBR streams and is only a guess for VBR without
 // a tag; it is used solely as the fallback when no usable frame count exists.
-// The span is end minus audioStart, and audioStart is the absolute offset of
-// the first audio frame (initialOffset + ID3v2 + any Xing tag frame), so the
-// estimate is correct even when the source did not start at byte 0.
+// The span excludes non-audio bytes at both ends: it is end, less any trailing
+// ID3v1 tag, minus audioStart, where audioStart is the absolute offset of the
+// first audio frame past the ID3v2 header, any Xing/VBRI tag frame, and any
+// leading garbage skipped to resync. So the estimate is correct even when the
+// source did not start at byte 0 and even with metadata wrapped around the
+// audio.
 //
 // The probe seeks r to measure its length and then restores r's exact prior
 // read position, so it does not disturb decoding: bufio and frameBuf already
 // hold everything read so far, and reading resumes from precisely where r
 // was left.
 func (d *Decoder) estimateCBRDuration(r io.Reader) {
-	seeker, ok := r.(io.Seeker)
+	// r is typed io.Reader, so implementing io.Seeker is equivalent to
+	// implementing io.ReadSeeker; assert the latter once and reuse it for both
+	// the length probe and the ID3v1 trailer read.
+	rs, ok := r.(io.ReadSeeker)
 	if !ok || d.firstFrameBytes <= 0 || d.info.TotalSamples != 0 {
 		// A VBRI (or any) tag may already have supplied the length; never let the
 		// CBR estimate overwrite a total derived from a real frame count.
 		return
 	}
-	cur, err := seeker.Seek(0, io.SeekCurrent)
+	cur, err := rs.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return
 	}
-	end, err := seeker.Seek(0, io.SeekEnd)
+	end, err := rs.Seek(0, io.SeekEnd)
 	if err != nil {
 		return
 	}
 	// A trailing 128-byte ID3v1 tag is metadata, not audio; exclude it so the
 	// CBR frame count is not inflated by roughly one frame. The probe reads at
 	// end-128 and the SeekStart below restores the read position regardless.
-	var trailer int64
-	if rs, ok := r.(io.ReadSeeker); ok {
-		trailer = id3v1TrailerBytes(rs, end)
-	}
-	if _, err := seeker.Seek(cur, io.SeekStart); err != nil {
+	trailer := id3v1TrailerBytes(rs, end)
+	if _, err := rs.Seek(cur, io.SeekStart); err != nil {
 		return
 	}
 
+	// A false-positive "TAG" match on a very short file (the last 128 bytes are
+	// real audio that happens to start with "TAG") must not zero out the span.
+	// Only exclude the trailer when audio still remains after doing so.
+	if end-trailer <= d.audioStart {
+		trailer = 0
+	}
 	audioBytes := end - trailer - d.audioStart
 	if audioBytes <= 0 {
 		return

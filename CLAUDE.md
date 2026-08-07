@@ -91,9 +91,13 @@ vectors, robustness gates, and the public API.**
   pushed. The SDD ledger under `.superpowers/` is likewise local only.
 - ISO conformance vectors are never committed; fetch scripts only.
 - Bit-exactness discipline for all ported DSP code: follow the plan's Global
-  Constraints (FMA blocking on arm64 via the two-statement `t := a*b; t + c`
-  form, C double-promotion matching, upstream operation order). The oracle
-  builds with `-ffp-contract=off`, so the arm64 anti-fusion discipline is
-  load-bearing.
+  Constraints (FMA blocking on arm64, C double-promotion matching, upstream
+  operation order). The oracle builds with `-ffp-contract=off`, so the arm64
+  anti-fusion discipline is load-bearing. IMPORTANT: block FMA fusion with an
+  explicit `float32(a*b)` conversion on any product feeding a `+`/`-`; a bare
+  two-statement local (`t := a*b; t + c`) does NOT block fusion in Go 1.26
+  (the compiler fuses across statements, verified via `GOARCH=arm64 go build
+  -gcflags=-S`). amd64 default `GOAMD64=v1` has no FMA instruction, so fusion
+  bugs are invisible there and only the arm64 differential (CI) catches them.
 - Peer review partner: agy (Gemini 3.1 Pro High for design and code review,
   Flash for research); review every phase plan before executing it.

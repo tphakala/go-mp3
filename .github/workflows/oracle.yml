@@ -1,0 +1,45 @@
+name: Oracle
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  GO_VERSION: '1.26'
+
+permissions:
+  contents: read
+
+jobs:
+  differential:
+    name: Oracle differential
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # amd64 and arm64 both run: the arm64 leg is the FMA / float-parity
+        # gate for the ported DSP (Go may fuse a*b+c on arm64). Any
+        # arm64-only failure here is a fusion site to fix, not a vector to
+        # skip.
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: sudo apt-get install -y lame ffmpeg
+      - run: scripts/fetch-vectors.sh
+      - run: tools/oracle/build.sh
+      - run: tools/oracle/dump-all.sh
+      - run: go test ./... -run 'Oracle|Conformance' -v
+        env:
+          # This is the one job that builds and dumps the oracle, so it is
+          # the one place a missing dump must fail loudly instead of
+          # skipping quietly: without this, a drifted dump path or an
+          # empty dump-all.sh run would make every subtest t.Skip and the
+          # job would go green on the arm64 FMA-parity leg this workflow
+          # exists to guarantee. dumps_test.go and decode_test.go both
+          # document this contract already; this is where it is enforced.
+          MP3_REQUIRE_DUMPS: '1'

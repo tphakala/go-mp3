@@ -26,3 +26,10 @@ tasks:
     cmds: [scripts/gen-fixtures.sh]
   vectors:
     cmds: [scripts/fetch-vectors.sh]
+  diff:
+    desc: Fetch ISO vectors, build and dump the oracle, run the oracle and conformance differential tests
+    cmds:
+      - task: vectors
+      - task: oracle:build
+      - task: oracle:dump
+      - go test ./internal/dec/ -run 'Oracle|Conformance'

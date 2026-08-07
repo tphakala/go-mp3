@@ -41,7 +41,16 @@ func l3Pow43(x int) float32 {
 
 	sign := 2 * x & 64
 	frac := float32((x&63)-sign) / float32((x&^63)+sign)
-	return pow43Table[16+((x+sign)>>6)] * (1 + frac*(fourThirds+frac*twoNinths)) * float32(mult)
+	// float32() on each product feeding a + forces a rounding barrier that
+	// blocks arm64 FMA fusion (a bare local assignment does not; the Go
+	// compiler fuses across statements). This preserves the pin's exact order
+	// (minimp3 L3_pow_43: g_pow43[...]*(1.f + frac*(4.f/3 + frac*(2.f/9)))*mult):
+	// frac*twoNinths rounds, then adds fourThirds; frac*inner rounds, then
+	// adds 1; the outer g_pow43[...] * outer * mult is a pure multiply chain
+	// that does not fuse and needs no wrap.
+	inner := fourThirds + float32(frac*twoNinths)
+	outer := 1 + float32(frac*inner)
+	return pow43Table[16+((x+sign)>>6)] * outer * float32(mult)
 }
 
 // peekBits returns bs's next n bits (n in [0,24]) without advancing its

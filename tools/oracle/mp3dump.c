@@ -80,6 +80,15 @@ static FILE *stage_file(const char *stage)
         fprintf(stderr, "mp3dump: too many dump stages (max %d)\n", MP3DUMP_MAX_STAGES);
         exit(1);
     }
+    if (strlen(stage) > MP3DUMP_STAGE_NAME_MAX)
+    {
+        /* The lookup key is the full name but the table stores a truncated
+           copy, so two names sharing a prefix would collide into one file and
+           corrupt the trace. Reject instead of truncating, like every other
+           overflow in this file. */
+        fprintf(stderr, "mp3dump: stage name too long (max %d): %s\n", MP3DUMP_STAGE_NAME_MAX, stage);
+        exit(1);
+    }
     char path[4096];
     int n = snprintf(path, sizeof(path), "%s/%s.dump", g_outdir, stage);
     if (n < 0 || (size_t)n >= sizeof(path))
@@ -99,36 +108,51 @@ static FILE *stage_file(const char *stage)
     return g_stages[g_stage_count++].f;
 }
 
+/* Aborts on a short write. This harness is the oracle: a truncated dump caused
+   by a full disk or an I/O error would otherwise surface downstream as a false
+   decoder mismatch, sending debugging in the wrong direction. */
+static void checked_fwrite(const void *p, size_t size, size_t nmemb, FILE *f, const char *what)
+{
+    if (nmemb > 0 && fwrite(p, size, nmemb, f) != nmemb)
+    {
+        fprintf(stderr, "mp3dump: write to %s failed: %s\n", what, strerror(errno));
+        exit(1);
+    }
+}
+
 /* Writes one record: tag, count, then count*4 bytes of payload. The host is
    assumed little-endian (x86_64 and arm64, the only build targets), so the
    native uint32_t/float layout already matches the on-disk format. */
-static void write_record(FILE *f, uint32_t tag, uint32_t count, const void *payload)
+static void write_record(FILE *f, const char *stage, uint32_t tag, uint32_t count, const void *payload)
 {
     uint32_t hdr[2];
     hdr[0] = tag;
     hdr[1] = count;
-    fwrite(hdr, sizeof(uint32_t), 2, f);
-    if (count > 0)
-    {
-        fwrite(payload, sizeof(uint32_t), count, f);
-    }
+    checked_fwrite(hdr, sizeof(uint32_t), 2, f, stage);
+    checked_fwrite(payload, sizeof(uint32_t), count, f, stage);
 }
 
 void mp3dump_f32(const char *stage, uint32_t tag, const float *p, uint32_t n)
 {
-    write_record(stage_file(stage), tag, n, p);
+    write_record(stage_file(stage), stage, tag, n, p);
 }
 
 void mp3dump_i32(const char *stage, uint32_t tag, const int32_t *p, uint32_t n)
 {
-    write_record(stage_file(stage), tag, n, p);
+    write_record(stage_file(stage), stage, tag, n, p);
 }
 
 void mp3dump_close(void)
 {
     for (int i = 0; i < g_stage_count; i++)
     {
-        fclose(g_stages[i].f);
+        /* Buffered data is flushed here, so a write error can surface only at
+           close; treat it as fatal like any other write failure. */
+        if (fclose(g_stages[i].f) != 0)
+        {
+            fprintf(stderr, "mp3dump: closing stage %s failed: %s\n", g_stages[i].name, strerror(errno));
+            exit(1);
+        }
     }
     g_stage_count = 0;
 }
@@ -209,7 +233,7 @@ int main(int argc, char **argv)
         int samples = mp3dec_decode_frame(&dec, pos, (int)remaining, pcm, &info);
         if (samples > 0)
         {
-            fwrite(pcm, sizeof(float), (size_t)samples * (size_t)info.channels, pcmf);
+            checked_fwrite(pcm, sizeof(pcm[0]), (size_t)samples * (size_t)info.channels, pcmf, "pcm.f32le");
         }
         if (info.frame_bytes <= 0)
         {
@@ -220,7 +244,12 @@ int main(int argc, char **argv)
         remaining -= (size_t)info.frame_bytes;
     }
 
-    fclose(pcmf);
+    if (fclose(pcmf) != 0)
+    {
+        fprintf(stderr, "mp3dump: closing %s failed: %s\n", pcmpath, strerror(errno));
+        free(buf);
+        return 1;
+    }
     mp3dump_close();
     free(buf);
     return 0;

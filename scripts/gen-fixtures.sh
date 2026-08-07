@@ -22,7 +22,7 @@ enc sine11m 32          # MPEG-2.5
 enc sine8m 24           # MPEG-2.5
 lame --quiet -v -V 5 /tmp/fixsrc/sine44s.wav testdata/fixtures/sine44s_vbr.mp3
 lame --quiet -b 128 -m m /tmp/fixsrc/sine48m.wav testdata/fixtures/sine48m_mono128.mp3
-lame --quiet -b 192 -m s /tmp/fixsrc/noise32s.wav testdata/fixtures/noise32s_dual192.mp3
+lame --quiet -b 192 -m d /tmp/fixsrc/noise32s.wav testdata/fixtures/noise32s_dual192.mp3
 lame --quiet --freeformat -b 168 /tmp/fixsrc/sine44s.wav testdata/fixtures/sine44s_free168.mp3
 enc sine44s 32          # low-rate joint stereo, stresses joint-stereo decisions
 # deterministic corrupt fixtures for Task 12 (committed; self-generated)

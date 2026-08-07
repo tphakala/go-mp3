@@ -3,14 +3,18 @@
 Pure-Go MP3 (MPEG Layer III) codec library, `github.com/tphakala/go-mp3`,
 MIT licensed. Sibling of go-flac, go-opus, go-aac, go-wav.
 
-**Status: decoder implementation underway. Phase 0+1 is 11 of 13 tasks done
-(as of 2026-08-07). The decoder produces full-frame float PCM bit-exact with
-the pinned minimp3 oracle on amd64 AND arm64, across every fixture and the
-ISO conformance vector corpus: frame sync, side info, scalefactors, Huffman
-and dequantization, stereo/reorder/antialias, hybrid IMDCT with overlap,
-synthesis filterbank, and full-frame decode (mp3dec_decode_frame). Conformance
-vectors and the cross-arch oracle differential CI job are in place. Not yet
-done: robustness gates (fuzz/resync/alloc) and the public API.**
+**Status: Phase 0+1 COMPLETE, all 13 of 13 tasks done and merged (as of
+2026-08-07). The pure-Go MPEG-1 Layer III decoder produces full-frame float
+PCM bit-exact with the pinned minimp3 oracle on amd64 AND arm64, across every
+fixture and the ISO conformance vector corpus: frame sync, side info,
+scalefactors, Huffman and dequantization, stereo/reorder/antialias, hybrid
+IMDCT with overlap, synthesis filterbank, and full-frame decode
+(mp3dec_decode_frame). It is fuzzed, resync-tested, zero-alloc in steady
+state, and exposed through the public package `mp3` (NewDecoder / DecodeFrame
+returning (n, FrameInfo, error) / Reset, sibling-faithful to
+go-flac/go-aac/go-wav). Next up is Phase 2 (pcm container: S16 output,
+Xing/Info/VBRI/TOC, streaming/seek), then Phases 3-5 (encoder). No encoder
+exists yet.**
 
 ## Start here (fresh session)
 
@@ -24,15 +28,19 @@ done: robustness gates (fuzz/resync/alloc) and the public API.**
    `.superpowers/sdd/2026-08-06-go-mp3-phase0-1-decoder/progress.md` (local,
    gitignored), which records each task's status, commit range, and the
    review findings folded in.
-3. Resume at the next unstarted task. DONE: T1 scaffold, T2 oracle harness,
-   T3 fixtures/vectors, T4 bit reader, T5 header/frame sync, T6 side
-   info/scalefactors, T7 Huffman/dequant, T8 stereo/reorder/antialias, T9
-   IMDCT/windowing, T10 synthesis + full-frame decode (incl. L3_change_sign),
-   T11 conformance vectors + arm64 oracle differential CI (all merged as
-   PR5 = 797a712). NEXT: PR6 = T12 (fuzz/resync/alloc gates) + T13 (public
-   frame API). T12's FIRST item is the deferred decode.go fast-path
-   free-format slice-panic guard (final-review Important, unreachable while
-   internal-only; guard + fuzz-cover it in T12).
+3. Phase 0+1 is DONE (all 13 tasks merged: PR1 T2+T3 d3332ff, PR2 T4+T5
+   3c8887a, PR3 T6+T7 d14215f, PR4 T8+T9 9da8297, PR5 T10+T11 797a712, PR6
+   T12+T13 e6ab8b5). NEXT is Phase 2: write the pcm-container plan with
+   superpowers:writing-plans, have agy review it, then execute it the same way.
+   Phase 2 scope: S16 output, Xing/Info/VBRI/TOC parsing (imports internal/dec
+   hdr* helpers), streaming decoder + seek in a `pcm/` subpackage matching the
+   siblings. Carry-forward hardening items for Phase 2 (from PR5/PR6 reviews):
+   bound the free-format findFrame O(n*2304) scan at the public boundary now
+   that DecodeFrame is public (do NOT alter pin-derived header.go DSP); add a
+   public-DecodeFrame zero-alloc test; optional free-format Reset test case;
+   wire mp3.ErrCorruptStream into the streaming layer. Minor cleanups: oracle.yml
+   drops unused lame/ffmpeg + add apt-get update; min() builtins in
+   conformance/robustness tests; consolidate the duplicated frame-advance loop.
 4. Execute task by task with superpowers:subagent-driven-development (a fresh
    implementer subagent per task, then a task review, following the ledger's
    established pattern).

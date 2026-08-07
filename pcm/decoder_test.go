@@ -1,0 +1,143 @@
+package pcm
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"os"
+	"testing"
+	"time"
+)
+
+const (
+	fixturesDir   = "../testdata/fixtures"
+	sine48mono128 = fixturesDir + "/sine48m_128.mp3"
+
+	// sine48m_128.mp3 is 48 kHz mono: 86 frames of 1152 samples/channel =
+	// 99072 samples/channel (the count Phase 0+1's mp3 test established).
+	sine48mSamples  = 99072
+	sine48mS16Bytes = sine48mSamples * 1 * 2 // mono, 2 bytes/sample (S16)
+)
+
+func readFixture(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", path, err)
+	}
+	return b
+}
+
+// decodeAllBytes returns the full S16 output of decoding r.
+func decodeAllBytes(t *testing.T, r io.Reader) []byte {
+	t.Helper()
+	d, err := NewDecoder(r)
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	b, err := io.ReadAll(d)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	return b
+}
+
+func TestDecoderInfoAndRead(t *testing.T) {
+	raw := readFixture(t, sine48mono128)
+	d, err := NewDecoder(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+
+	if got := d.Info().SampleRate; got != 48000 {
+		t.Errorf("Info().SampleRate = %d, want 48000", got)
+	}
+	if got := d.Info().Channels; got != 1 {
+		t.Errorf("Info().Channels = %d, want 1", got)
+	}
+	if got := d.Info().TotalSamples; got != 0 {
+		t.Errorf("Info().TotalSamples = %d, want 0 (set by a later task)", got)
+	}
+	if got := d.Info().Duration(); got != 0 {
+		t.Errorf("Info().Duration() = %v, want 0 when TotalSamples is unknown", got)
+	}
+
+	out, err := io.ReadAll(d)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(out) != sine48mS16Bytes {
+		t.Errorf("decoded %d bytes, want %d (%d samples * 2 bytes S16)", len(out), sine48mS16Bytes, sine48mSamples)
+	}
+
+	// The stream is exhausted: a further read must report the clean end.
+	var scratch [16]byte
+	if n, err := d.Read(scratch[:]); n != 0 || !errors.Is(err, io.EOF) {
+		t.Errorf("post-EOF Read = (%d, %v), want (0, io.EOF)", n, err)
+	}
+}
+
+func TestDecoderSmallReads(t *testing.T) {
+	raw := readFixture(t, sine48mono128)
+	want := decodeAllBytes(t, bytes.NewReader(raw))
+
+	d, err := NewDecoder(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+
+	var got []byte
+	buf := make([]byte, 1)
+	for {
+		n, err := d.Read(buf)
+		got = append(got, buf[:n]...)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+	}
+
+	if !bytes.Equal(got, want) {
+		t.Fatalf("byte-at-a-time output differs from ReadAll (%d vs %d bytes)", len(got), len(want))
+	}
+}
+
+func TestDecoderWriteTo(t *testing.T) {
+	raw := readFixture(t, sine48mono128)
+	want := decodeAllBytes(t, bytes.NewReader(raw))
+
+	d, err := NewDecoder(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+
+	var buf bytes.Buffer
+	n, err := d.WriteTo(&buf)
+	if err != nil {
+		t.Fatalf("WriteTo: %v", err)
+	}
+	if n != int64(len(want)) {
+		t.Errorf("WriteTo returned %d, want %d", n, len(want))
+	}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Fatalf("WriteTo output differs from ReadAll (%d vs %d bytes)", buf.Len(), len(want))
+	}
+}
+
+func TestNewDecoderNilReader(t *testing.T) {
+	if _, err := NewDecoder(nil); err == nil {
+		t.Fatal("NewDecoder(nil) = nil error, want non-nil")
+	}
+}
+
+func TestInfoDuration(t *testing.T) {
+	i := Info{SampleRate: 48000, TotalSamples: 96000}
+	if got, want := i.Duration(), 2*time.Second; got != want {
+		t.Errorf("Duration() = %v, want %v", got, want)
+	}
+	if got := (Info{SampleRate: 48000}).Duration(); got != 0 {
+		t.Errorf("Duration() with unknown TotalSamples = %v, want 0", got)
+	}
+}

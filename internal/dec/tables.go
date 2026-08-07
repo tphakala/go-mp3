@@ -191,3 +191,17 @@ var huffTabIndex = [32]int16{0, 32, 64, 98, 0, 132, 180, 218, 292, 364, 426, 538
 // extra linear-escape bits appended to a big-values codebook's largest symbol
 // (15) before adding l3Pow43's magnitude; 0 means that codebook has no escape.
 var linbitsTable = [32]uint8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 6, 8, 10, 13, 4, 5, 6, 7, 8, 9, 11, 13}
+
+// gPan mirrors g_pan (tools/oracle/minimp3.h:943): the seven MPEG-1
+// intensity-stereo (kl, kr) position pairs, indexed gPan[2*ipos]/
+// gPan[2*ipos+1] by l3StereoProcessBands.
+var gPan = [7 * 2]float32{0, 1, 0.21132487, 0.78867513, 0.36602540, 0.63397460, 0.5, 0.5, 0.63397460, 0.36602540, 0.78867513, 0.21132487, 1, 0}
+
+// gAA mirrors g_aa (tools/oracle/minimp3.h:1014-1017): the antialias
+// butterfly coefficients, gAA[0] for the "upper" term and gAA[1] for the
+// "lower" term of each of the 8 aliased sample pairs per subband
+// boundary.
+var gAA = [2][8]float32{
+	{0.85749293, 0.88174200, 0.94962865, 0.98331459, 0.99551782, 0.99916056, 0.99989920, 0.99999316},
+	{0.51449576, 0.47173197, 0.31337745, 0.18191320, 0.09457419, 0.04096558, 0.01419856, 0.00369997},
+}

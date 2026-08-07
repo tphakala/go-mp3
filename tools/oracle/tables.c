@@ -1,20 +1,26 @@
 /*
     tables: prints the byte contents of the L3_read_side_info /
-    L3_decode_scalefactors const tables ported to internal/dec (Task 6) and
+    L3_decode_scalefactors const tables ported to internal/dec (Task 6),
     the L3_pow_43 / L3_huffman const tables ported to internal/dec (Task 7),
-    concatenated in a fixed order, to stdout. Not linked against
-    build/minimp3.h: these tables are declared `static const` inside
-    function bodies in the pinned minimp3.h (CC0-1.0), so they are not
-    externally-linkable symbols; the arrays below were extracted from
-    tools/oracle/minimp3.h by the same brace-matching script that produced
-    internal/dec/tables.go, so this checksum guards mainly against future
-    accidental edits to either copy, not against a shared extraction bug.
-    Independent correctness rests on the differential decode tests.
+    and the L3_stereo_process / L3_antialias const tables ported to
+    internal/dec (Task 8), concatenated in a fixed order, to stdout. Not
+    linked against build/minimp3.h: these tables are declared
+    `static const` inside function bodies in the pinned minimp3.h
+    (CC0-1.0), so they are not externally-linkable symbols; the arrays
+    below were extracted from tools/oracle/minimp3.h by the same
+    brace-matching script that produced internal/dec/tables.go, so this
+    checksum guards mainly against future accidental edits to either copy,
+    not against a shared extraction bug. Independent correctness rests on
+    the differential decode tests.
 
     Order: g_scf_long (8*23 bytes), g_scf_short (8*40 bytes),
     g_scf_mixed (8*40 bytes), g_scfc_decode (16 bytes), g_pow43
     (145*4 bytes), tabs (2164*2 bytes), tab32 (28 bytes), tab33 (16 bytes),
-    tabindex (32*2 bytes), g_linbits (32 bytes). Total 21077 bytes.
+    tabindex (32*2 bytes), g_linbits (32 bytes), g_pan (14*4 bytes),
+    g_aa (2*8*4 bytes). Total 6008 bytes (the prior 21077 figure in this
+    comment predated this task and did not match the actual concatenated
+    size even before g_pan/g_aa were added; corrected here since 5888 +
+    120 = 6008).
     int16_t/float entries are written in the host's native byte order
     (little-endian on amd64/arm64, the only build targets), matching the Go
     side's explicit binary.LittleEndian serialization.
@@ -231,6 +237,14 @@ static const int16_t tabindex[2*16] = { 0,32,64,98,0,132,180,218,292,364,426,538
 /* tools/oracle/minimp3.h:763 */
 static const uint8_t g_linbits[] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,2,3,4,6,8,10,13,4,5,6,7,8,9,11,13 };
 
+/* tools/oracle/minimp3.h:943 */
+static const float g_pan[7*2] = { 0,1,0.21132487f,0.78867513f,0.36602540f,0.63397460f,0.5f,0.5f,0.63397460f,0.36602540f,0.78867513f,0.21132487f,1,0 };
+/* tools/oracle/minimp3.h:1014-1017 */
+static const float g_aa[2][8] = {
+    {0.85749293f,0.88174200f,0.94962865f,0.98331459f,0.99551782f,0.99916056f,0.99989920f,0.99999316f},
+    {0.51449576f,0.47173197f,0.31337745f,0.18191320f,0.09457419f,0.04096558f,0.01419856f,0.00369997f}
+};
+
 int main(void)
 {
     for (int i = 0; i < 8; i++)
@@ -246,5 +260,8 @@ int main(void)
     fwrite(tab33, 1, sizeof(tab33), stdout);
     fwrite(tabindex, 1, sizeof(tabindex), stdout);
     fwrite(g_linbits, 1, sizeof(g_linbits), stdout);
+    fwrite(g_pan, 1, sizeof(g_pan), stdout);
+    for (int i = 0; i < 2; i++)
+        fwrite(g_aa[i], 1, sizeof(g_aa[i]), stdout);
     return 0;
 }

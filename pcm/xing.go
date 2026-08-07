@@ -21,7 +21,7 @@ const (
 // frame occupies the position of the stream's first audio frame but carries
 // metadata, not audio: its payload is never decoded as samples.
 type xingHeader struct {
-	frames  uint32    // total frames INCLUDING this tag frame; 0 if flag absent
+	frames  uint32    // count of real AUDIO frames, excluding this tag frame; 0 if flag absent
 	bytes   uint32    // total stream bytes; 0 if flag absent
 	toc     [100]byte // seek table (byte-percentage per time-percentage); valid only if hasTOC
 	hasTOC  bool

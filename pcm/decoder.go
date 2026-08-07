@@ -290,16 +290,19 @@ func (d *Decoder) decodeNextFrame() error {
 }
 
 // applyXing records a detected Xing/Info tag's metadata and, when its frame
-// count is present, derives TotalSamples from it. The frame count includes
-// the tag frame itself, so subtracting one leaves the count of real audio
-// frames that follow. When the flag is absent (or present but zero),
-// TotalSamples is left for Reset's CBR fallback.
+// count is present, derives TotalSamples from it. The LAME/Xing de-facto
+// convention counts real audio frames only, excluding the tag frame itself
+// (verified against several fixtures' raw header bytes: the field exactly
+// equals the on-disk frame count minus the tag frame, with no further
+// adjustment needed), so no further arithmetic is needed here beyond the
+// samples-per-frame multiply. When the flag is absent (or present but
+// zero), TotalSamples is left for Reset's CBR fallback.
 func (d *Decoder) applyXing(xh *xingHeader, sampleRate int) {
 	d.xing = xh
 	if xh.frames == 0 {
 		return
 	}
-	d.info.TotalSamples = uint64(xh.frames-1) * uint64(samplesPerFrame(sampleRate))
+	d.info.TotalSamples = uint64(xh.frames) * uint64(samplesPerFrame(sampleRate))
 }
 
 // estimateCBRDuration fills Info.TotalSamples from the audio byte length

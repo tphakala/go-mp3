@@ -25,13 +25,11 @@ const (
 
 	// sine48mXingTotalSamples is Info().TotalSamples as the fixture's own
 	// Info tag derives it: frames field = 85 (0x55, verified against the
-	// fixture bytes at offset 0x1d: "00 00 00 55"), including the tag frame
-	// itself, so (85-1)*1152 = 96768. This is 1152 samples less than
-	// sine48mSamples above: the tag's declared frame count is 1 frame short
-	// of the disk's actual 86, the same off-by-one LAME quirk
-	// internal/dec/conformance_test.go documents for
-	// l3-nonstandard-sin1k0db_lame_vbrtag (not a bug in the derivation).
-	sine48mXingTotalSamples = 84 * 1152
+	// fixture bytes at offset 0x1d: "00 00 00 55"). The LAME/Xing frames
+	// field counts real audio frames only, excluding the tag frame itself,
+	// so 85*1152 = 97920, exactly equal to sine48mSamples above (before
+	// gapless trim, which Task 3 introduces, the two must match exactly).
+	sine48mXingTotalSamples = 85 * 1152
 )
 
 func readFixture(t *testing.T, path string) []byte {
@@ -265,12 +263,14 @@ func TestDecoderXingDurationAndFirstFrame(t *testing.T) {
 	raw := readVectorFixture(t, vector)
 
 	// The Xing/Info header sits at the fixed MPEG1-stereo offset (36) and
-	// declares frames = 0x0000013c = 316 INCLUDING the tag frame itself, so
-	// 315 real audio frames follow it (verified directly against the
+	// declares frames = 0x0000013c = 316 (verified directly against the
 	// fixture bytes at offset 0x2c: "00 00 01 3c"; this expectation does not
-	// call parseXing itself, so it is an independent check).
+	// call parseXing itself, so it is an independent check). The LAME/Xing
+	// frames field counts real audio frames only, excluding the tag frame
+	// itself, so 316 real audio frames follow the tag with no further
+	// arithmetic needed.
 	const declaredFrames = 316
-	const wantSamples = uint64(declaredFrames-1) * 1152 // MPEG1 Layer III: 1152 samples/frame
+	const wantSamples = uint64(declaredFrames) * 1152 // MPEG1 Layer III: 1152 samples/frame
 
 	d, err := NewDecoder(bytes.NewReader(raw))
 	if err != nil {
@@ -283,7 +283,7 @@ func TestDecoderXingDurationAndFirstFrame(t *testing.T) {
 		t.Errorf("Info().Channels = %d, want 2", got)
 	}
 	if got := d.Info().TotalSamples; got != wantSamples {
-		t.Errorf("Info().TotalSamples = %d, want %d ((%d-1)*1152)", got, wantSamples, declaredFrames)
+		t.Errorf("Info().TotalSamples = %d, want %d (%d*1152)", got, wantSamples, declaredFrames)
 	}
 
 	// Frame 0 is the tag; decode it and the frame that follows independently
@@ -320,6 +320,25 @@ func TestDecoderXingDurationAndFirstFrame(t *testing.T) {
 	}
 	if !bytes.Equal(got, wantBytes) {
 		t.Fatal("first emitted samples do not match the first real audio frame; the tag frame may have been emitted instead")
+	}
+
+	// Regression invariant: before gapless trim (Task 3), the count of
+	// samples pcm.Decoder actually emits must equal Info().TotalSamples
+	// exactly. This is the check that would have caught the (frames-1) bug:
+	// a future off-by-a-frame in the TotalSamples derivation now fails
+	// loudly here instead of only surfacing downstream.
+	rest, err := io.ReadAll(d)
+	if err != nil {
+		t.Fatalf("ReadAll (stream remainder): %v", err)
+	}
+	totalBytes := len(got) + len(rest)
+	channels := d.Info().Channels
+	if totalBytes%(channels*bytesPerS16Sample) != 0 {
+		t.Fatalf("total emitted bytes %d is not a whole number of samples (channels=%d)", totalBytes, channels)
+	}
+	gotSamples := uint64(totalBytes / (channels * bytesPerS16Sample))
+	if gotSamples != wantSamples {
+		t.Errorf("emitted samples/channel = %d, want %d (must equal Info().TotalSamples)", gotSamples, wantSamples)
 	}
 }
 

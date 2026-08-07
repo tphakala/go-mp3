@@ -1,5 +1,5 @@
 --- minimp3.h	2026-08-07 10:13:50.104326374 +0300
-+++ build/minimp3.h	2026-08-07 11:28:29.663270547 +0300
++++ build/minimp3.h	2026-08-07 12:11:37.599656294 +0300
 @@ -1,3 +1,11 @@
 +#ifdef MP3DUMP
 +#include "../dump.h"
@@ -46,15 +46,17 @@
      return main_data_begin;
  }
  
-@@ -1243,6 +1271,7 @@
+@@ -1243,7 +1271,9 @@
      {
          int layer3gr_limit = s->bs.pos + gr_info[ch].part_23_length;
          L3_decode_scalefactors(h->header, s->ist_pos[ch], &s->bs, gr_info + ch, s->scf, ch);
 +        DUMPF("scf", 0x53434600 /* 'SCF\0' */, s->scf, 40);
          L3_huffman(s->grbuf[ch], &s->bs, gr_info + ch, s->scf, layer3gr_limit);
++        DUMPF("grbuf_huff", 0x48554646 /* 'HUFF' */, s->grbuf[ch], 576);
      }
  
-@@ -1737,6 +1766,7 @@
+     if (HDR_TEST_I_STEREO(h->header))
+@@ -1737,6 +1767,7 @@
      }
  
      hdr = mp3 + i;

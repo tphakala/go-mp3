@@ -131,3 +131,16 @@ func TestFindFrameMatchesOracle(t *testing.T) {
 		}
 	}
 }
+
+// TestHdrIsCRC checks the protection-bit reading: header byte 1, bit 0 clear
+// means the frame carries a CRC (mirrors the pin's HDR_IS_CRC).
+func TestHdrIsCRC(t *testing.T) {
+	crc := []byte{0xFF, 0xFA, 0x00, 0x00}   // protection bit 0 -> CRC present
+	noCRC := []byte{0xFF, 0xFB, 0x00, 0x00} // protection bit 1 -> no CRC
+	if !hdrIsCRC(crc) {
+		t.Errorf("hdrIsCRC(protection=0) = false, want true (CRC present)")
+	}
+	if hdrIsCRC(noCRC) {
+		t.Errorf("hdrIsCRC(protection=1) = true, want false (no CRC)")
+	}
+}

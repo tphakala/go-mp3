@@ -25,7 +25,14 @@ type dumpRecord struct {
 func readDump(t *testing.T, fixture, stage string) []dumpRecord {
 	t.Helper()
 
-	base := fixture[:len(fixture)-len(filepath.Ext(fixture))]
+	// dump-all.sh names each fixture's dump directory after the full
+	// fixture filename, extension included (e.g. dumps/beep22s_64.mp3/),
+	// so the lookup key is filepath.Base(fixture), not fixture with its
+	// extension stripped: stripping the extension left the fixture's
+	// "../../testdata/fixtures/" directory prefix baked into base, which
+	// filepath.Join then walked back out of via ".." components, landing
+	// on a path outside tools/oracle/dumps entirely.
+	base := filepath.Base(fixture)
 	path := filepath.Join("..", "..", "tools", "oracle", "dumps", base, stage+".dump")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -80,6 +87,44 @@ func fixturePaths(t *testing.T) []string {
 		t.Fatalf("globbing fixtures: %v", err)
 	}
 	return matches
+}
+
+// replayFixtures returns fixturePaths(t) minus corrupt_bitflip.mp3, for
+// differential tests (Tasks 5-9) that replay frame-by-frame decode state
+// from scratch on every call, the way findFrame/matchFrame and their
+// successors do.
+//
+// corrupt_bitflip.mp3 is excluded because its oracle dumps come from
+// mp3dec_decode_frame, which is stateful: dec persists across the whole
+// file, and once a frame decodes successfully, the next call takes a
+// "fast path" that trusts dec->header and only re-validates it against
+// the single next frame's header (hdr_compare), never calling
+// mp3d_find_frame/mp3d_match_frame at all. mp3d_match_frame is much
+// stricter (it requires MAX_FRAME_SYNC_MATCHES consecutive frame headers
+// to agree), so on a stream with corruption scattered every few frames
+// (see scripts/gen-fixtures.sh) the two can legitimately disagree: the
+// fast path accepts a frame the strict from-scratch search would reject
+// because a later, corrupted frame falls within its lookahead window.
+// Verified against the pin directly (a standalone C program calling
+// mp3d_find_frame/mp3d_match_frame outside of mp3dec_decode_frame agrees
+// with this package's Go port bit-for-bit), so the divergence is real
+// upstream behavior, not a porting bug.
+//
+// Bit-exact coverage of corrupt_bitflip.mp3's resync behavior is deferred
+// to whichever task ports mp3dec_decode_frame's stateful Decoder: it must
+// replicate the fast-path header cache to match the oracle's pcm.f32le
+// output there, and its differential test should include this fixture.
+func replayFixtures(t *testing.T) []string {
+	t.Helper()
+
+	var out []string
+	for _, fx := range fixturePaths(t) {
+		if filepath.Base(fx) == "corrupt_bitflip.mp3" {
+			continue
+		}
+		out = append(out, fx)
+	}
+	return out
 }
 
 // TestReadDumpSelfTest crafts a small dump file with two records (one

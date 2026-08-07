@@ -9,6 +9,11 @@ tools/oracle/build/
 tools/oracle/dumps/
 tools/oracle/mutated/
 
+# go test -fuzz corpora (per-package testdata/fuzz/<FuzzName>/), including
+# any failing inputs it saves locally; the seed corpus lives in code via
+# f.Add, not on disk.
+**/testdata/fuzz/
+
 # Build artifacts
 /bin/
 *.exe

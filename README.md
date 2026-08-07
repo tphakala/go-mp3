@@ -38,3 +38,32 @@ for pos < len(data) {
 does not produce samples for; the caller can still advance past it using
 `FrameBytes`. See the `DecodeFrame` doc comment for the full breakdown of
 its return values.
+
+## Streaming decoder (package pcm)
+
+The `pcm` package wraps the frame API above into a plain `io.Reader`: give
+it an MP3 stream and read interleaved PCM back, without driving the
+frame-by-frame loop yourself. It skips a leading ID3v2 tag, recognizes a
+Xing/Info/VBRI tag frame and a LAME gapless extension (excluding the tag
+frame from the output and trimming the encoder's delay/padding), and
+recovers from mid-stream garbage.
+
+```go
+import mp3pcm "github.com/tphakala/go-mp3/pcm"
+
+d, err := mp3pcm.NewDecoder(r) // r is an io.Reader
+if err != nil {
+	log.Fatal(err)
+}
+fmt.Println(d.Info().SampleRate, d.Info().Channels, d.Info().Duration())
+
+pcm, err := io.ReadAll(d) // interleaved little-endian S16 by default
+// or: n, err := d.WriteTo(w)
+```
+
+Pass `mp3pcm.WithF32()` to `NewDecoder` for native interleaved little-endian
+float32 output instead of the default 16-bit PCM. When the source is an
+`io.Seeker`, `d.SeekToSample(n)` positions the decoder so the next `Read`
+starts at per-channel sample `n` in the gapless-trimmed timeline.
+
+The decoder is usable today; the encoder is not implemented yet.

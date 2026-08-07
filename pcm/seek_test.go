@@ -39,7 +39,7 @@ var seekFractions = []seekFraction{
 	{"three-quarter", 3, 4},
 }
 
-// readAllFloat32 decodes the whole seekable stream at path with WithF32 and
+// readAllFloat32 decodes the whole stream r with WithF32 and
 // returns the playable (gapless-trimmed) samples plus the stream's channel
 // count and per-channel total. It is the ground truth a post-seek decode is
 // compared against.

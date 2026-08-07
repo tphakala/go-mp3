@@ -292,6 +292,11 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 	// a CBR estimate from the audio byte length, when the source allows it.
 	if (d.xing == nil || d.xing.frames == 0) && (d.vbri == nil || d.vbri.frames == 0) {
 		d.estimateCBRDuration(r)
+		if d.err != nil {
+			// estimateCBRDuration latched a position-restore failure; surface it
+			// rather than returning a decoder that would read from a bad offset.
+			return d.err
+		}
 	}
 	return nil
 }
@@ -688,6 +693,10 @@ func (d *Decoder) estimateCBRDuration(r io.Reader) {
 	// end-128 and the SeekStart below restores the read position regardless.
 	trailer := id3v1TrailerBytes(rs, end)
 	if _, err := rs.Seek(cur, io.SeekStart); err != nil {
+		// The trailer probe moved the source and it could not be put back.
+		// Continuing would decode from the wrong offset, so fail rather than
+		// emit silently-wrong audio.
+		d.err = fmt.Errorf("go-mp3/pcm: restoring read position after length probe: %w", err)
 		return
 	}
 

@@ -94,7 +94,7 @@ func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
 	// failed seek. The normal (reached) path rebinds via reseek, so it needs no
 	// restore.
 	seeker, _ := d.src.(io.Seeker) // guaranteed by the d.seekable check above
-	srcPos, _ := seeker.Seek(0, io.SeekCurrent)
+	srcPos, posErr := seeker.Seek(0, io.SeekCurrent)
 
 	primeOff, avail, reached, err := d.frameOffsets(primeFrame, targetFrame)
 	if err != nil {
@@ -102,6 +102,11 @@ func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
 			// A free-format stream cannot be header-walked. Leave the decoder
 			// usable rather than latching: restore the source and return the
 			// capability error, exactly like the non-seekable pre-flight check.
+			if posErr != nil {
+				// The prior position could not be captured, so it cannot be
+				// restored; latch rather than resume from an indeterminate offset.
+				return d.seekFailed(posErr)
+			}
 			_, _ = seeker.Seek(srcPos, io.SeekStart)
 			return 0, err
 		}
@@ -201,6 +206,12 @@ func (d *Decoder) reseek(pos int64) error {
 // buffered stream.
 func (d *Decoder) decodeRawFrame() (int, mp3.FrameInfo, error) {
 	d.fill()
+	if d.readErr != nil && !errors.Is(d.readErr, io.EOF) {
+		// A real source failure during priming must not be reported as a clean
+		// end: SeekToSample latches whatever this returns, and io.EOF would be
+		// mistaken for a benign stream end.
+		return 0, mp3.FrameInfo{}, d.readErr
+	}
 	if len(d.frameBuf) == 0 {
 		return 0, mp3.FrameInfo{}, io.EOF
 	}

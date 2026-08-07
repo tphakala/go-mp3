@@ -36,8 +36,11 @@ const (
 	readerBufSize = 1 << 16
 	// maxZeroReads bounds a run of (0, nil) reads inside fill. io.Reader
 	// permits "nothing happened" returns, and a reader stuck returning them
-	// would otherwise spin fill forever; after this many in a row fill gives
-	// up on the current top-up (a later fill retries the reader).
+	// would otherwise spin fill forever; after this many in a row fill latches
+	// io.ErrNoProgress, exactly as bufio.Reader does. Surfacing a real error
+	// (rather than leaving readErr nil) is essential: a nil readErr would let
+	// finish mistake the give-up for a clean end and silently truncate a
+	// merely-bursty source.
 	maxZeroReads = 100
 )
 
@@ -242,11 +245,14 @@ func (d *Decoder) fill() {
 		}
 		if n == 0 {
 			// A (0, nil) read made no progress. Bound a run of them so a
-			// pathological reader cannot spin this loop forever; bail without
-			// inventing a readErr, leaving frameBuf as-is for decodeNextFrame
-			// to handle and the next fill to retry the reader.
+			// pathological reader cannot spin this loop forever, and latch
+			// io.ErrNoProgress (as bufio.Reader does) so the give-up surfaces
+			// as a real error via finish. Leaving readErr nil here would let
+			// finish report it as a clean io.EOF, silently truncating a source
+			// that had only stalled in a burst.
 			zeroReads++
 			if zeroReads >= maxZeroReads {
+				d.readErr = io.ErrNoProgress
 				return
 			}
 			continue

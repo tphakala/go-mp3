@@ -414,11 +414,67 @@ func (r *truncatingErrorReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// zeroForeverReader always returns (0, nil): the pathological no-progress case
-// io.Reader permits but discourages.
-type zeroForeverReader struct{}
+// stallForeverAfter delivers the first `warmup` bytes of data, then returns
+// (0, nil) on every later read: a source that goes idle mid-stream and never
+// recovers. warmup is sized so construction (the first-frame decode) succeeds,
+// so the stall is reached through the decode path and exercises fill's own
+// guard, not bufio's construction-time Peek guard.
+type stallForeverAfter struct {
+	data   []byte
+	warmup int
+	pos    int
+}
 
-func (zeroForeverReader) Read([]byte) (int, error) { return 0, nil }
+func (r *stallForeverAfter) Read(p []byte) (int, error) {
+	if r.pos >= r.warmup {
+		return 0, nil
+	}
+	n := copy(p, r.data[r.pos:r.warmup])
+	r.pos += n
+	return n, nil
+}
+
+// burstyReader delivers every byte of data correctly but, once past `warmup`,
+// precedes each further chunk with exactly `stall` consecutive (0, nil) reads.
+// No data is lost or corrupted; the source merely stalls in bursts. It models
+// the silent-truncation trap: were fill's guard to leave readErr nil, such a
+// source would decode to a fraction of its PCM with err == nil.
+type burstyReader struct {
+	data    []byte
+	warmup  int
+	stall   int
+	chunk   int
+	pos     int
+	pending int // remaining (0, nil) reads before the next chunk
+	armed   bool
+}
+
+func (b *burstyReader) Read(p []byte) (int, error) {
+	if b.pos >= len(b.data) {
+		return 0, io.EOF
+	}
+	if b.pos >= b.warmup {
+		if !b.armed {
+			b.armed = true
+			b.pending = b.stall
+		}
+		if b.pending > 0 {
+			b.pending--
+			return 0, nil
+		}
+		b.pending = b.stall // re-arm for the chunk after this one
+	}
+	n := b.chunk
+	if n > len(p) {
+		n = len(p)
+	}
+	if n > len(b.data)-b.pos {
+		n = len(b.data) - b.pos
+	}
+	copy(p, b.data[b.pos:b.pos+n])
+	b.pos += n
+	return n, nil
+}
 
 // stallingReader returns (0, nil) on every stallEvery-th call and otherwise
 // delivers up to chunk bytes from r, modelling a source that intermittently
@@ -475,23 +531,53 @@ func TestDecoderSurfacesMidStreamReadError(t *testing.T) {
 	}
 }
 
-// TestFillNoProgressGuardDoesNotHang checks that a reader stuck returning
-// (0, nil) forever cannot hang the decoder: construction returns (with an
-// error) within the guard's bound instead of spinning.
+// TestFillNoProgressGuardDoesNotHang checks that a source going idle forever
+// mid-stream neither hangs the decoder nor reads as a clean end: it surfaces
+// io.ErrNoProgress through the decode path (fill's own guard), promptly. The
+// warmup lets construction succeed, so this exercises fill/bufio.Read, not
+// bufio's construction-time Peek guard.
 func TestFillNoProgressGuardDoesNotHang(t *testing.T) {
+	raw := readFixture(t, sine48mono128)
 	errc := make(chan error, 1)
 	go func() {
-		_, err := NewDecoder(zeroForeverReader{})
+		d, err := NewDecoder(&stallForeverAfter{data: raw, warmup: 6000})
+		if err != nil {
+			errc <- err
+			return
+		}
+		_, err = io.ReadAll(d)
 		errc <- err
 	}()
 
 	select {
 	case err := <-errc:
-		if err == nil {
-			t.Error("NewDecoder over a (0,nil)-forever reader returned nil error, want a failure")
+		if !errors.Is(err, io.ErrNoProgress) {
+			t.Fatalf("decode error = %v, want io.ErrNoProgress from a stalled-forever source", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("NewDecoder hung on a (0,nil)-forever reader (no-progress guard missing?)")
+		t.Fatal("decode hung on a (0,nil)-forever source (no-progress guard missing?)")
+	}
+}
+
+// TestDecoderBurstyStallSurfacesError is the regression for the guard's
+// silent-truncation trap. A source that delivers ALL of its bytes but stalls in
+// runs of >= maxZeroReads (0, nil) reads must surface io.ErrNoProgress, not
+// return a truncated buffer with a nil error. Before fill latched
+// io.ErrNoProgress, io.ReadAll here returned a fraction of the PCM with
+// err == nil.
+func TestDecoderBurstyStallSurfacesError(t *testing.T) {
+	raw := readFixture(t, sine48mono128)
+	r := &burstyReader{data: raw, warmup: 6000, stall: maxZeroReads, chunk: 256}
+
+	d, err := NewDecoder(r)
+	if err != nil {
+		t.Fatalf("NewDecoder: %v (warmup should cover the first frame)", err)
+	}
+
+	_, err = io.ReadAll(d)
+	if !errors.Is(err, io.ErrNoProgress) {
+		t.Fatalf("ReadAll error = %v, want io.ErrNoProgress (a run of >=%d (0,nil) reads must surface, not silently truncate)",
+			err, maxZeroReads)
 	}
 }
 

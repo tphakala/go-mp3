@@ -205,3 +205,21 @@ var gAA = [2][8]float32{
 	{0.85749293, 0.88174200, 0.94962865, 0.98331459, 0.99551782, 0.99916056, 0.99989920, 0.99999316},
 	{0.51449576, 0.47173197, 0.31337745, 0.18191320, 0.09457419, 0.04096558, 0.01419856, 0.00369997},
 }
+
+// gTwid9 mirrors g_twid9 (tools/oracle/minimp3.h:1090-1091): the 18
+// coefficients folding l3Dct3_9's two 9-point outputs (co, si) into
+// l3Imdct36's overlap/current split, indexed gTwid9[i] and gTwid9[9+i].
+var gTwid9 = [18]float32{0.73727734, 0.79335334, 0.84339145, 0.88701083, 0.92387953, 0.95371695, 0.97629601, 0.99144486, 0.99904822, 0.67559021, 0.60876143, 0.53729961, 0.46174861, 0.38268343, 0.30070580, 0.21643961, 0.13052619, 0.04361938}
+
+// gTwid3 mirrors g_twid3 (tools/oracle/minimp3.h:1155): the 6 coefficients
+// folding l3Idct3's co/si outputs into l3Imdct12's overlap/dst split.
+var gTwid3 = [6]float32{0.79335334, 0.92387953, 0.99144486, 0.60876143, 0.38268343, 0.13052619}
+
+// gMdctWindow mirrors g_mdct_window (tools/oracle/minimp3.h:1196-1198): the
+// two 18-sample analysis windows l3ImdctGr selects between, [0] for long
+// blocks (start/normal blocks and each long half of a mixed block) and [1]
+// for stop blocks (l3ImdctGr's blockType == stopBlockType).
+var gMdctWindow = [2][18]float32{
+	{0.99904822, 0.99144486, 0.97629601, 0.95371695, 0.92387953, 0.88701083, 0.84339145, 0.79335334, 0.73727734, 0.04361938, 0.13052619, 0.21643961, 0.30070580, 0.38268343, 0.46174861, 0.53729961, 0.60876143, 0.67559021},
+	{1, 1, 1, 1, 1, 1, 0.99144486, 0.92387953, 0.79335334, 0, 0, 0, 0, 0, 0, 0.13052619, 0.38268343, 0.60876143},
+}

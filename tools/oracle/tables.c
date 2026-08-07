@@ -17,10 +17,9 @@
     g_scf_mixed (8*40 bytes), g_scfc_decode (16 bytes), g_pow43
     (145*4 bytes), tabs (2164*2 bytes), tab32 (28 bytes), tab33 (16 bytes),
     tabindex (32*2 bytes), g_linbits (32 bytes), g_pan (14*4 bytes),
-    g_aa (2*8*4 bytes). Total 6008 bytes (the prior 21077 figure in this
-    comment predated this task and did not match the actual concatenated
-    size even before g_pan/g_aa were added; corrected here since 5888 +
-    120 = 6008).
+    g_aa (2*8*4 bytes), g_twid9 (18*4 bytes), g_twid3 (6*4 bytes),
+    g_mdct_window (2*18*4 bytes). Total 6248 bytes (6008 + 240: 18+6+36 = 60
+    float32 entries added for Task 9's imdct tables).
     int16_t/float entries are written in the host's native byte order
     (little-endian on amd64/arm64, the only build targets), matching the Go
     side's explicit binary.LittleEndian serialization.
@@ -245,6 +244,18 @@ static const float g_aa[2][8] = {
     {0.51449576f,0.47173197f,0.31337745f,0.18191320f,0.09457419f,0.04096558f,0.01419856f,0.00369997f}
 };
 
+/* tools/oracle/minimp3.h:1090-1091 */
+static const float g_twid9[18] = {
+    0.73727734f,0.79335334f,0.84339145f,0.88701083f,0.92387953f,0.95371695f,0.97629601f,0.99144486f,0.99904822f,0.67559021f,0.60876143f,0.53729961f,0.46174861f,0.38268343f,0.30070580f,0.21643961f,0.13052619f,0.04361938f
+};
+/* tools/oracle/minimp3.h:1155 */
+static const float g_twid3[6] = { 0.79335334f,0.92387953f,0.99144486f, 0.60876143f,0.38268343f,0.13052619f };
+/* tools/oracle/minimp3.h:1196-1198 */
+static const float g_mdct_window[2][18] = {
+    { 0.99904822f,0.99144486f,0.97629601f,0.95371695f,0.92387953f,0.88701083f,0.84339145f,0.79335334f,0.73727734f,0.04361938f,0.13052619f,0.21643961f,0.30070580f,0.38268343f,0.46174861f,0.53729961f,0.60876143f,0.67559021f },
+    { 1,1,1,1,1,1,0.99144486f,0.92387953f,0.79335334f,0,0,0,0,0,0,0.13052619f,0.38268343f,0.60876143f }
+};
+
 int main(void)
 {
     for (int i = 0; i < 8; i++)
@@ -263,5 +274,9 @@ int main(void)
     fwrite(g_pan, 1, sizeof(g_pan), stdout);
     for (int i = 0; i < 2; i++)
         fwrite(g_aa[i], 1, sizeof(g_aa[i]), stdout);
+    fwrite(g_twid9, 1, sizeof(g_twid9), stdout);
+    fwrite(g_twid3, 1, sizeof(g_twid3), stdout);
+    for (int i = 0; i < 2; i++)
+        fwrite(g_mdct_window[i], 1, sizeof(g_mdct_window[i]), stdout);
     return 0;
 }

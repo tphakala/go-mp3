@@ -1,0 +1,14 @@
+--- minimp3.h	2026-08-07 09:29:19.975215243 +0300
++++ build/minimp3.h	2026-08-07 09:31:16.722441771 +0300
+@@ -1,3 +1,11 @@
++#ifdef MP3DUMP
++#include "../dump.h"
++#define DUMPF(stage, tag, p, n) mp3dump_f32(stage, tag, p, n)
++#define DUMPI(stage, tag, p, n) mp3dump_i32(stage, tag, (const int32_t*)(p), n)
++#else
++#define DUMPF(stage, tag, p, n)
++#define DUMPI(stage, tag, p, n)
++#endif
+ #ifndef MINIMP3_H
+ #define MINIMP3_H
+ /*

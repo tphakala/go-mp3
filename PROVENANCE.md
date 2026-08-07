@@ -6,7 +6,7 @@ The decoder in internal/dec is a function-by-function port of minimp3
 (https://github.com/lieff/minimp3), dedicated to the public domain under
 CC0-1.0. The port is pinned to upstream commit:
 
-    PIN-RECORDED-IN-TASK-2
+    ea99364f61c14656440e8d77e9c233ccf3124633
 
 The vendored copy at tools/oracle/minimp3.h is byte-identical to that
 commit's file (sha256 recorded in minimp3.h.sha256 and checked on every

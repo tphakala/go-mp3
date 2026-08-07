@@ -38,7 +38,21 @@ func l3Decode(d *Decoder, s *mp3Scratch, gr []grInfo, nch int, mainBS *bits.Read
 		l3Huffman(s.grbuf[576*ch:576*ch+576], mainBS, &gr[ch], s.scf[:], layer3grLimit)
 	}
 
-	l3StereoProcess(s.grbuf[0:576], s.grbuf[576:1152], hdr, s.istPos[1][:], gr)
+	// Intensity and MS stereo are two-channel operations: each combines
+	// channel 0 with channel 1. A single-channel granule has no second
+	// grInfo (gr has length nch), and l3IntensityStereo reads gr[1] for the
+	// MPEG-2 shift bit (stereo.go), so running the stereo path on a mono
+	// granule would index out of range. Upstream L3_decode calls the stereo
+	// path unconditionally and survives only because its gr_info is a
+	// fixed-size C array (gr_info[4]): gr_info[1] reads a stale/garbage struct
+	// rather than overrunning. The Go port uses a length-nch slice, so the
+	// same access panics; guard it here. A valid mono stream never signals
+	// stereo (the I_STEREO/MS bits only appear on joint-stereo frames, which
+	// are two-channel), so this guard is invisible to every valid stream and
+	// only suppresses a malformed mono frame carrying a spurious stereo flag.
+	if nch == 2 {
+		l3StereoProcess(s.grbuf[0:576], s.grbuf[576:1152], hdr, s.istPos[1][:], gr)
+	}
 
 	for ch := range nch {
 		gi := &gr[ch]

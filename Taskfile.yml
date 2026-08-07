@@ -32,4 +32,4 @@ tasks:
       - task: vectors
       - task: oracle:build
       - task: oracle:dump
-      - go test ./internal/dec/ -run 'Oracle|Conformance'
+      - go test ./... -run 'Oracle|Conformance'

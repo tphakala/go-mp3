@@ -1,0 +1,34 @@
+# Private planning docs: tracked in the internal Forgejo repo only, never in
+# git, never on the public GitHub mirror. Excluded before the first commit.
+docs/
+
+# Fetched or generated, never committed
+testdata/vectors/
+testdata/corpus/
+tools/oracle/build/
+tools/oracle/dumps/
+
+# Build artifacts
+/bin/
+*.exe
+*.test
+*.out
+
+# Coverage and profiling
+coverage.out
+coverage.txt
+*.cov
+*.prof
+*.pprof
+
+# Agent and tooling scratch (local only)
+.superpowers/
+.serena/
+.codegraph/
+cache/
+
+# Editor and OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/

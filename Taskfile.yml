@@ -1,0 +1,24 @@
+version: '3'
+
+tasks:
+  build:
+    cmds: [go build ./...]
+  vet:
+    cmds: [go vet ./...]
+  test:
+    cmds: [go test ./...]
+  check:
+    cmds:
+      - task: build
+      - task: vet
+      - task: test
+  oracle:build:
+    dir: tools/oracle
+    cmds: [./build.sh]
+  oracle:dump:
+    dir: tools/oracle
+    cmds: [./dump-all.sh]
+  fixtures:
+    cmds: [scripts/gen-fixtures.sh]
+  vectors:
+    cmds: [scripts/fetch-vectors.sh]

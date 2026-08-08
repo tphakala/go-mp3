@@ -586,19 +586,39 @@ func (d *Decoder) handleNoFrame(window, skipped int) (newWindow, newSkipped int,
 	return window, skipped, false, nil
 }
 
-// truncatedFrame reports whether buf holds a valid MPEG frame header whose
+// truncatedFrame reports whether buf begins with a valid MPEG frame header whose
 // declared length runs past the bytes present, i.e. a frame cut short at end of
-// input. It returns the verdict at the first header frameLength accepts, so
-// trailing non-frame bytes (an ID3v1 tag, padding) report false and a clean end
-// is never mistaken for corruption, while a complete-but-unconfirmable final
-// frame (its bytes all present) likewise reports false.
+// input.
+//
+// Offset 0 is the discriminator, and only offset 0 is trusted. In a healthy
+// stream a genuine final frame cut short starts exactly where the decoder
+// expected the next frame's sync: consume compacts every preceding complete
+// frame away, so the leftover this sees at EOF begins at that frame's own
+// header. A valid-looking header at a deeper offset is then an incidental byte
+// match inside trailing non-frame bytes (an ID3v1 tag, padding, an arbitrary
+// binary blob), which must end the stream cleanly rather than raise
+// mp3.ErrCorruptStream. Scanning every offset conflated the two and
+// false-rejected healthy streams whose trailer happened to satisfy frameLength
+// somewhere inside.
+//
+// One case this deliberately gives up: if un-resynced mid-stream garbage sits
+// immediately before a genuinely truncated final frame, offset 0 is that garbage
+// (frameLength fails there) and the real header is deeper, so the truncation is
+// reported as a clean io.EOF rather than mp3.ErrCorruptStream. That is an
+// accepted trade-off, not an oversight: the stream is already corrupt, no audio
+// is lost (the unusable tail frame is dropped either way), only the terminal
+// error type changes, and it buys freedom from the far more common trailing-junk
+// false-positive. TestTruncatedFrameOffsetZeroOnly's deeper-offset case pins the
+// underlying rule: a valid header past offset 0 reports a clean end.
+//
+// The offset is the only usable signal: an adversarial trailer can carry a header
+// byte-identical to a real frame of this stream, so no sample-rate or side-info
+// check separates them, and a minimum-length check would wrongly reject a real
+// frame truncated down to a handful of bytes. A complete-but-unconfirmable final
+// frame (all its bytes present) still reports false, a clean end.
 func truncatedFrame(buf []byte) bool {
-	for i := range len(buf) {
-		if length, ok := frameLength(buf[i:]); ok {
-			return i+length > len(buf)
-		}
-	}
-	return false
+	length, ok := frameLength(buf)
+	return ok && length > len(buf)
 }
 
 // wrapTruncation reports a stream that ends inside a frame it promised as

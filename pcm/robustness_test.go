@@ -264,6 +264,133 @@ func TestStreamingID3v1TrailerDuration(t *testing.T) {
 	}
 }
 
+// buriedHeaderBlob returns a size-byte non-frame trailer whose first bytes carry
+// no sync word but which hides a byte-valid MPEG-1 Layer III header (128 kbps,
+// 44.1 kHz, declared length 417) close enough to the end that the declared frame
+// overruns the bytes present. It models the adversarial case truncatedFrame must
+// not misread: a binary trailer that coincidentally satisfies frameLength at a
+// deep offset. The header lands at size-frameHeaderSize-2, so a scan that trusts
+// any offset sees "417 bytes promised, 6 present" and wrongly cries truncation.
+func buriedHeaderBlob(size int) []byte {
+	blob := make([]byte, size)
+	for i := range blob {
+		blob[i] = byte(i*7 + 1) // deterministic filler, never 0xFF at a sync position
+	}
+	copy(blob[size-frameHeaderSize-2:], []byte{0xFF, 0xFB, 0x90, 0x00})
+	return blob
+}
+
+// TestTruncatedFrameOffsetZeroOnly pins the discriminator truncatedFrame uses: a
+// genuine final frame cut short begins exactly where the decoder expected the
+// next sync, at offset 0 of the leftover buffer, because every complete frame
+// before it was already consumed and compacted away. A valid-looking header at a
+// deeper offset is trailing junk (an ID3v1 tag, a binary blob) and must report a
+// clean end, never mp3.ErrCorruptStream.
+func TestTruncatedFrameOffsetZeroOnly(t *testing.T) {
+	tests := []struct {
+		name string
+		buf  []byte
+		want bool
+	}{
+		{
+			// MPEG-1 Layer III, 128 kbps, 44.1 kHz: 417 bytes declared, 6 present.
+			name: "header at offset 0, declared length overruns",
+			buf:  []byte{0xFF, 0xFB, 0x90, 0x00, 0xAA, 0xBB},
+			want: true,
+		},
+		{
+			// The same header buried at offset 5 behind an ID3v1 "TAG" magic.
+			name: "valid-looking header at a deeper offset",
+			buf:  []byte{0x54, 0x41, 0x47, 0x00, 0x00, 0xFF, 0xFB, 0x90, 0x00},
+			want: false,
+		},
+		{
+			name: "full ID3v1 trailer hiding a header near its end",
+			buf:  append(bytes.Clone(id3v1Tag()[:id3v1Size-6]), 0xFF, 0xFB, 0x90, 0x00, 0x11, 0x22),
+			want: false,
+		},
+		{
+			name: "binary blob hiding a header near its end",
+			buf:  buriedHeaderBlob(64),
+			want: false,
+		},
+		{
+			name: "plain ID3v1 trailer, no sync anywhere",
+			buf:  id3v1Tag(),
+			want: false,
+		},
+		{
+			// A complete-but-unconfirmable final frame: all 417 bytes present.
+			name: "header at offset 0, whole frame present",
+			buf:  append([]byte{0xFF, 0xFB, 0x90, 0x00}, make([]byte, 413)...),
+			want: false,
+		},
+		{
+			name: "empty buffer",
+			buf:  nil,
+			want: false,
+		},
+		{
+			name: "too short for a header",
+			buf:  []byte{0xFF, 0xFB, 0x90},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := truncatedFrame(tt.buf); got != tt.want {
+				t.Errorf("truncatedFrame(%d bytes) = %v, want %v", len(tt.buf), got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStreamingTrailingBinaryBlobClean appends a large non-frame binary trailer
+// that hides a byte-valid frame header near its end. The trailer is longer than
+// a resync window, so the discard-and-retain path drops the confirmed garbage
+// and the leftover the EOF check finally sees is pure junk: no sync at offset 0,
+// a valid-looking header deep inside. That is a clean end, and every frame the
+// resync did not swallow must already have been emitted. Scanning every offset
+// for a header instead reads the buried match as a promised-but-cut frame and
+// fails this healthy stream with mp3.ErrCorruptStream.
+func TestStreamingTrailingBinaryBlobClean(t *testing.T) {
+	plain := plainCBRFrames(t, fixturesDir+"/sine44s_128.mp3")
+	clean := decodeAllBytes(t, bytes.NewReader(plain))
+
+	// A full resync window plus its retained tail: the length exceeds the
+	// resyncWindowBytes discard threshold, so at least one discard-and-retain
+	// runs and the trailer's own bytes become the leftover at EOF.
+	blob := buriedHeaderBlob(resyncWindowBytes + resyncRetainBytes)
+	if _, ok := frameLength(blob); ok {
+		t.Fatal("trailer must not start with a valid frame header, or the deep-offset case is untested")
+	}
+	if length, ok := frameLength(blob[len(blob)-frameHeaderSize-2:]); !ok || length <= frameHeaderSize+2 {
+		t.Fatalf("buried header must be valid and overrun the trailer, got (%d, %v)", length, ok)
+	}
+
+	stream := make([]byte, 0, len(plain)+len(blob))
+	stream = append(stream, plain...)
+	stream = append(stream, blob...)
+
+	d, err := NewDecoder(bytes.NewReader(stream))
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	got, err := readAllFromDecoder(d)
+	if err != nil {
+		t.Fatalf("trailing binary blob must decode cleanly, got %v", err)
+	}
+	if !bytes.HasPrefix(clean, got) {
+		t.Fatalf("audio with trailing blob is not a prefix of the clean decode (%d vs %d bytes)", len(got), len(clean))
+	}
+	// The junk run costs at most the final frame, which mp3.DecodeFrame cannot
+	// confirm once unmatched bytes follow it; everything before must survive.
+	lost := len(clean) - len(got)
+	if maxLost := maxSamplesPerFrame * maxChannels * bytesPerS16Sample; lost > maxLost {
+		t.Errorf("trailing blob cost %d bytes of audio, want at most %d (one frame)", lost, maxLost)
+	}
+}
+
 // flipMiddleByte returns a copy of raw with its middle byte inverted.
 func flipMiddleByte(raw []byte) []byte {
 	out := bytes.Clone(raw)

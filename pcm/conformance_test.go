@@ -83,13 +83,21 @@ func vectorLayer(t *testing.T, data []byte) int {
 // audio frames (its Info().TotalSamples divides evenly by 1152/576) plus a
 // short, non-contributing trailing header, so the emitted sample count is
 // unaffected either way.
+//
+// Membership is a permission, not an assertion (requireAcceptableReadOutcome
+// accepts a clean end from any vector), so an entry that no longer truncates
+// must be removed rather than left as a silent licence. l3-nonstandard-big-iscf
+// was such an entry: its 155-byte tail begins with a free-format header (bitrate
+// index 0), whose length is not derivable, so the truncation verdict it used to
+// get came from an unrelated header pattern 13 bytes deeper into the tail, not
+// from a promised-but-cut frame. It now ends cleanly and is listed here no
+// longer; a return to mp3.ErrCorruptStream there is a regression and fails.
 var streamingTruncatedTailOK = map[string]bool{
 	"l3-compl":    true,
 	"l3-sin1k0db": true,
 	"l3-nonstandard-compl-sideinfo-bigvalues": true,
 	"l3-nonstandard-compl-sideinfo-blocktype": true,
 	"l3-nonstandard-compl-sideinfo-size":      true,
-	"l3-nonstandard-big-iscf":                 true,
 }
 
 // streamingConstructionGap lists ISO vectors where pcm.NewDecoder fails
@@ -107,9 +115,10 @@ var streamingTruncatedTailOK = map[string]bool{
 // frame whose FrameBytes (a large leading FrameOffset plus its body) overran the
 // steady decode window, so DecodeFrame locked onto a spurious sub-window sync and
 // construction failed wholesale. The decodeWindow fix (a wide first-frame window)
-// closed that gap: the vector now constructs, emits its two real frames bit-exact,
-// and moved to streamingTruncatedTailOK for its genuinely truncated tail. Kept for
-// the next vector that reopens a construction gap.
+// closed that gap: the vector now constructs and emits its two real frames
+// bit-exact, and its trailing bytes are read as a clean end (see
+// streamingTruncatedTailOK). Kept for the next vector that reopens a
+// construction gap.
 var streamingConstructionGap = map[string]int{}
 
 // streamingNoAudioSkip lists ISO vectors this decoder's streaming layer

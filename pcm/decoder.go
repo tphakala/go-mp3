@@ -193,10 +193,12 @@ type Decoder struct {
 	firstFrameSeen bool
 
 	// src is the raw source retained from Reset so SeekToSample can re-seek it
-	// (bufio.Reader alone cannot). seekable records whether src implements
-	// io.Seeker; SeekToSample returns ErrSeekUnsupported when it does not.
-	src      io.Reader
-	seekable bool
+	// (bufio.Reader alone cannot). seeker is that same source viewed as an
+	// io.Seeker, cached at Reset so the seek path needs no repeated type
+	// assertion; it is nil when the source does not implement io.Seeker, and
+	// SeekToSample returns ErrSeekUnsupported in that case.
+	src    io.Reader
+	seeker io.Seeker
 
 	done bool
 	err  error // latched terminal error; cleared only by Reset
@@ -242,7 +244,7 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 	}
 
 	d.src = r
-	d.seekable = false
+	d.seeker = nil
 	d.frameBuf = d.frameBuf[:0]
 	d.pending = nil
 	d.readErr = nil
@@ -265,7 +267,7 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 	// io.SectionReader is measured correctly. A SectionReader reports 0 here
 	// (its offsets are relative to the section), which is exactly right.
 	if seeker, ok := r.(io.Seeker); ok {
-		d.seekable = true
+		d.seeker = seeker
 		if cur, serr := seeker.Seek(0, io.SeekCurrent); serr == nil {
 			d.initialOffset = cur
 		}

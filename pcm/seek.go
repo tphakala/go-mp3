@@ -52,7 +52,7 @@ const seekPrimeFrames = 16
 // overlap by decoding seekPrimeFrames lead-in frames, then drops the leading
 // samples inside the landing frame to hit sampleIndex precisely.
 func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
-	if !d.seekable {
+	if d.seeker == nil {
 		return 0, ErrSeekUnsupported
 	}
 	if sampleIndex < 0 {
@@ -92,9 +92,8 @@ func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
 	// below can restore it: frameOffsets seeks the raw source directly, and
 	// leaving it moved would desync the bufio reader for the reads that follow a
 	// failed seek. The normal (reached) path rebinds via reseek, so it needs no
-	// restore.
-	seeker, _ := d.src.(io.Seeker) // guaranteed by the d.seekable check above
-	srcPos, posErr := seeker.Seek(0, io.SeekCurrent)
+	// restore. d.seeker is non-nil here, guaranteed by the check above.
+	srcPos, posErr := d.seeker.Seek(0, io.SeekCurrent)
 
 	primeOff, avail, reached, err := d.frameOffsets(primeFrame, targetFrame)
 	if err != nil {
@@ -107,7 +106,7 @@ func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
 				// restored; latch rather than resume from an indeterminate offset.
 				return d.seekFailed(posErr)
 			}
-			_, _ = seeker.Seek(srcPos, io.SeekStart)
+			_, _ = d.seeker.Seek(srcPos, io.SeekStart)
 			return 0, err
 		}
 		return d.seekFailed(err)
@@ -141,14 +140,14 @@ func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
 // avail is the number of frames present. The walk is exact for CBR and VBR
 // alike, which is what lets the landing be sample-accurate.
 func (d *Decoder) frameOffsets(prime, target int64) (primeOff, avail int64, reached bool, err error) {
-	seeker, _ := d.src.(io.Seeker) // caller guarantees seekable
+	// The caller guarantees d.seeker != nil (SeekToSample's pre-flight check).
 	pos := d.audioStart
 	var hdr [4]byte
 	for i := int64(0); i <= target; i++ {
 		if i == prime {
 			primeOff = pos
 		}
-		if _, serr := seeker.Seek(pos, io.SeekStart); serr != nil {
+		if _, serr := d.seeker.Seek(pos, io.SeekStart); serr != nil {
 			return 0, i, false, serr
 		}
 		if _, rerr := io.ReadFull(d.src, hdr[:]); rerr != nil {
@@ -185,8 +184,8 @@ func (d *Decoder) frameOffsets(prime, target int64) (primeOff, avail int64, reac
 // overlap), drops the bufio buffer and the frame buffer, and clears the
 // end/error state so decoding resumes cleanly from pos.
 func (d *Decoder) reseek(pos int64) error {
-	seeker, _ := d.src.(io.Seeker)
-	if _, err := seeker.Seek(pos, io.SeekStart); err != nil {
+	// The caller guarantees d.seeker != nil (SeekToSample's pre-flight check).
+	if _, err := d.seeker.Seek(pos, io.SeekStart); err != nil {
 		return err
 	}
 	d.dec.Reset()

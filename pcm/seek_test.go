@@ -371,7 +371,7 @@ func TestSeekOverflowSaturatesFromParsedTags(t *testing.T) {
 	// rather than set: seekable (else SeekToSample reports ErrSeekUnsupported
 	// before the arithmetic), unknown length (else the clamp returns first), and a
 	// non-zero head delay (else the addition cannot overflow at all).
-	if !d.seekable {
+	if d.seeker == nil {
 		t.Fatal("precondition: source reported non-seekable; the seek would never reach the guard")
 	}
 	if d.info.TotalSamples != 0 {

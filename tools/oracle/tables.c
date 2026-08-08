@@ -14,12 +14,19 @@
     the differential decode tests.
 
     Order: g_scf_long (8*23 bytes), g_scf_short (8*40 bytes),
-    g_scf_mixed (8*40 bytes), g_scfc_decode (16 bytes), g_pow43
-    (145*4 bytes), tabs (2164*2 bytes), tab32 (28 bytes), tab33 (16 bytes),
-    tabindex (32*2 bytes), g_linbits (32 bytes), g_pan (14*4 bytes),
-    g_aa (2*8*4 bytes), g_twid9 (18*4 bytes), g_twid3 (6*4 bytes),
-    g_mdct_window (2*18*4 bytes). Total 6248 bytes (6008 + 240: 18+6+36 = 60
-    float32 entries added for Task 9's imdct tables).
+    g_scf_mixed (8*40 bytes), g_scfc_decode (16 bytes), g_scf_partitions
+    (3*28 bytes), g_mod (24 bytes), g_preamp (10 bytes), g_expfrac (4*4
+    bytes), g_pow43 (145*4 bytes), tabs (2164*2 bytes), tab32 (28 bytes),
+    tab33 (16 bytes), tabindex (32*2 bytes), g_linbits (32 bytes),
+    g_pan (14*4 bytes), g_aa (2*8*4 bytes), g_twid9 (18*4 bytes),
+    g_twid3 (6*4 bytes), g_mdct_window (2*18*4 bytes). Total 6382 bytes
+    (6248 + 134: the four remaining L3_decode_scalefactors tables, 84+24+10+16
+    bytes, added so all eight scalefactor tables are transcribed here).
+
+    The first 974 bytes (through g_expfrac) are the scalefactor group that
+    internal/dec/scalefactors_test.go's TestScalefactorTablesMatchOracle
+    checksums; the rest of this dump is a superset covering the later tasks'
+    tables.
     int16_t/float entries are written in the host's native byte order
     (little-endian on amd64/arm64, the only build targets), matching the Go
     side's explicit binary.LittleEndian serialization.
@@ -65,6 +72,18 @@ static const uint8_t g_scf_mixed[8][40] = {
 };
 /* tools/oracle/minimp3.h:668 */
 static const uint8_t g_scfc_decode[16] = { 0,1,2,3, 12,5,6,7, 9,10,11,13, 14,15,18,19 };
+/* tools/oracle/minimp3.h:656-660 */
+static const uint8_t g_scf_partitions[3][28] = {
+    { 6,5,5, 5,6,5,5,5,6,5, 7,3,11,10,0,0, 7, 7, 7,0, 6, 6,6,3, 8, 8,5,0 },
+    { 8,9,6,12,6,9,9,9,6,9,12,6,15,18,0,0, 6,15,12,0, 6,12,9,6, 6,18,9,0 },
+    { 9,9,6,12,9,9,9,9,9,9,12,6,18,18,0,0,12,12,12,0,12, 9,9,6,15,12,9,0 }
+};
+/* tools/oracle/minimp3.h:674 */
+static const uint8_t g_mod[6*4] = { 5,5,4,4,5,5,4,1,4,3,1,1,5,6,6,1,4,4,4,1,4,3,1,1 };
+/* tools/oracle/minimp3.h:701 */
+static const uint8_t g_preamp[10] = { 1,1,1,1,2,2,3,3,3,2 };
+/* tools/oracle/minimp3.h:644 */
+static const float g_expfrac[4] = { 9.31322575e-10f,7.83145814e-10f,6.58544508e-10f,5.53767716e-10f };
 
 /* tools/oracle/minimp3.h:716-719 */
 static const float g_pow43[129 + 16] = {
@@ -265,6 +284,11 @@ int main(void)
     for (int i = 0; i < 8; i++)
         fwrite(g_scf_mixed[i], 1, sizeof(g_scf_mixed[i]), stdout);
     fwrite(g_scfc_decode, 1, sizeof(g_scfc_decode), stdout);
+    for (int i = 0; i < 3; i++)
+        fwrite(g_scf_partitions[i], 1, sizeof(g_scf_partitions[i]), stdout);
+    fwrite(g_mod, 1, sizeof(g_mod), stdout);
+    fwrite(g_preamp, 1, sizeof(g_preamp), stdout);
+    fwrite(g_expfrac, 1, sizeof(g_expfrac), stdout);
     fwrite(g_pow43, 1, sizeof(g_pow43), stdout);
     fwrite(tabs, 1, sizeof(tabs), stdout);
     fwrite(tab32, 1, sizeof(tab32), stdout);

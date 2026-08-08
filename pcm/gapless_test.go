@@ -142,6 +142,9 @@ func zeroInfoFrameCount(t *testing.T, raw []byte) []byte {
 		t.Fatal("fixture has no Info tag; test assumption is stale")
 	}
 	framesOff := idx + xingMagicLen + xingFlagsLen
+	if framesOff+xingFieldLen > len(mod) {
+		t.Fatal("Info tag is truncated before its frame-count field; test assumption is stale")
+	}
 	for i := range xingFieldLen {
 		mod[framesOff+i] = 0
 	}

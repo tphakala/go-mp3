@@ -89,35 +89,28 @@ var streamingTruncatedTailOK = map[string]bool{
 	"l3-nonstandard-compl-sideinfo-bigvalues": true,
 	"l3-nonstandard-compl-sideinfo-blocktype": true,
 	"l3-nonstandard-compl-sideinfo-size":      true,
+	"l3-nonstandard-big-iscf":                 true,
 }
 
 // streamingConstructionGap lists ISO vectors where pcm.NewDecoder fails
-// wholesale, before a single sample is emitted, despite the frame API
-// decoding real, oracle-verified audio from those same bytes: a known
-// pcm.Decoder construction-robustness gap, not a missing ground truth.
+// wholesale, before a single sample is emitted, despite the frame API decoding
+// real, oracle-verified audio from those same bytes: a known pcm.Decoder
+// construction-robustness gap, not a missing ground truth. The map value is the
+// exact interleaved sample count decodeAllFloat32ViaFrameAPI returns for that
+// vector; skipOrFailConstructionError asserts both halves of the known state
+// (NewDecoder fails with mp3.ErrCorruptStream, and the frame API's count matches
+// the pinned value) before skipping, so a later fix that closes a gap makes the
+// assertion fail loudly and forces the entry's removal rather than silently
+// passing over a closed gap.
 //
-// This is NOT the same situation as streamingTruncatedTailOK above: those
-// vectors construct successfully and emit every real frame's audio,
-// erroring only once they reach a genuinely truncated trailing header at
-// EOF. "l3-nonstandard-big-iscf" is short (two decodable frames immediately
-// followed by a truncated third), so NewDecoder's eager first-frame
-// read-ahead (Reset -> decodeNextFrame) reaches that same kind of
-// truncated-final-frame condition WHILE STILL ESTABLISHING the stream: it
-// fails before Info is ever populated and before either of the two real
-// frames' audio (2304 interleaved samples, bit-exact against the pinned
-// oracle per internal/dec's own differential tests) is emitted.
-//
-// The map value is the exact interleaved sample count
-// decodeAllFloat32ViaFrameAPI currently returns for that vector.
-// TestStreamingConformance asserts both halves of the known state
-// (NewDecoder fails with mp3.ErrCorruptStream, and the frame API's count
-// matches the pinned value) before skipping, so a future pcm.Decoder fix to
-// this construction-time handling (tracked as a Task 6 follow-up) makes the
-// assertion fail loudly and forces this entry's removal, rather than this
-// test silently continuing to pass over a closed gap.
-var streamingConstructionGap = map[string]int{
-	"l3-nonstandard-big-iscf": 2304,
-}
+// It is currently empty. Its last entry, l3-nonstandard-big-iscf, had a first
+// frame whose FrameBytes (a large leading FrameOffset plus its body) overran the
+// steady decode window, so DecodeFrame locked onto a spurious sub-window sync and
+// construction failed wholesale. The decodeWindow fix (a wide first-frame window)
+// closed that gap: the vector now constructs, emits its two real frames bit-exact,
+// and moved to streamingTruncatedTailOK for its genuinely truncated tail. Kept for
+// the next vector that reopens a construction gap.
+var streamingConstructionGap = map[string]int{}
 
 // streamingNoAudioSkip lists ISO vectors this decoder's streaming layer
 // correctly refuses to construct a Decoder for (mp3.ErrCorruptStream at

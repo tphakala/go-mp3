@@ -51,9 +51,11 @@ const (
 	// single frame (maxFrameBytes) so DecodeFrame can skip the junk AND confirm
 	// the next real frame within one window: confirmation needs the recovered
 	// frame's body plus a following header, so a one-frame window could never
-	// resync across garbage. The normal, non-garbage decode stays on the small
-	// maxFrameBytes window, so this larger buffer is allocated only when a
-	// stream actually contains garbage.
+	// resync across garbage. The steady, post-first-audio decode stays on the
+	// small maxFrameBytes window; decodeWindow also hands this wide window to the
+	// first-frame decode, so frameBuf grows to this size once during construction
+	// even for a clean stream, trading a larger one-time read-ahead for
+	// robustness against a leading-junk first frame.
 	resyncWindowBytes = 16 * 1024
 	// frameHeaderSize is the MPEG frame header length in bytes: the sync word
 	// plus the version/layer/bitrate/sample-rate fields frameLength reads.
@@ -308,11 +310,33 @@ func (d *Decoder) Info() Info { return d.info }
 // needs. See fillTo.
 func (d *Decoder) fill() { d.fillTo(maxFrameBytes) }
 
+// decodeWindow is the byte span handed to DecodeFrame at the start of a decode
+// step. Until the first audio frame establishes SampleRate it is the wide
+// resync window, so DecodeFrame can see a complete first frame even when leading
+// junk pushes that frame's FrameBytes (FrameOffset + body) past maxFrameBytes.
+// With a too-small window DecodeFrame cannot confirm the real frame (its body
+// plus the following header overrun the window) and instead locks onto a
+// spurious sub-window sync, silently desyncing the whole stream (the
+// l3-nonstandard-big-iscf vector). Once audio flows, contiguous frames start at
+// offset 0 and fit maxFrameBytes, so the window narrows to the tight
+// steady-state size. Because fillTo reaches its target before decoding, this
+// widens the one-time construction read-ahead (and frameBuf's retained size) to
+// resyncWindowBytes for every stream, not only ones with leading junk; that
+// startup cost buys robustness the tight window cannot provide, and steady-state
+// decoding is unaffected.
+func (d *Decoder) decodeWindow() int {
+	if d.info.SampleRate == 0 {
+		return resyncWindowBytes
+	}
+	return maxFrameBytes
+}
+
 // fillTo tops frameBuf up toward target bytes from the underlying reader, so a
 // following mp3.DecodeFrame always sees a complete frame while the source
-// still has bytes. The steady decode passes maxFrameBytes; the mid-stream
-// resync passes the larger resyncWindowBytes so DecodeFrame has room to skip a
-// garbage run and still confirm the next frame. It records the first read error
+// still has bytes. The steady decode passes maxFrameBytes; the first-frame
+// decode and the mid-stream resync both pass the larger resyncWindowBytes (see
+// decodeWindow) so DecodeFrame has room to skip a leading-junk or garbage run
+// and still confirm the frame. It records the first read error
 // (including io.EOF) in readErr and then does nothing on later calls.
 func (d *Decoder) fillTo(target int) {
 	if d.readErr != nil || len(d.frameBuf) >= target {
@@ -388,11 +412,12 @@ func (d *Decoder) decodeNextFrame() error {
 	if d.done {
 		return io.EOF
 	}
-	// window is the byte span handed to DecodeFrame: the small maxFrameBytes for
-	// a steady decode, widened to resyncWindowBytes while skipping garbage.
-	// garbageSkipped is the running total of bytes discarded during a resync run,
-	// bounded by resyncBudgetBytes. Both reset the moment a real frame is found.
-	window, garbageSkipped := maxFrameBytes, 0
+	// window is the byte span handed to DecodeFrame: resyncWindowBytes until the
+	// first audio frame is decoded (see decodeWindow) and while skipping garbage,
+	// then the small maxFrameBytes for the steady decode. garbageSkipped is the
+	// running total of bytes discarded during a resync run, bounded by
+	// resyncBudgetBytes. Both reset the moment a real frame is found.
+	window, garbageSkipped := d.decodeWindow(), 0
 	for {
 		d.fillTo(window)
 		if len(d.frameBuf) == 0 {
@@ -422,7 +447,7 @@ func (d *Decoder) decodeNextFrame() error {
 
 		// A confirmable frame (audio, or a resync frame that yields no samples):
 		// any garbage run is over, so return to the steady, small window.
-		window, garbageSkipped = maxFrameBytes, 0
+		window, garbageSkipped = d.decodeWindow(), 0
 
 		if !d.xingChecked && fi.Layer == 3 {
 			d.xingChecked = true

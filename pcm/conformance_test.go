@@ -116,9 +116,10 @@ var streamingTruncatedTailOK = map[string]bool{
 // steady decode window, so DecodeFrame locked onto a spurious sub-window sync and
 // construction failed wholesale. The decodeWindow fix (a wide first-frame window)
 // closed that gap: the vector now constructs and emits its two real frames
-// bit-exact, and its trailing bytes are read as a clean end (see
-// streamingTruncatedTailOK). Kept for the next vector that reopens a
-// construction gap.
+// bit-exact, and its trailing bytes read as a clean end: its tail's offset-0
+// header is free-format and unsizable, so truncatedFrame reports no truncation
+// and the vector is no longer in streamingTruncatedTailOK. Kept for the next
+// vector that reopens a construction gap.
 var streamingConstructionGap = map[string]int{}
 
 // streamingNoAudioSkip lists ISO vectors this decoder's streaming layer

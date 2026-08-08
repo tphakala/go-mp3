@@ -101,20 +101,7 @@ func TestGaplessDelayAndPadding(t *testing.T) {
 // The LAME delay is still parsed and head-trimmed; all 85 audio frames decode,
 // so emitted = 85*1152 - 576 = 97344 samples/channel.
 func TestGaplessHeadOnlyTrim(t *testing.T) {
-	raw := readFixture(t, sine48mono128)
-	mod := bytes.Clone(raw)
-
-	// Zero the Info tag's 4-byte frame-count field (the first field after the
-	// 4-byte magic and 4-byte flags word) so parseXing reports frames = 0 while
-	// the flag stays set and every later field keeps its position.
-	idx := bytes.Index(mod, []byte("Info"))
-	if idx < 0 {
-		t.Fatal("fixture has no Info tag; test assumption is stale")
-	}
-	framesOff := idx + xingMagicLen + xingFlagsLen
-	for i := range xingFieldLen {
-		mod[framesOff+i] = 0
-	}
+	mod := zeroInfoFrameCount(t, readFixture(t, sine48mono128))
 
 	// bufio.Reader is not an io.Seeker, so the decoder cannot measure the
 	// stream length: TotalSamples stays unknown (0), and only the head trims.
@@ -139,4 +126,27 @@ func TestGaplessHeadOnlyTrim(t *testing.T) {
 	if gotSamples != wantSamples {
 		t.Errorf("emitted %d samples/channel, want %d (head trim only)", gotSamples, wantSamples)
 	}
+}
+
+// zeroInfoFrameCount clones an Info-tagged fixture and zeroes the tag's 4-byte
+// frame-count field (the first field after the 4-byte magic and 4-byte flags
+// word), so parseXing reports frames = 0 while the flag stays set and every
+// later field, including the LAME extension carrying the encoder delay, keeps
+// its position. The result is a stream whose length cannot be derived from the
+// tag, which is how the tests reach the unknown-length paths.
+func zeroInfoFrameCount(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	mod := bytes.Clone(raw)
+	idx := bytes.Index(mod, []byte("Info"))
+	if idx < 0 {
+		t.Fatal("fixture has no Info tag; test assumption is stale")
+	}
+	framesOff := idx + xingMagicLen + xingFlagsLen
+	if framesOff+xingFieldLen > len(mod) {
+		t.Fatal("Info tag is truncated before its frame-count field; test assumption is stale")
+	}
+	for i := range xingFieldLen {
+		mod[framesOff+i] = 0
+	}
+	return mod
 }

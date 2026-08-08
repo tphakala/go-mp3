@@ -93,12 +93,16 @@ func FuzzStreamDecode(f *testing.F) {
 	// seekToEnd; unknown total instead reaches rawTarget's own overflow
 	// check. sine44s_32.mp3 is a small, tag-less, exact-CBR fixture already
 	// relied on elsewhere in this package (robustness_test.go,
-	// decoder_test.go) for constructing cleanly.
-	if liveStream, ferr := os.ReadFile(filepath.Join("..", "testdata", "fixtures", "sine44s_32.mp3")); ferr == nil {
-		f.Add(bytes.Clone(liveStream), int64(math.MaxInt64))
-		f.Add(bytes.Clone(liveStream), int64(math.MinInt64))
-		f.Add(bytes.Clone(liveStream), int64(-1))
+	// decoder_test.go) for constructing cleanly. It is committed, so a read
+	// failure means a broken checkout, not an optional seed: fail loudly
+	// rather than quietly dropping the seeds these edges depend on.
+	liveStream, err := os.ReadFile(sine44s32)
+	if err != nil {
+		f.Fatalf("reading %s: %v", sine44s32, err)
 	}
+	f.Add(bytes.Clone(liveStream), int64(math.MaxInt64))
+	f.Add(bytes.Clone(liveStream), int64(math.MinInt64))
+	f.Add(bytes.Clone(liveStream), int64(-1))
 
 	f.Fuzz(func(t *testing.T, data []byte, seekIdx int64) {
 		for _, f32 := range [...]bool{false, true} {

@@ -343,6 +343,62 @@ func TestSeekOverflowSaturates(t *testing.T) {
 	}
 }
 
+// TestSeekOverflowSaturatesFromParsedTags reaches the same saturate guard as
+// TestSeekOverflowSaturates above, but with every precondition established by
+// the decoder's own parsing rather than by assigning gaplessStart directly: the
+// head delay comes from the fixture's real LAME extension, and the length stays
+// unknown because the Info tag's frame count is zeroed (as in
+// TestGaplessHeadOnlyTrim) and the source refuses SeekEnd, so the CBR fallback
+// cannot supply one either. That is what the white-box test cannot show, and why
+// both are kept: the overflow state is reachable through the public API alone,
+// from bytes a real encoder could emit.
+func TestSeekOverflowSaturatesFromParsedTags(t *testing.T) {
+	mod := zeroInfoFrameCount(t, readFixture(t, sine48mono128))
+
+	// Ground truth for the landing point: the walk's !reached branch reports
+	// avail*spf - gaplessStart, which is exactly the playable sample count of this
+	// head-trimmed, tail-open stream.
+	full, ch, total := readAllFloat32(t, noLenSeeker{bytes.NewReader(mod)})
+	if total != 0 {
+		t.Fatalf("precondition: TotalSamples = %d, want 0 (zeroed frame count, no length probe)", total)
+	}
+
+	d, err := NewDecoder(noLenSeeker{bytes.NewReader(mod)}, WithF32())
+	if err != nil {
+		t.Fatalf("NewDecoder(WithF32): %v", err)
+	}
+	// The three preconditions of the overflow branch, every one of them parsed
+	// rather than set: seekable (else SeekToSample reports ErrSeekUnsupported
+	// before the arithmetic), unknown length (else the clamp returns first), and a
+	// non-zero head delay (else the addition cannot overflow at all).
+	if !d.seekable {
+		t.Fatal("precondition: source reported non-seekable; the seek would never reach the guard")
+	}
+	if d.info.TotalSamples != 0 {
+		t.Fatalf("precondition: TotalSamples = %d, want 0 (unknown length)", d.info.TotalSamples)
+	}
+	if d.gaplessStart != sine48mDelay {
+		t.Fatalf("precondition: gaplessStart = %d, want %d (the fixture's parsed LAME delay)",
+			d.gaplessStart, sine48mDelay)
+	}
+
+	// math.MaxInt64 + gaplessStart wraps int64 negative. Without the guard that
+	// negative rawTarget yields a negative intra-frame offset and panics on a
+	// negative slice index while priming; saturating instead sends the frame walk
+	// to EOF, so the seek lands at the true stream end.
+	landed, err := d.SeekToSample(math.MaxInt64)
+	if err != nil {
+		t.Fatalf("SeekToSample(MaxInt64): %v", err)
+	}
+	if wantEnd := int64(len(full) / ch); landed != wantEnd {
+		t.Fatalf("landed = %d, want %d (the true stream end)", landed, wantEnd)
+	}
+	var scratch [16]byte
+	if n, rerr := d.Read(scratch[:]); n != 0 || !errors.Is(rerr, io.EOF) {
+		t.Fatalf("post-seek Read = (%d, %v), want (0, io.EOF)", n, rerr)
+	}
+}
+
 // TestSeekFreeFormatUnsupported seeks a free-format stream, whose frames carry
 // no bitrate index and so cannot be sized by the frame-header walk. The walk
 // fails on the very first audio frame, which SeekToSample must report as the

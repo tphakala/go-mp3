@@ -12,12 +12,20 @@ IMDCT with overlap, synthesis filterbank, and full-frame decode
 (mp3dec_decode_frame). It is fuzzed, resync-tested, zero-alloc in steady
 state, and exposed through the public package `mp3` (NewDecoder / DecodeFrame
 returning (n, FrameInfo, error) / Reset, sibling-faithful to
-go-flac/go-aac/go-wav). Phase 2 (pcm container) is UNDERWAY: PRs 8-9 merged, a
-streaming `pcm.Decoder` (io.Reader + io.WriterTo) with ID3v2 skip, S16 default
-plus a WithF32 option, Xing/Info/VBRI/LAME tag parsing, and gapless trim (the
-LAME-gapless conformance discrepancy closes to zero). Remaining Phase 2: PR10
-(SeekToSample + streaming robustness) and PR11 (fuzz + streaming conformance),
-then Phases 3-5 (encoder). No encoder exists yet.**
+go-flac/go-aac/go-wav). Phase 2 (pcm container) is COMPLETE (as of 2026-08-08,
+PRs 8-11 merged): the streaming `pcm.Decoder` (io.Reader + io.WriterTo) adds
+ID3v2 skip + ID3v1 trailer, S16 default plus a WithF32 option,
+Xing/Info/VBRI/LAME tag parsing, gapless trim, bounded resync with
+mp3.ErrCorruptStream, clean-end/truncation detection, SeekToSample (bit-exact
+via exact-frame-index recovery + reservoir/MDCT priming), and a fuzz +
+streaming conformance suite the CI Oracle job runs bit-exact on amd64 + arm64
+(pcm coverage ~91%). The T7 fuzz surfaced two pre-existing decoder bugs: an
+intensity/MS-stereo panic on a malformed mono frame, FIXED and merged (PR12
+cc81f9d, an l3Decode nch==2 guard); and a pcm.Decoder wholesale-construction
+failure on a short stream whose first frame's FrameBytes exceeds maxFrameBytes
+(l3-nonstandard-big-iscf), root-caused and DEFERRED (non-crashing, documented
+and self-guarding in the conformance test). Next: the big-iscf fix, two test
+fast-follows, then Phases 3-5 (encoder). No encoder exists yet.**
 
 ## Start here (fresh session)
 
@@ -32,20 +40,22 @@ then Phases 3-5 (encoder). No encoder exists yet.**
    (local, gitignored), which records each task's status, commit range, the
    review findings folded in, and the authoritative carry-forward list. The
    completed Phase 0+1 plan/ledger (dated 2026-08-06) remain for history.
-3. Phase 0+1 is DONE (13 tasks, PRs 1-6 + cleanup PR7). Phase 2 is UNDERWAY.
-   DONE: PR8 = T1 streaming skeleton + T2 Xing/Info (fbd786f); PR9 = T3
-   VBRI/LAME/gapless + T5 WithF32 (d3c03aa). NEXT: PR10 = T4 (SeekToSample) +
-   T6 (streaming robustness); then PR11 = T7 (fuzz + streaming conformance).
-   KEY carry-forwards (full list in the Phase 2 ledger): T4 must wire
-   parseVBRI into the decode loop AND exclude the VBRI tag frame (currently a
-   VBRI-tagged stream emits its tag frame as audio; no fixture yet), and must
-   prime the bit reservoir + MDCT overlap on seek (step back ~10 frames and
-   decode silently forward, do NOT just Reset at the landing frame), with a
-   TOC-narrowed binary search. T6 must bound the free-format findFrame
-   O(n*2304) scan at the streaming boundary (retain the last 2880 bytes on
-   discard), handle parseXing FrameOffset!=0, add the ID3v1 trailer, and
-   reconsider Layer I/II skip-and-continue. Execute PR10/PR11 the same way:
-   plan is written and agy-reviewed, so branch, implement, review, gate,
+3. Phase 0+1 (PRs 1-7) and Phase 2 (pcm container, PRs 8-11) are DONE; main
+   HEAD cc81f9d. Phase 2 PRs: PR8 T1+T2 (fbd786f), PR9 T3+T5 (d3c03aa), PR10
+   T4 SeekToSample + T6 robustness (2c8392c), PR11 T7 fuzz + conformance
+   (cbe855c); decoder-robustness fix PR12 (cc81f9d) followed. NEXT, on fresh
+   branches off main (authoritative list + root-cause analyses in the Phase 2
+   ledger): (a) big-iscf pcm.Decoder wholesale-construction failure - the
+   first frame's FrameBytes (3242, via a 1338-byte FrameOffset) exceeds
+   maxFrameBytes (2880), violating the streaming window assumption, so Reset
+   fails wholesale where the frame API recovers 2 audio frames; deliberate
+   design fix, must not regress T6 robustness; (b) two test fast-follows
+   (deterministic seek-overflow-guard coverage; fuzz fixture-load guard should
+   f.Fatalf not silently skip); (c) PR10 carry-forwards (frameOffsets O(n) walk
+   / TOC narrowing / frame-index cache; truncatedFrame binary-trailer
+   false-reject; frameLength <-> internal/dec shared helper; src/seekable field
+   consolidation). Then Phases 3-5 (encoder), each with its own agy-reviewed
+   plan. Execute each the same way: plan, branch, implement, review, gate,
    watch-pr, merge.
 4. Execute task by task with superpowers:subagent-driven-development (a fresh
    implementer subagent per task, then a task review, following the ledger's

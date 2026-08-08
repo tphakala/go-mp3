@@ -19,13 +19,18 @@ Xing/Info/VBRI/LAME tag parsing, gapless trim, bounded resync with
 mp3.ErrCorruptStream, clean-end/truncation detection, SeekToSample (bit-exact
 via exact-frame-index recovery + reservoir/MDCT priming), and a fuzz +
 streaming conformance suite the CI Oracle job runs bit-exact on amd64 + arm64
-(pcm coverage ~91%). The T7 fuzz surfaced two pre-existing decoder bugs: an
-intensity/MS-stereo panic on a malformed mono frame, FIXED and merged (PR12
-cc81f9d, an l3Decode nch==2 guard); and a pcm.Decoder wholesale-construction
-failure on a short stream whose first frame's FrameBytes exceeds maxFrameBytes
-(l3-nonstandard-big-iscf), root-caused and DEFERRED (non-crashing, documented
-and self-guarding in the conformance test). Next: the big-iscf fix, two test
-fast-follows, then Phases 3-5 (encoder). No encoder exists yet.**
+(pcm coverage ~91%). The T7 fuzz surfaced two pre-existing decoder bugs, both
+now FIXED and merged: an intensity/MS-stereo panic on a malformed mono frame
+(PR12 cc81f9d, an l3Decode nch==2 guard); and the l3-nonstandard-big-iscf
+wholesale-construction failure, where an oversized leading FrameOffset pushed
+the first frame's FrameBytes past maxFrameBytes and DecodeFrame locked onto a
+spurious sub-window sync (GitHub PR #13, 6ca0494, a wide decodeWindow until the
+first audio frame sets SampleRate). The two deferred test fast-follows also
+merged (GitHub PR #14, 7928a8c: a black-box seek-overflow reachability test and
+a strict fuzz fixture guard). Phase 2 is fully wrapped; the remaining pcm
+refactor/perf/coverage cleanups are deferred and tracked in GitHub issue #15.
+Next: those cleanups (when the CodeRabbit review budget allows), then Phases 3-5
+(encoder). No encoder exists yet.**
 
 ## Start here (fresh session)
 
@@ -33,30 +38,26 @@ fast-follows, then Phases 3-5 (encoder). No encoder exists yet.**
    (`mcp__hindsight-memory-go-mp3__recall`), query "resume". The bank holds
    the authoritative resume state: merged commits, conventions, and the
    carry-forward items below.
-2. The active plan is Phase 2 (pcm container):
+2. The completed Phase 2 plan (pcm container, now fully wrapped) is:
    `docs/superpowers/plans/2026-08-07-go-mp3-phase2-pcm-container.md`
    (agy-reviewed), ledger
    `.superpowers/sdd/2026-08-07-go-mp3-phase2-pcm-container/progress.md`
    (local, gitignored), which records each task's status, commit range, the
    review findings folded in, and the authoritative carry-forward list. The
    completed Phase 0+1 plan/ledger (dated 2026-08-06) remain for history.
-3. Phase 0+1 (PRs 1-7) and Phase 2 (pcm container, PRs 8-11) are DONE; main
-   HEAD cc81f9d. Phase 2 PRs: PR8 T1+T2 (fbd786f), PR9 T3+T5 (d3c03aa), PR10
-   T4 SeekToSample + T6 robustness (2c8392c), PR11 T7 fuzz + conformance
-   (cbe855c); decoder-robustness fix PR12 (cc81f9d) followed. NEXT, on fresh
-   branches off main (authoritative list + root-cause analyses in the Phase 2
-   ledger): (a) big-iscf pcm.Decoder wholesale-construction failure - the
-   first frame's FrameBytes (3242, via a 1338-byte FrameOffset) exceeds
-   maxFrameBytes (2880), violating the streaming window assumption, so Reset
-   fails wholesale where the frame API recovers 2 audio frames; deliberate
-   design fix, must not regress T6 robustness; (b) two test fast-follows
-   (deterministic seek-overflow-guard coverage; fuzz fixture-load guard should
-   f.Fatalf not silently skip); (c) PR10 carry-forwards (frameOffsets O(n) walk
-   / TOC narrowing / frame-index cache; truncatedFrame binary-trailer
-   false-reject; frameLength <-> internal/dec shared helper; src/seekable field
-   consolidation). Then Phases 3-5 (encoder), each with its own agy-reviewed
-   plan. Execute each the same way: plan, branch, implement, review, gate,
-   watch-pr, merge.
+3. Phase 0+1 (PRs 1-7) and Phase 2 (pcm container, PRs 8-11 + fix PR12) are
+   DONE; the big-iscf construction fix (GitHub PR #13, 6ca0494) and the two
+   test fast-follows (GitHub PR #14, 7928a8c) are now MERGED too. Main HEAD
+   7928a8c. Phase 2 is fully wrapped. NEXT: the remaining pcm cleanups are
+   DEFERRED and tracked in GitHub issue #15 (src/seekable consolidation;
+   truncatedFrame binary-trailer false-reject; frameOffsets O(n)/TOC/cache
+   perf; a low-value frameLength-vs-internal/dec helper that turned out not
+   worth sharing since the two are not arithmetically identical; test-coverage
+   minors). Do them on fresh branches when the CodeRabbit review budget allows.
+   THEN the main work: Phases 3-5 (encoder: skeleton, psychoacoustic model +
+   rate control, tuning), each with its own agy-reviewed plan, derived only
+   from ISO/IEC 11172-3 and published papers per PROVENANCE.md. Execute each the
+   same way: plan, branch, implement, review, gate, watch-pr, merge.
 4. Execute task by task with superpowers:subagent-driven-development (a fresh
    implementer subagent per task, then a task review, following the ledger's
    established pattern).

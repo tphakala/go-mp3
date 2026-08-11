@@ -139,11 +139,40 @@ func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
 // decoding. When the stream ends before frame target, reached is false and
 // avail is the number of frames present. The walk is exact for CBR and VBR
 // alike, which is what lets the landing be sample-accurate.
+//
+// Offsets established along the way are cached in frameOff, so a later seek
+// resumes from the highest frame already walked instead of re-walking from
+// audioStart: a repeat or backward seek costs a single header probe, and a
+// forward seek pays only the frames past the cached range. The returns are
+// byte-identical either way, because a cached entry is the very pos the
+// uncached walk would have computed at that index and the cache never extends
+// past the frame the walk stopped on.
 func (d *Decoder) frameOffsets(prime, target int64) (primeOff, avail int64, reached bool, err error) {
 	// The caller guarantees d.seeker != nil (SeekToSample's pre-flight check).
-	pos := d.audioStart
+	//
+	// Seed the cache with frame 0's offset. audioStart is final by the time
+	// SeekToSample can run: Reset's eager first-frame decode has already folded
+	// in any tag frames and resync offset, and its guards fire once per Reset.
+	if len(d.frameOff) == 0 {
+		d.frameOff = append(d.frameOff, d.audioStart)
+	}
+	// Resume from the highest cached frame at or below target. Every cached
+	// offset was computed by this same walk over this same source, so skipping
+	// the seek and header read for frames below the resume point changes no
+	// return value; the walk re-probes the resume frame itself and everything
+	// after it exactly as a cold walk would. prime < start means frames 0..prime
+	// were all sized on an earlier walk, so the cold walk would have reached
+	// iteration prime and set primeOff to this same cached offset.
+	start := int64(len(d.frameOff)) - 1
+	if start > target {
+		start = target
+	}
+	if prime < start {
+		primeOff = d.frameOff[prime]
+	}
+	pos := d.frameOff[start]
 	var hdr [4]byte
-	for i := int64(0); i <= target; i++ {
+	for i := start; i <= target; i++ {
 		if i == prime {
 			primeOff = pos
 		}
@@ -175,6 +204,15 @@ func (d *Decoder) frameOffsets(prime, target int64) (primeOff, avail int64, reac
 			return primeOff, i, false, nil
 		}
 		pos += int64(length)
+		// Frame i is sized, so pos is now frame i+1's confirmed start. Extend the
+		// cache only on new ground: a re-walk over already-cached frames returns at
+		// the i == target check above, before reaching here, and this guard keeps
+		// frameOff dense and append-only. Nothing is appended past the frame a
+		// failing walk stopped on, since every exit above skips it, so the
+		// terminating frame is always re-probed live rather than served from cache.
+		if int64(len(d.frameOff)) == i+1 {
+			d.frameOff = append(d.frameOff, pos)
+		}
 	}
 	return primeOff, target, true, nil
 }

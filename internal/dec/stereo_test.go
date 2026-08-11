@@ -12,14 +12,17 @@ import (
 
 // TestStereoTablesMatchOracle asserts the two ported const tables (gPan,
 // gAA, both in tables.go) are byte-identical to the pin's g_pan and g_aa.
-// tools/oracle/tables.c appends these two tables (transcribed from
+// tools/oracle/tables.c emits these two tables (transcribed from
 // tools/oracle/minimp3.h with line-number citations) after the tables
-// Tasks 6/7 already checksum. This golden hash covers only the new
-// trailing 120 bytes (56 for g_pan, 64 for g_aa), independent of the
-// rest of tables.c's output, produced once with:
+// Tasks 6/7 already checksum, and later tasks appended g_twid9, g_twid3,
+// and g_mdct_window (72+24+144 = 240 bytes) after them, so the last 120
+// bytes of the output are no longer g_pan/g_aa. This golden hash covers
+// only the 120-byte g_pan(56)+g_aa(64) region, which sits 240 bytes from
+// the end, independent of the rest of tables.c's output; it was produced
+// with:
 //
 //	cc -O2 -o /tmp/mp3tables tools/oracle/tables.c && \
-//	  /tmp/mp3tables | tail -c 120 | sha256sum
+//	  /tmp/mp3tables | tail -c 360 | head -c 120 | sha256sum
 //
 // Re-run that whenever gPan/gAA's literals change to refresh wantHex.
 func TestStereoTablesMatchOracle(t *testing.T) {

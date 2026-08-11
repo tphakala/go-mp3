@@ -86,13 +86,7 @@ func TestDecoderF32Output(t *testing.T) {
 			len(f32Got), wantBytes, len(want), bytesPerF32Sample)
 	}
 
-	gotSamples := float32BytesFromLE(t, f32Got)
-	for i, w := range want {
-		if math.Float32bits(gotSamples[i]) != math.Float32bits(w) {
-			t.Fatalf("sample %d = %v (bits %#x), want %v (bits %#x)",
-				i, gotSamples[i], math.Float32bits(gotSamples[i]), w, math.Float32bits(w))
-		}
-	}
+	assertF32Equal(t, float32BytesFromLE(t, f32Got), want, "WithF32 output vs frame-API decode")
 
 	s16d, err := NewDecoder(bytes.NewReader(raw))
 	if err != nil {

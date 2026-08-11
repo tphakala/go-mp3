@@ -194,7 +194,7 @@ func checkStreamingConformance(t *testing.T, fx, name string) {
 	got := float32BytesFromLE(t, gotBytes)
 
 	want := gaplessTrim(all, sd)
-	requireBitExact(t, got, want)
+	assertF32Equal(t, got, want, "streaming decode vs frame-API ground truth")
 
 	if sd.info.EncoderDelay == 0 && sd.info.EncoderPadding == 0 {
 		return // no gapless trim on this vector: nothing further to check
@@ -261,22 +261,6 @@ func gaplessTrim(all []float32, sd *Decoder) []float32 {
 		lo = hi
 	}
 	return all[lo:hi]
-}
-
-// requireBitExact fails the test at the first sample (or length) mismatch
-// between got and want, comparing float32 bit patterns rather than values so
-// a NaN or signed-zero divergence cannot slip through.
-func requireBitExact(t *testing.T, got, want []float32) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("streaming decode produced %d samples, frame-API ground truth produced %d", len(got), len(want))
-	}
-	for i, g := range got {
-		if math.Float32bits(g) != math.Float32bits(want[i]) {
-			t.Fatalf("sample %d = %v (bits %#x), want %v (bits %#x)",
-				i, g, math.Float32bits(g), want[i], math.Float32bits(want[i]))
-		}
-	}
 }
 
 // checkPCMReferenceLength requires a tag-bearing vector's emitted

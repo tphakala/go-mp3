@@ -97,17 +97,8 @@ func TestSeekToSampleWithTOC(t *testing.T) {
 					if err != nil {
 						t.Fatalf("ReadAll after seek: %v", err)
 					}
-					got := float32BytesFromLE(t, gotBytes)
-					want := whole[target*int64(ch):]
-					if len(got) != len(want) {
-						t.Fatalf("post-seek sample count = %d, want %d", len(got), len(want))
-					}
-					for i := range want {
-						if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
-							t.Fatalf("post-seek sample %d = %v (bits %#x), want %v (bits %#x)",
-								i, got[i], math.Float32bits(got[i]), want[i], math.Float32bits(want[i]))
-						}
-					}
+					assertF32Equal(t, float32BytesFromLE(t, gotBytes), whole[target*int64(ch):],
+						fmt.Sprintf("post-seek decode at %d", target))
 				})
 			}
 		})
@@ -156,16 +147,8 @@ func TestSeekAfterLeadingGarbage(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ReadAll after seek: %v", err)
 			}
-			got := float32BytesFromLE(t, gotBytes)
-			want := whole[target*int64(ch):]
-			if len(got) != len(want) {
-				t.Fatalf("post-seek sample count = %d, want %d", len(got), len(want))
-			}
-			for i := range want {
-				if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
-					t.Fatalf("post-seek sample %d bits %#x, want %#x", i, math.Float32bits(got[i]), math.Float32bits(want[i]))
-				}
-			}
+			assertF32Equal(t, float32BytesFromLE(t, gotBytes), whole[target*int64(ch):],
+				fmt.Sprintf("post-seek decode after leading garbage at %d", target))
 		})
 	}
 }
@@ -578,7 +561,8 @@ func assertF32Equal(t *testing.T, got, want []float32, ctx string) {
 	}
 	for i := range want {
 		if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
-			t.Fatalf("%s: sample %d bits %#x, want %#x", ctx, i, math.Float32bits(got[i]), math.Float32bits(want[i]))
+			t.Fatalf("%s: sample %d = %v (bits %#x), want %v (bits %#x)",
+				ctx, i, got[i], math.Float32bits(got[i]), want[i], math.Float32bits(want[i]))
 		}
 	}
 }

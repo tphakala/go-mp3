@@ -200,6 +200,20 @@ type Decoder struct {
 	src    io.Reader
 	seeker io.Seeker
 
+	// frameOff caches the absolute byte offset of each audio frame the seek
+	// header walk has established: frameOff[i] is where frame i starts, with
+	// frameOff[0] == audioStart. Entries are dense (0..len-1 all known) and are
+	// appended only inside frameOffsets, by the same frameLength arithmetic as
+	// the uncached walk, so a warmed walk returns byte-identical results while
+	// resuming from the highest cached frame instead of re-walking from
+	// audioStart. It assumes the source bytes are stable for the life of a Reset
+	// binding, the same assumption the buffered reader already makes. Its
+	// footprint is one int64 per frame walked, bounded by the stream's frame
+	// count, so a deep seek into a long stream is the worst case; it grows only
+	// on the seek path, never during a steady Read. Reset clears it (capacity
+	// retained); a new source invalidates every offset.
+	frameOff []int64
+
 	done bool
 	err  error // latched terminal error; cleared only by Reset
 }
@@ -246,6 +260,7 @@ func (d *Decoder) Reset(r io.Reader, opts ...Option) error {
 	d.src = r
 	d.seeker = nil
 	d.frameBuf = d.frameBuf[:0]
+	d.frameOff = d.frameOff[:0] // seek offset cache: stale for a new source
 	d.pending = nil
 	d.readErr = nil
 	d.done = false

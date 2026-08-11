@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"os"
 	"testing"
+
+	mp3 "github.com/tphakala/go-mp3"
 )
 
 const (
@@ -337,6 +340,11 @@ func TestSeekOverflowSaturates(t *testing.T) {
 	if landed != wantEnd {
 		t.Fatalf("landed = %d, want %d (the true stream end)", landed, wantEnd)
 	}
+	// The same saturated target again, now over a warmed walk that resumes at the
+	// EOF frame the first one stopped on: it must land identically.
+	if again, aerr := d.SeekToSample(math.MaxInt64); aerr != nil || again != wantEnd {
+		t.Fatalf("repeat SeekToSample(MaxInt64) = (%d, %v), want (%d, nil)", again, aerr, wantEnd)
+	}
 	var scratch [16]byte
 	if n, rerr := d.Read(scratch[:]); n != 0 || !errors.Is(rerr, io.EOF) {
 		t.Fatalf("post-seek Read = (%d, %v), want (0, io.EOF)", n, rerr)
@@ -422,6 +430,13 @@ func TestSeekFreeFormatUnsupported(t *testing.T) {
 	if _, err := d.SeekToSample(total / 2); !errors.Is(err, ErrSeekUnsupported) {
 		t.Fatalf("SeekToSample on a free-format stream = %v, want ErrSeekUnsupported", err)
 	}
+	// A second seek must fail the same way. The walk gave up on frame 0, so it
+	// cached nothing beyond that frame's own offset and cannot resume onto a
+	// frame it never sized; the clean decode below then proves both failed walks
+	// left the source position restored.
+	if _, err := d.SeekToSample(total / 2); !errors.Is(err, ErrSeekUnsupported) {
+		t.Fatalf("repeat SeekToSample on a free-format stream = %v, want ErrSeekUnsupported", err)
+	}
 	got, err := readAllFromDecoder(d)
 	if err != nil {
 		t.Fatalf("Read after ErrSeekUnsupported: %v", err)
@@ -447,6 +462,16 @@ func TestSeekTrailerLandsAtEnd(t *testing.T) {
 	stream = append(stream, raw...)
 	stream = append(stream, id3v1Tag()...)
 
+	// S16 ground truth for the warm backward seek below (this decoder emits the
+	// default S16), taken from the trailer-carrying stream rather than the clean
+	// one. The two are not interchangeable: the header walk counts all 58 frames
+	// (a header needs no confirmation), but the decode drops the last one,
+	// because confirming a frame needs the header that follows it and the "TAG"
+	// trailer supplies none. That gap is pre-existing behaviour, orthogonal to
+	// the seek path; what matters here is that the warm seek reproduces the same
+	// bytes a full decode of this stream produces.
+	wantS16 := decodeAllBytes(t, bytes.NewReader(stream))
+
 	d, err := NewDecoder(noLenSeeker{bytes.NewReader(stream)})
 	if err != nil {
 		t.Fatalf("NewDecoder: %v", err)
@@ -466,6 +491,24 @@ func TestSeekTrailerLandsAtEnd(t *testing.T) {
 	var scratch [16]byte
 	if n, rerr := d.Read(scratch[:]); n != 0 || !errors.Is(rerr, io.EOF) {
 		t.Fatalf("post-seek Read = (%d, %v), want (0, io.EOF)", n, rerr)
+	}
+
+	// Warm walks over the same trailer. The first seek stopped on the "TAG"
+	// header without caching an offset past it, so a repeat must land at the same
+	// end, and a backward seek into the audio must still decode bit-exact.
+	if again, aerr := d.SeekToSample(trueEnd * 4); aerr != nil || again != trueEnd {
+		t.Fatalf("repeat SeekToSample past end = (%d, %v), want (%d, nil)", again, aerr, trueEnd)
+	}
+	back := trueEnd / 4
+	if landedBack, berr := d.SeekToSample(back); berr != nil || landedBack != back {
+		t.Fatalf("backward SeekToSample(%d) = (%d, %v), want (%d, nil)", back, landedBack, berr, back)
+	}
+	gotS16, err := io.ReadAll(d)
+	if err != nil {
+		t.Fatalf("ReadAll after the warm backward seek: %v", err)
+	}
+	if want := wantS16[back*int64(ch)*bytesPerS16Sample:]; !bytes.Equal(gotS16, want) {
+		t.Fatalf("warm backward seek decoded %d bytes, want %d (bit-exact tail of the clean decode)", len(gotS16), len(want))
 	}
 }
 
@@ -509,6 +552,268 @@ func TestSeekMidFailureLatchesAndClears(t *testing.T) {
 	}
 	if n, err := d.Read(scratch[:]); n == 0 || err != nil {
 		t.Fatalf("Read after recovery = (%d, %v), want data and no error", n, err)
+	}
+}
+
+// maxWarmSeeks bounds the source Seek calls a warm (cache-resumed)
+// SeekToSample may make: one to capture the source position, one header probe
+// at the landing frame, and one inside reseek to rebind the decode path there.
+// The extra slack keeps the assertion from being brittle about an added probe
+// while still being far below a re-walk from audioStart, which costs one Seek
+// per frame (dozens for these fixtures).
+const maxWarmSeeks = 4
+
+// minColdSeeks is the sanity floor for a cold walk's Seek count in the cache
+// tests: enough to prove the walk really is one Seek per frame, so a warm count
+// below maxWarmSeeks is meaningful rather than an artifact of a tiny stream.
+const minColdSeeks = 20
+
+// assertF32Equal fails the test unless got and want are bit-identical float32
+// slices, reporting the first differing sample. Bit comparison (not ==) is the
+// point: a post-seek decode must reproduce the from-the-start decode exactly.
+func assertF32Equal(t *testing.T, got, want []float32, ctx string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: sample count = %d, want %d", ctx, len(got), len(want))
+	}
+	for i := range want {
+		if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
+			t.Fatalf("%s: sample %d bits %#x, want %#x", ctx, i, math.Float32bits(got[i]), math.Float32bits(want[i]))
+		}
+	}
+}
+
+// TestSeekWarmWalkSkipsReWalk pins the point of the frame-offset cache: the
+// header walk must resume from the highest frame it already established rather
+// than re-walking from audioStart. A cold seek pays one source Seek per frame;
+// a repeat, a backward, or a forward seek into already-walked ground must then
+// cost only the constant handful (position capture, one header probe at the
+// landing frame, one reseek). The fresh-decoder case at the end covers the
+// partial resume: a forward seek past the cached range pays only the delta.
+func TestSeekWarmWalkSkipsReWalk(t *testing.T) {
+	raw := readFixture(t, sine44s128)
+	_, _, total := readAllFloat32(t, bytes.NewReader(raw))
+	if total == 0 {
+		t.Fatalf("%s has no known TotalSamples; the seek test needs one", sine44s128)
+	}
+
+	cs := &countingSeeker{rs: bytes.NewReader(raw)}
+	d, err := NewDecoder(cs, WithF32())
+	if err != nil {
+		t.Fatalf("NewDecoder(WithF32): %v", err)
+	}
+	// seekCount measures only the seek itself: construction (and any earlier
+	// seek) has already happened, so the counter is zeroed first.
+	seekCount := func(d *Decoder, cs *countingSeeker, target int64) int {
+		t.Helper()
+		cs.seeks = 0
+		landed, err := d.SeekToSample(target)
+		if err != nil {
+			t.Fatalf("SeekToSample(%d): %v", target, err)
+		}
+		if landed != target {
+			t.Fatalf("SeekToSample(%d) landed on %d", target, landed)
+		}
+		return cs.seeks
+	}
+
+	cold := seekCount(d, cs, total*3/4)
+	if cold < minColdSeeks {
+		t.Fatalf("cold seek made only %d source Seeks; the fixture is too short for this test to mean anything", cold)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		target int64
+	}{
+		{"repeat", total * 3 / 4},
+		{"backward", total / 4},
+		{"forward-into-cache", total / 2},
+	} {
+		if got := seekCount(d, cs, tc.target); got > maxWarmSeeks {
+			t.Errorf("%s seek made %d source Seeks, want <= %d (the walk re-walked from audioStart instead of resuming from the cache)",
+				tc.name, got, maxWarmSeeks)
+		}
+	}
+
+	// A forward seek beyond the cached range must pay only the delta from the
+	// highest cached frame, not the whole walk.
+	fresh := &countingSeeker{rs: bytes.NewReader(raw)}
+	d2, err := NewDecoder(fresh, WithF32())
+	if err != nil {
+		t.Fatalf("NewDecoder(fresh): %v", err)
+	}
+	seekCount(d2, fresh, total/4)
+	if resume := seekCount(d2, fresh, total*3/4); resume >= cold {
+		t.Errorf("forward seek past the cached range made %d source Seeks, want fewer than the %d of a full cold walk", resume, cold)
+	}
+}
+
+// TestSeekWarmCacheBitExact is the headline equivalence guard: one decoder
+// driven through repeat, backward, forward, frame-0, and last-sample targets
+// must land on exactly the requested sample every time and emit bit-exact the
+// same float32 tail as decoding the whole stream from the start and slicing.
+// The first seek in the sequence is the cold walk, every later one resumes from
+// the cache, so this compares cold against warm directly. It runs on a VBR
+// stream (varying frame sizes, the demanding case for offset arithmetic), an
+// Info-tag CBR stream (with a gapless window), and a tag-less CBR stream.
+func TestSeekWarmCacheBitExact(t *testing.T) {
+	for _, fixture := range []string{sine44sVBR, sine44s128, sine44s32} {
+		t.Run(fixture, func(t *testing.T) {
+			raw := readFixture(t, fixture)
+			whole, ch, total := readAllFloat32(t, bytes.NewReader(raw))
+			if total == 0 {
+				t.Fatalf("%s has no known TotalSamples; the seek test needs one", fixture)
+			}
+
+			d, err := NewDecoder(bytes.NewReader(raw), WithF32())
+			if err != nil {
+				t.Fatalf("NewDecoder(WithF32): %v", err)
+			}
+			// Cold first, then repeat, backward, repeat-again, forward, frame 0,
+			// and the last sample: every warm-walk shape the cache can take.
+			for _, target := range []int64{total * 3 / 4, total / 4, total / 2, total / 2, total * 3 / 4, 0, total - 1} {
+				landed, err := d.SeekToSample(target)
+				if err != nil {
+					t.Fatalf("SeekToSample(%d): %v", target, err)
+				}
+				if landed != target {
+					t.Fatalf("SeekToSample(%d) landed on %d", target, landed)
+				}
+				gotBytes, err := io.ReadAll(d)
+				if err != nil {
+					t.Fatalf("ReadAll after seek to %d: %v", target, err)
+				}
+				assertF32Equal(t, float32BytesFromLE(t, gotBytes), whole[target*int64(ch):],
+					fmt.Sprintf("post-seek decode at %d", target))
+			}
+		})
+	}
+}
+
+// TestSeekCacheInvalidatedByReset asserts Reset drops the offset cache. The
+// decoder first warms the cache on one stream, then rebinds to a different one
+// with a different geometry and audioStart. Surviving offsets would send the
+// walk to the wrong bytes, so the landing and the decoded tail are checked
+// against the new stream's ground truth; the Seek count is checked too, so a
+// stale cache that happened to land correctly still fails.
+func TestSeekCacheInvalidatedByReset(t *testing.T) {
+	rawA := readFixture(t, sine44s128)
+	rawB := readFixture(t, sine44s32)
+	_, _, totalA := readAllFloat32(t, bytes.NewReader(rawA))
+	wholeB, chB, totalB := readAllFloat32(t, bytes.NewReader(rawB))
+	if totalA == 0 || totalB == 0 {
+		t.Fatalf("fixtures need known TotalSamples; got %d and %d", totalA, totalB)
+	}
+
+	d, err := NewDecoder(bytes.NewReader(rawA), WithF32())
+	if err != nil {
+		t.Fatalf("NewDecoder(WithF32): %v", err)
+	}
+	if _, err := d.SeekToSample(totalA / 2); err != nil {
+		t.Fatalf("warming seek on the first stream: %v", err)
+	}
+
+	cs := &countingSeeker{rs: bytes.NewReader(rawB)}
+	if err := d.Reset(cs, WithF32()); err != nil {
+		t.Fatalf("Reset onto the second stream: %v", err)
+	}
+
+	target := totalB / 2
+	cs.seeks = 0
+	landed, err := d.SeekToSample(target)
+	if err != nil {
+		t.Fatalf("SeekToSample(%d) after Reset: %v", target, err)
+	}
+	if landed != target {
+		t.Fatalf("SeekToSample(%d) after Reset landed on %d (stale offsets from the previous stream)", target, landed)
+	}
+	if cs.seeks <= maxWarmSeeks {
+		t.Errorf("seek after Reset made only %d source Seeks, want a full cold walk (the stale offset cache survived Reset)", cs.seeks)
+	}
+	gotBytes, err := io.ReadAll(d)
+	if err != nil {
+		t.Fatalf("ReadAll after post-Reset seek: %v", err)
+	}
+	assertF32Equal(t, float32BytesFromLE(t, gotBytes), wholeB[target*int64(chB):], "post-Reset seek decode")
+}
+
+// TestSeekWarmCacheMidFrameEOF covers the warm walk over a stream cut off
+// inside its final frame, the path where the walk sizes a frame whose bytes are
+// not all there and then meets EOF one frame later. A cold decoder doing a
+// single seek is the reference; a warm decoder repeating the past-end seek and
+// then seeking backward must land identically and decode byte-identical PCM,
+// including the terminal truncation error. The source hides its length
+// (noLenSeeker), so TotalSamples stays 0 and the length clamp cannot
+// short-circuit the walk.
+func TestSeekWarmCacheMidFrameEOF(t *testing.T) {
+	raw := readFixture(t, sine44s32) // tagless CBR, no gapless trim
+	flen, ok := frameLength(raw)
+	if !ok {
+		t.Fatalf("first frame header in %s not decodable; fixture layout changed", sine44s32)
+	}
+	if len(raw) <= flen {
+		t.Fatalf("fixture %s has only one frame", sine44s32)
+	}
+	// Cut the stream inside its last frame, so that frame's header is present
+	// and sizable but its body is not.
+	stream := bytes.Clone(raw[:len(raw)-flen/2])
+
+	newDec := func() *Decoder {
+		t.Helper()
+		d, err := NewDecoder(noLenSeeker{bytes.NewReader(stream)}, WithF32())
+		if err != nil {
+			t.Fatalf("NewDecoder(WithF32): %v", err)
+		}
+		if d.info.TotalSamples != 0 {
+			t.Fatalf("precondition: TotalSamples = %d, want 0 (unknown length, no clamp)", d.info.TotalSamples)
+		}
+		return d
+	}
+
+	const pastEnd = int64(1) << 40 // far past any sample this fixture holds
+
+	// Cold reference: a fresh decoder per seek, so each walk starts empty.
+	coldEnd, err := newDec().SeekToSample(pastEnd)
+	if err != nil {
+		t.Fatalf("cold SeekToSample(pastEnd): %v", err)
+	}
+	if coldEnd <= 0 {
+		t.Fatalf("cold seek past the end landed on %d, want the stream end", coldEnd)
+	}
+	mid := coldEnd / 4
+	coldDec := newDec()
+	coldMid, err := coldDec.SeekToSample(mid)
+	if err != nil {
+		t.Fatalf("cold SeekToSample(%d): %v", mid, err)
+	}
+	coldOut, coldErr := readAllFromDecoder(coldDec)
+
+	// Warm: one decoder, so the second and third walks resume from the cache
+	// the first one built while running off the end of the truncated stream.
+	warm := newDec()
+	if got, err := warm.SeekToSample(pastEnd); err != nil || got != coldEnd {
+		t.Fatalf("first warm SeekToSample(pastEnd) = (%d, %v), want (%d, nil)", got, err, coldEnd)
+	}
+	if got, err := warm.SeekToSample(pastEnd); err != nil || got != coldEnd {
+		t.Fatalf("repeat SeekToSample(pastEnd) = (%d, %v), want (%d, nil)", got, err, coldEnd)
+	}
+	got, err := warm.SeekToSample(mid)
+	if err != nil {
+		t.Fatalf("warm SeekToSample(%d): %v", mid, err)
+	}
+	if got != coldMid {
+		t.Fatalf("warm seek landed on %d, want %d (the cold landing)", got, coldMid)
+	}
+	warmOut, warmErr := readAllFromDecoder(warm)
+	if (coldErr == nil) != (warmErr == nil) {
+		t.Fatalf("warm read error = %v, cold read error = %v; they must agree", warmErr, coldErr)
+	}
+	if errors.Is(coldErr, mp3.ErrCorruptStream) != errors.Is(warmErr, mp3.ErrCorruptStream) {
+		t.Fatalf("warm read error = %v, cold read error = %v; truncation must be reported the same either way", warmErr, coldErr)
+	}
+	if !bytes.Equal(warmOut, coldOut) {
+		t.Fatalf("warm post-seek decode differs from the cold one: got %d bytes, want %d", len(warmOut), len(coldOut))
 	}
 }
 
@@ -614,6 +919,22 @@ func (g *gateSeeker) Seek(offset int64, whence int) (int64, error) {
 		return 0, errInjectedSeek
 	}
 	return g.rs.Seek(offset, whence)
+}
+
+// countingSeeker wraps an io.ReadSeeker and counts Seek calls, so the seek
+// offset-cache tests can assert that a warm walk skips the per-frame header
+// probes a cold walk from audioStart has to make. Tests zero seeks immediately
+// before the operation they measure.
+type countingSeeker struct {
+	rs    io.ReadSeeker
+	seeks int
+}
+
+func (c *countingSeeker) Read(p []byte) (int, error) { return c.rs.Read(p) }
+
+func (c *countingSeeker) Seek(offset int64, whence int) (int64, error) {
+	c.seeks++
+	return c.rs.Seek(offset, whence)
 }
 
 // mustOpen opens a fixture file (an io.ReadSeeker) and closes it at test end.

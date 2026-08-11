@@ -32,10 +32,12 @@ const maxFuzzOutputBytes = 16 << 20 // 16 MiB
 // FuzzStreamDecode drives pcm.Decoder, in both its default S16 output and
 // WithF32, and SeekToSample, over arbitrary bytes, and asserts that neither
 // construction, seeking, nor draining ever panics or hangs, whatever the
-// input. The seed corpus is every fixture plus truncated and bit-flipped
-// variants, so plain `go test` (which replays the seeds) already exercises
-// the malformed-input paths this decoder must survive; `go test -fuzz`
-// explores beyond them.
+// input. Each iteration seeks twice, so both the cold frame-header walk and
+// the warm one that resumes from the cached frame offsets run against
+// malformed input. The seed corpus is every fixture plus truncated and
+// bit-flipped variants, so plain `go test` (which replays the seeds) already
+// exercises the malformed-input paths this decoder must survive; `go test
+// -fuzz` explores beyond them.
 //
 // seekIdx is a second, independently mutated fuzz input, handed to
 // SeekToSample RAW: it is never negated or bounded before use, so the
@@ -124,6 +126,14 @@ func FuzzStreamDecode(f *testing.F) {
 			// ErrInvalidSeek, ErrSeekUnsupported (a free-format stream), or a
 			// latched decode error from priming. Only a panic is not.
 			_, _ = d.SeekToSample(seekIdx)
+
+			// A second, nearer seek on the same decoder, so the fuzzer drives
+			// the warm frame-offset walk (resuming from the offsets the first
+			// seek cached) and not only the cold one. Halving keeps the target
+			// inside the range the first walk may have covered, which is where
+			// the resume arithmetic actually applies; the outcome is again
+			// unconstrained, only a panic or hang would be a finding.
+			_, _ = d.SeekToSample(seekIdx / 2)
 
 			// Bounded drain: any read error (including a latched seek or
 			// decode failure) is fine; a panic or hang is not.

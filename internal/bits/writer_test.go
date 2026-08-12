@@ -181,6 +181,29 @@ func TestWriterAppendsToPrefix(t *testing.T) {
 	}
 }
 
+// TestWriterPanicsOnBadN checks that WriteBits panics for n outside its
+// documented [0, 32] range, guarding against the unbounded byte-drain loop
+// a negative n would otherwise trigger.
+func TestWriterPanicsOnBadN(t *testing.T) {
+	panics := func(n int) (didPanic bool) {
+		defer func() {
+			if recover() != nil {
+				didPanic = true
+			}
+		}()
+		w := bits.NewWriter(nil)
+		w.WriteBits(0, n)
+		return false
+	}
+
+	if !panics(-1) {
+		t.Fatal("WriteBits(_, -1) did not panic, want panic")
+	}
+	if !panics(33) {
+		t.Fatal("WriteBits(_, 33) did not panic, want panic")
+	}
+}
+
 // TestWriterBitsWritten checks the running bit count, including the
 // no-op n=0 case.
 func TestWriterBitsWritten(t *testing.T) {

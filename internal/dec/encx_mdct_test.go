@@ -228,7 +228,7 @@ func TestEncMdctTDACRoundTrip(t *testing.T) {
 		var sumSq float64
 		for tt := range 18 {
 			for b := range 32 {
-				sumSq += want[tt][b] * want[tt][b]
+				sumSq += float64(want[tt][b] * want[tt][b])
 			}
 		}
 		rms := math.Sqrt(sumSq / (18 * 32))

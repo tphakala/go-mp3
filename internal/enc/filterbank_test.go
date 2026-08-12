@@ -133,7 +133,7 @@ func TestFBSineConcentration(t *testing.T) {
 			for tt := range 18 {
 				for band := range 32 {
 					v := outs[g][tt][band]
-					energy[band] += v * v
+					energy[band] += float64(v * v)
 				}
 			}
 		}
@@ -172,6 +172,48 @@ func TestFBSineConcentration(t *testing.T) {
 				t.Fatalf("band %d: band %d (distance %d) at %.1f dB, want <= -80 dB", b, i, dist, db)
 			}
 		}
+	}
+}
+
+// TestFilterbankReset checks that Reset fully clears the 512-sample shift
+// register: analyzing a known input right after Reset must match a fresh
+// zero-value Filterbank analyzing that same input, proving no history from
+// before the reset survives.
+func TestFilterbankReset(t *testing.T) {
+	const samplesPerGranule = 18 * 32
+
+	var seed uint64 = 1
+	next := func() float64 {
+		seed = seed*6364136223846793005 + 1442695040888963407
+		return (float64(seed>>11)/float64(1<<53))*2 - 1
+	}
+
+	// Warm fb up with nonzero granule history, then reset it.
+	var fb Filterbank
+	var warm [18][32]float64
+	warmIn := make([]float64, samplesPerGranule)
+	for range 3 {
+		for i := range warmIn {
+			warmIn[i] = next()
+		}
+		fb.AnalyzeGranule(warmIn, &warm)
+	}
+	fb.Reset()
+
+	// A fixed known input, analyzed by the reset fb and by a fresh fb.
+	known := make([]float64, samplesPerGranule)
+	for i := range known {
+		known[i] = math.Sin(2 * math.Pi * float64(i) / samplesPerGranule)
+	}
+
+	var gotOut, wantOut [18][32]float64
+	fb.AnalyzeGranule(known, &gotOut)
+
+	var fresh Filterbank
+	fresh.AnalyzeGranule(known, &wantOut)
+
+	if gotOut != wantOut {
+		t.Fatalf("after Reset, AnalyzeGranule output differs from a fresh Filterbank's:\ngot  %v\nwant %v", gotOut, wantOut)
 	}
 }
 

@@ -19,8 +19,16 @@ func NewWriter(buf []byte) Writer {
 
 // WriteBits writes the low n bits of v, MSB-first, masking v to its low n
 // bits (callers may pass wider values; the mask is part of the contract,
-// matching how side-info fields are packed). n must be in [0, 32].
+// matching how side-info fields are packed). n must be in [0, 32]; there
+// are no error paths for valid input, but WriteBits panics if n is outside
+// [0, 32]. A negative n would convert to a huge uint in w.nacc += uint(n),
+// and the byte-drain loop would then append essentially without bound (a
+// hang or an out-of-memory condition, not a clean error), so a caller bug
+// here must fail fast instead.
 func (w *Writer) WriteBits(v uint32, n int) {
+	if n < 0 || n > 32 {
+		panic("bits: WriteBits: n out of range [0, 32]")
+	}
 	if n == 0 {
 		return
 	}

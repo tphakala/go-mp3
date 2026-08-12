@@ -31,14 +31,19 @@ const PCMScale = 0.5
 // live in internal/dec (package dec, a different package) and import
 // internal/enc to drive it. Go visibility is package-scoped regardless of
 // test-file status, so an external package's test cannot reach an
-// unexported type or method; exporting Filterbank/Reset/AnalyzeGranule/
-// PCMScale is the only way to satisfy that requirement. The package stays
-// under internal/, so nothing leaks outside this module.
+// unexported type or method; exporting Filterbank/AnalyzeGranule/PCMScale
+// is the only way to satisfy that requirement. Reset is exported too, for
+// the Encoder (a later task) to call, not because the cross-package test
+// needs it. The package stays under internal/, so nothing leaks outside
+// this module.
 type Filterbank struct {
 	x [512]float64 // shift register, x[0] newest
 }
 
-// Reset clears the shift register, as at the start of a fresh stream.
+// Reset clears the shift register, as at the start of a fresh stream. It is
+// the stream-restart hook a later task's Encoder calls between streams,
+// mirroring dec.Decoder.Reset; it has no caller within this package or the
+// test suite today.
 func (fb *Filterbank) Reset() {
 	fb.x = [512]float64{}
 }
@@ -48,17 +53,20 @@ func (fb *Filterbank) Reset() {
 // subband-sample time t. in has length 576; samples are already scaled by
 // PCMScale by the caller.
 //
-// Float discipline: window multiplies each shift-register sample by
-// its window coefficient, a product that feeds a following sum; matrixStep
-// multiplies each partial sum by its matrix coefficient, a product that
-// feeds a following accumulate. Both products carry an explicit float64()
-// conversion, the only reliable barrier against arm64 fusing the multiply
-// into an FMA against the accumulator (a bare local assignment does not
-// block that; the compiler fuses across statements). The partial sums in
-// step 3 are plain adds of already-rounded float64 values with no multiply
-// involved, so they need no such wrapping. Accumulation in both steps runs
-// left to right in index order, fixing the association order for
-// determinism across amd64 and arm64.
+// Float discipline: matrixStep's accumulate, sum += float64(fbMatrix[b][j]
+// * y[j]), carries an explicit float64() conversion that is the load-bearing
+// barrier against arm64 fusing the multiply into an FMA with the
+// accumulator (a bare local assignment does not block that; the compiler
+// fuses across statements). window's product, z[i] = float64(fb.x[i] *
+// fbWindow[i]), feeds a store into z[i], not an adjacent +/-, so its
+// float64() wrap is not a barrier there; this was verified empirically
+// (GOARCH=arm64 go build -gcflags=-S produces byte-identical codegen for
+// that line with or without the wrap). The wrap is kept anyway, as
+// defensive uniformity across the package rather than a correctness
+// requirement. The partial sums in step 3 are plain adds of already-rounded
+// float64 values with no multiply involved, so they need no wrapping.
+// Accumulation in matrixStep runs left to right in index order, fixing the
+// association order for determinism across amd64 and arm64.
 func (fb *Filterbank) AnalyzeGranule(in []float64, out *[18][32]float64) {
 	for t := range 18 {
 		fb.shiftIn(in[t*32 : t*32+32])
@@ -70,11 +78,11 @@ func (fb *Filterbank) AnalyzeGranule(in []float64, out *[18][32]float64) {
 
 // shiftIn implements the ISO C.1.3 flow chart's shift step: the 480 oldest
 // samples move up by 32 slots, and the 32 newest samples (in) are written
-// so the most recent lands at x[0].
+// so the most recent lands at x[0]. copy is memmove-correct for this
+// overlapping up-shift, matching the decoder's own analog in
+// internal/dec/synth.go.
 func (fb *Filterbank) shiftIn(in []float64) {
-	for i := 511; i >= 32; i-- {
-		fb.x[i] = fb.x[i-32]
-	}
+	copy(fb.x[32:], fb.x[:480])
 	for k := range 32 {
 		fb.x[31-k] = in[k]
 	}

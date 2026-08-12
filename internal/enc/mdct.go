@@ -3,17 +3,16 @@ package enc
 // mdctScale is the output scale MDCTGranule applies to every spectral line
 // so the full encode/decode chain (FlipOddSubbands -> MDCTGranule ->
 // AliasReduce, dec's l3Antialias -> l3Imdct36 -> l3ChangeSign) has unity
-// gain. Measured by the Task 3 TDAC gate
-// (internal/dec/encx_mdct_test.go, TestEncMdctTDACRoundTrip): with no
+// gain. mdctScale = 1/9 = 2/N with N = 18, the per-subband window/spectral-
+// line count. A textbook forward-MDCT / IMDCT pair carries the customary
+// 2/N normalization, but the decoder's l3Imdct36 (internal/dec/imdct.go)
+// omits it, so the round-trip chain carries a gain of N/2 = 9 instead of
+// unity; mdctScale multiplies the encoder's MDCT output by 1/9 to cancel
+// that gain and restore unity. Confirmed empirically by the Task 3 TDAC
+// gate (internal/dec/encx_mdct_test.go, TestEncMdctTDACRoundTrip): with no
 // output scaling (mdctScale = 1), the measured round-trip chain gain on
-// granule 2 is 9.00000065 (576 line samples, all within 0.01% of the
-// mean), i.e. exactly 9 up to float32 measurement noise. l3Imdct36's fast
-// DCT-III decomposition (internal/dec/imdct.go) folds in its own
-// normalization relative to the direct O(N^2) ISO C.1.5.1 MDCT sum this
-// package computes, and that normalization lands at a factor of 9, not the
-// 1/2 a plain orthogonality-style MDCT/IMDCT pair would carry; mdctScale
-// folds in the matching 1/9 so the chain measures unity gain with no
-// test-side normalization.
+// granule 2 is 9.00000065 across all 576 line samples (all within 0.01% of
+// the mean), i.e. exactly 9 up to float32 measurement noise.
 const mdctScale = 1.0 / 9.0
 
 // FlipOddSubbands negates every odd-indexed sample of every odd subband
@@ -44,12 +43,20 @@ func FlipOddSubbands(s *[18][32]float64) {
 //
 // Exported for the same cross-package test reason as FlipOddSubbands.
 //
-// Float discipline: every product feeding a following sum carries an
-// explicit float64() conversion, the only reliable barrier against arm64
-// fusing the multiply into an FMA against the accumulator (see
-// filterbank.go's AnalyzeGranule for the same discipline and its
-// rationale). Accumulation runs left to right in index order (n = 0..35),
-// fixing the association order for determinism across amd64 and arm64.
+// Float discipline: the inner accumulate, sum += float64(mdctCos[k][n] *
+// z[n]), carries an explicit float64() conversion that is the load-bearing
+// barrier against arm64 fusing the multiply into an FMA with the
+// accumulator (a bare local assignment does not block that; the compiler
+// fuses across statements; see filterbank.go's matrixStep for the same
+// discipline). The two z-population lines above it also carry a float64()
+// wrap, but their products feed a store into z[i]/z[18+i], not an adjacent
+// +/-, so that wrap is not a barrier there; this was verified empirically
+// (GOARCH=arm64 go build -gcflags=-S produces byte-identical codegen for
+// those lines with or without the wrap, the same finding as filterbank.go's
+// window()). The wrap is kept anyway, as defensive uniformity across the
+// package rather than a correctness requirement. Accumulation in the inner
+// sum runs left to right in index order (n = 0..35), fixing the
+// association order for determinism across amd64 and arm64.
 func MDCTGranule(prev, cur *[18][32]float64, xr *[576]float64) {
 	for b := range 32 {
 		var z [36]float64

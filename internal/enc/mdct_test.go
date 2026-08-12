@@ -10,7 +10,7 @@ import (
 
 // TestMdctWindowKnownAnswer recomputes every MDCTWindow[i] with math.Sin and
 // requires agreement with the committed literal within 1 ULP, same pattern
-// as TestFBMatrixKnownAnswer (fbtables_test.go).
+// as TestFBMatrixKnownAnswer (filterbank_test.go).
 func TestMdctWindowKnownAnswer(t *testing.T) {
 	for i := range 36 {
 		want := math.Sin(math.Pi / 36 * (float64(i) + 0.5))
@@ -61,7 +61,7 @@ func TestAliasCoefficientsKnownAnswer(t *testing.T) {
 // TestMdctTablesChecksum guards MDCTWindow, mdctCos, AliasCS and AliasCA's
 // committed literals against accidental edits with a golden sha256 over
 // their float64 bit patterns, same pattern as TestFBWindowChecksum
-// (fbtables_test.go). Frozen on first run.
+// (filterbank_test.go). Frozen on first run.
 func TestMdctTablesChecksum(t *testing.T) {
 	const wantHex = "ac9065a7e278e69f5a6c4215a7e672aa16bfeb976eacfe3e740c6d011b40bb58"
 

@@ -50,7 +50,7 @@ func TestReconstructionGate(t *testing.T) {
 	x := make([]float64, totalSamples)
 	for n := range x {
 		t := float64(n) / sr
-		x[n] = a1*math.Sin(2*math.Pi*f1*t) + a2*math.Sin(2*math.Pi*f2*t)
+		x[n] = float64(a1*math.Sin(2*math.Pi*f1*t)) + float64(a2*math.Sin(2*math.Pi*f2*t))
 	}
 
 	pcm := make([]float32, totalSamples)
@@ -162,7 +162,7 @@ func measureDelay(x []float64, y []float32) int {
 			if j < 0 || j >= len(y) {
 				continue
 			}
-			sum += x[i] * float64(y[j])
+			sum += float64(x[i] * float64(y[j]))
 		}
 		if sum > bestCorr {
 			bestCorr = sum
@@ -184,8 +184,8 @@ func granuleRMSRatio(x []float64, y []float32, delay, start, length int) (gain f
 		if yi < 0 || yi >= len(y) {
 			continue
 		}
-		sumSqX += x[xi] * x[xi]
-		sumSqY += float64(y[yi]) * float64(y[yi])
+		sumSqX += float64(x[xi] * x[xi])
+		sumSqY += float64(float64(y[yi]) * float64(y[yi]))
 		n++
 	}
 	if n == 0 || sumSqX == 0 {
@@ -207,8 +207,8 @@ func computeSNR(x []float64, y []float32, delay int, gain float64, start, end in
 		}
 		recon := float64(y[j]) / gain
 		err := x[i] - recon
-		sigPower += x[i] * x[i]
-		noisePower += err * err
+		sigPower += float64(x[i] * x[i])
+		noisePower += float64(err * err)
 		n++
 	}
 	if n == 0 || noisePower == 0 {

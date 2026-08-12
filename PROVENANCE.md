@@ -31,5 +31,24 @@ used only as black-box compatibility and quality references.
 
 ## Float parity fallback sites
 
-Sites where Go cannot reproduce the oracle bit-exactly (tolerance at most
-1 ULP) are listed here with reasons. Currently: none.
+Sites where Go cannot reproduce the oracle bit-exactly are listed here with
+reasons and the measured tolerance actually required.
+
+- `internal/dec/encx_mdct_test.go`, `TestEncAliasCoefficientsMatchDec`
+  (Task 3): `enc.AliasCA[5..7]` versus `gAA[1][5..7]` (float32 magnitude),
+  measured 1/9/20 ULP. ISO/IEC 11172-3 Table B.9 publishes the `c`
+  coefficients to only 2-4 significant decimal digits (e.g. `c[7] =
+  -0.0037`), while minimp3's `g_aa[1]` literals carry 8 significant digits
+  directly (`0.00369997f`) rather than being computed from `c` at compile
+  time. Re-deriving `ca = c/sqrt(1+c*c)` from the low-precision published
+  `c` cannot recover minimp3's extra digits, so the smallest-magnitude
+  coefficients drift beyond the 1 ULP a straight float64-to-float32 rounding
+  difference would explain. Asserted within 20 ULP (the measured worst
+  case), not 1.
+- `internal/dec/encx_mdct_test.go`, `TestEncMdctWindowMatchesDec`
+  (Task 3): `enc.MDCTWindow` versus `gMdctWindow[0]` (float32), measured up
+  to 2 ULP. Same root cause: minimp3's `g_mdct_window` literals are an
+  8-digit decimal transcription (`0.04361938f`), not a `math.Sin` call, so a
+  handful of entries round to a different nearest float32 than a
+  full-precision `sin(pi/36*(i+0.5))` computation does. Asserted within
+  2 ULP.

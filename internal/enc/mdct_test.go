@@ -9,29 +9,31 @@ import (
 )
 
 // TestMdctWindowKnownAnswer recomputes every MDCTWindow[i] with math.Sin and
-// requires agreement with the committed literal within 1 ULP, same pattern
-// as TestFBMatrixKnownAnswer (filterbank_test.go).
+// requires agreement with the committed literal within a cross-arch-robust
+// tolerance (closeToFormula, filterbank_test.go), same pattern as
+// TestFBMatrixKnownAnswer.
 func TestMdctWindowKnownAnswer(t *testing.T) {
 	for i := range 36 {
 		want := math.Sin(math.Pi / 36 * (float64(i) + 0.5))
 		got := MDCTWindow[i]
-		if diff := ulpDistance(got, want); diff > 1 {
+		if !closeToFormula(got, want) {
 			t.Fatalf("MDCTWindow[%d] = %v (bits %x), want %v (bits %x), diff %d ULP",
-				i, got, math.Float64bits(got), want, math.Float64bits(want), diff)
+				i, got, math.Float64bits(got), want, math.Float64bits(want), ulpDistance(got, want))
 		}
 	}
 }
 
 // TestMdctCosKnownAnswer recomputes every mdctCos[k][n] with math.Cos and
-// requires agreement with the committed literal within 1 ULP.
+// requires agreement with the committed literal within a cross-arch-robust
+// tolerance (closeToFormula, filterbank_test.go).
 func TestMdctCosKnownAnswer(t *testing.T) {
 	for k := range 18 {
 		for n := range 36 {
 			want := math.Cos(math.Pi / 72 * float64(2*n+19) * float64(2*k+1))
 			got := mdctCos[k][n]
-			if diff := ulpDistance(got, want); diff > 1 {
+			if !closeToFormula(got, want) {
 				t.Fatalf("mdctCos[%d][%d] = %v (bits %x), want %v (bits %x), diff %d ULP",
-					k, n, got, math.Float64bits(got), want, math.Float64bits(want), diff)
+					k, n, got, math.Float64bits(got), want, math.Float64bits(want), ulpDistance(got, want))
 			}
 		}
 	}

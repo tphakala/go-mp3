@@ -18,9 +18,9 @@ func TestFBMatrixKnownAnswer(t *testing.T) {
 		for j := range 64 {
 			want := math.Cos(float64(2*b+1) * float64(j-16) * math.Pi / 64)
 			got := fbMatrix[b][j]
-			if diff := ulpDistance(got, want); diff > 1 {
+			if !closeToFormula(got, want) {
 				t.Fatalf("fbMatrix[%d][%d] = %v (bits %x), want %v (bits %x), diff %d ULP",
-					b, j, got, math.Float64bits(got), want, math.Float64bits(want), diff)
+					b, j, got, math.Float64bits(got), want, math.Float64bits(want), ulpDistance(got, want))
 			}
 		}
 	}
@@ -44,6 +44,22 @@ func ulpDistance(a, b float64) int {
 		}
 	}
 	return maxULP + 1
+}
+
+// closeToFormula reports whether a committed table literal agrees with its
+// recomputed formula value closely enough to prove the transcription, while
+// tolerating cross-architecture libm variance. math.Cos and math.Sin are not
+// bit-identical across amd64 and arm64; near a zero crossing the result is a
+// tiny residual whose ULP distance explodes even though the absolute error is
+// negligible (fbMatrix[11][48] is cos(23*pi/2), a true zero that evaluates to
+// ~3e-15, where the two arches' libm disagree by a few ULP). The committed
+// literals are the runtime truth, used identically on every arch, so this check
+// only guards the transcription. cos/sin values live in [-1,1], so the worst
+// cross-arch absolute difference is a few ULP at magnitude 1, far below absTol,
+// while a real formula error is orders of magnitude larger and still fails.
+func closeToFormula(got, want float64) bool {
+	const absTol = 1e-12
+	return math.Abs(got-want) <= absTol || ulpDistance(got, want) <= 1
 }
 
 // TestFBWindowChecksum guards fbWindow's 512 committed literals against

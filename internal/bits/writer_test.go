@@ -65,6 +65,46 @@ func TestWriterKnownBytes(t *testing.T) {
 	}
 }
 
+// TestWriterWideWrites covers the top of WriteBits's documented n range,
+// n in [25, 32], which TestWriterReaderRoundTrip cannot reach because
+// Reader.Bits itself caps at 24 bits per call. These assertions compare
+// against hand-derived byte sequences directly, not a Reader round trip.
+func TestWriterWideWrites(t *testing.T) {
+	// n == 32, all ones: every bit set packs to four 0xFF bytes.
+	w := bits.NewWriter(nil)
+	w.WriteBits(0xFFFFFFFF, 32)
+	got := w.Flush()
+	want := []byte{0xFF, 0xFF, 0xFF, 0xFF}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("WriteBits(0xFFFFFFFF, 32): Flush() = %#v, want %#v", got, want)
+	}
+
+	// n == 32, mixed value: a byte-aligned value packs to its four bytes
+	// in order, MSB-first, with no shifting needed to verify by hand.
+	w = bits.NewWriter(nil)
+	w.WriteBits(0x12345678, 32)
+	got = w.Flush()
+	want = []byte{0x12, 0x34, 0x56, 0x78}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("WriteBits(0x12345678, 32): Flush() = %#v, want %#v", got, want)
+	}
+
+	// n == 29 (inside the uncovered 25..31 range): value 0x10000001 has
+	// only its top bit (bit 28) and bottom bit (bit 0) set within the low
+	// 29 bits, so the packed bitstream is a single 1, 27 zeros, and a
+	// single 1, followed by 3 zero-padding bits from Flush (32-29=3):
+	//   1 0000000 00000000 00000000 1000
+	// Grouped into bytes: 10000000 00000000 00000000 00001000
+	//                     0x80     0x00     0x00     0x08
+	w = bits.NewWriter(nil)
+	w.WriteBits(0x10000001, 29)
+	got = w.Flush()
+	want = []byte{0x80, 0x00, 0x00, 0x08}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("WriteBits(0x10000001, 29): Flush() = %#v, want %#v", got, want)
+	}
+}
+
 // TestWriterReaderRoundTrip writes 10k deterministic (v, n) pairs and reads
 // them back through bits.Reader, the load-bearing correctness property: bits
 // written by Writer must read back identically through Reader. The generator
@@ -86,7 +126,7 @@ func TestWriterReaderRoundTrip(t *testing.T) {
 
 	w := bits.NewWriter(nil)
 	for i := range pairs {
-		n := int(next()>>32) % 25 // n in [0, 24]
+		n := int(uint(next()>>32) % 25) // n in [0, 24]
 		v := uint32(next() >> 32)
 		pairs[i] = pair{v: v, n: n}
 		w.WriteBits(v, n)

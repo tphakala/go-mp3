@@ -19,7 +19,7 @@ func TestFBMatrixKnownAnswer(t *testing.T) {
 			want := math.Cos(float64(2*b+1) * float64(j-16) * math.Pi / 64)
 			got := fbMatrix[b][j]
 			if !closeToFormula(got, want) {
-				t.Fatalf("fbMatrix[%d][%d] = %v (bits %x), want %v (bits %x), diff %d ULP",
+				t.Fatalf("fbMatrix[%d][%d] = %v (bits %x), want %v (bits %x), diff >= %d ULP",
 					b, j, got, math.Float64bits(got), want, math.Float64bits(want), ulpDistance(got, want))
 			}
 		}
@@ -83,7 +83,7 @@ func TestFBWindowChecksum(t *testing.T) {
 }
 
 // TestFBWindowStructure documents fbWindow's shape with cheap, independent
-// sentinel checks so a wrong-sized or grossly mistransribed table fails
+// sentinel checks so a wrong-sized or grossly mistranscribed table fails
 // fast without needing the exact checksum: 512 entries, C[0] == 0, the peak
 // magnitude sits near the center, and the coefficient sum is within 10% of
 // a value frozen on first run (a transcription tripwire: a single digit

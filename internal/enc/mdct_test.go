@@ -17,7 +17,7 @@ func TestMdctWindowKnownAnswer(t *testing.T) {
 		want := math.Sin(math.Pi / 36 * (float64(i) + 0.5))
 		got := MDCTWindow[i]
 		if !closeToFormula(got, want) {
-			t.Fatalf("MDCTWindow[%d] = %v (bits %x), want %v (bits %x), diff %d ULP",
+			t.Fatalf("MDCTWindow[%d] = %v (bits %x), want %v (bits %x), diff >= %d ULP",
 				i, got, math.Float64bits(got), want, math.Float64bits(want), ulpDistance(got, want))
 		}
 	}
@@ -32,7 +32,7 @@ func TestMdctCosKnownAnswer(t *testing.T) {
 			want := math.Cos(math.Pi / 72 * float64(2*n+19) * float64(2*k+1))
 			got := mdctCos[k][n]
 			if !closeToFormula(got, want) {
-				t.Fatalf("mdctCos[%d][%d] = %v (bits %x), want %v (bits %x), diff %d ULP",
+				t.Fatalf("mdctCos[%d][%d] = %v (bits %x), want %v (bits %x), diff >= %d ULP",
 					k, n, got, math.Float64bits(got), want, math.Float64bits(want), ulpDistance(got, want))
 			}
 		}

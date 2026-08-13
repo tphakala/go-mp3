@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"math"
 	"testing"
+
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // TestMdctWindowKnownAnswer recomputes every MDCTWindow[i] with math.Sin and
@@ -106,8 +108,7 @@ func TestMdctGolden(t *testing.T) {
 
 	var seed uint64 = 1
 	next := func() float64 {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		return (float64(seed>>11)/float64(1<<53))*2 - 1
+		return testsignal.LCGSigned(&seed)
 	}
 
 	h := sha256.New()

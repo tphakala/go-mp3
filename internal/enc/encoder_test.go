@@ -6,14 +6,9 @@ import (
 	"errors"
 	"math"
 	"testing"
-)
 
-// lcgEncoderTest is the shared PCG-style LCG generator used across this
-// project's encoder tests (same recurrence as frame_test.go/mdct_test.go).
-func lcgEncoderTest(seed *uint64) float64 {
-	*seed = *seed*6364136223846793005 + 1442695040888963407
-	return float64(*seed>>11) / float64(1<<53)
-}
+	"github.com/tphakala/go-mp3/internal/testsignal"
+)
 
 // planarSamples builds an nch x 1152 planar float32 buffer of LCG noise at
 // the given amplitude (kept within [-1,1] so it needs no clamp to exercise
@@ -23,7 +18,7 @@ func planarSamples(seed *uint64, nch int, amp float32) [][]float32 {
 	for ch := range nch {
 		out[ch] = make([]float32, 1152)
 		for i := range out[ch] {
-			v := float32(lcgEncoderTest(seed))*2 - 1
+			v := float32(testsignal.LCG(seed))*2 - 1
 			out[ch][i] = v * amp
 		}
 	}

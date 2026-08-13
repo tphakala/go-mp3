@@ -6,6 +6,7 @@ import (
 
 	"github.com/tphakala/go-mp3/internal/bits"
 	"github.com/tphakala/go-mp3/internal/enc"
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // validateFrames is a white-box test helper (package dec, not dec_test): it
@@ -171,14 +172,6 @@ func sideInfoBitsFor(nch int) int {
 // 20-frame run.
 var structuralGridAmplitudes = [4]float64{0, 50, 2000, 8000}
 
-// lcgStructural is the shared PCG-style LCG generator used across this
-// project's cross-package tests (same recurrence as encx_mdct_test.go's
-// lcgFloat).
-func lcgStructural(seed *uint64) float64 {
-	*seed = *seed*6364136223846793005 + 1442695040888963407
-	return float64(*seed>>11) / float64(1<<53)
-}
-
 // runStructuralGrid builds nFrames synthetic frames at (srIndex,
 // bitrateIndex, mode, nch), amplitude-cycling through
 // structuralGridAmplitudes, encodes
@@ -195,8 +188,8 @@ func runStructuralGrid(t *testing.T, srIndex, bitrateIndex, wantKbps, mode, nch,
 		for g := range 2 {
 			for ch := range nch {
 				for i := range 576 {
-					v := lcgStructural(&seed) * amp
-					if lcgStructural(&seed) < 0.5 {
+					v := testsignal.LCG(&seed) * amp
+					if testsignal.LCG(&seed) < 0.5 {
 						v = -v
 					}
 					xr[g][ch][i] = v
@@ -346,7 +339,7 @@ func runEncoderStructuralGrid(t *testing.T, sampleRate, kbps, nch, nFrames int) 
 		for ch := range nch {
 			samples[ch] = make([]float32, 1152)
 			for i := range 1152 {
-				v := lcgStructural(&seed)*2 - 1
+				v := testsignal.LCG(&seed)*2 - 1
 				samples[ch][i] = float32(v * amp)
 			}
 		}

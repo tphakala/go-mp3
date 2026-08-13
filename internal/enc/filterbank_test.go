@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"math"
 	"testing"
+
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // TestFBMatrixKnownAnswer recomputes every fbMatrix[b][j] with math.Cos and
@@ -200,8 +202,7 @@ func TestFilterbankReset(t *testing.T) {
 
 	var seed uint64 = 1
 	next := func() float64 {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		return (float64(seed>>11)/float64(1<<53))*2 - 1
+		return testsignal.LCGSigned(&seed)
 	}
 
 	// Warm fb up with nonzero granule history, then reset it.
@@ -244,8 +245,7 @@ func TestFBGolden(t *testing.T) {
 
 	var seed uint64 = 1
 	next := func() float64 {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		return (float64(seed>>11)/float64(1<<53))*2 - 1
+		return testsignal.LCGSigned(&seed)
 	}
 
 	var fb Filterbank

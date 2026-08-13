@@ -3,6 +3,8 @@ package enc
 import (
 	"math"
 	"testing"
+
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // TestQuantizeKnownAnswers checks quantizeGranule against hand-computed
@@ -76,8 +78,7 @@ func TestQuantizePowRef(t *testing.T) {
 
 	var seed uint64 = 12345
 	next := func() float64 {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		return float64(seed>>11) / float64(1<<53)
+		return testsignal.LCG(&seed)
 	}
 
 	for range samples {
@@ -110,8 +111,7 @@ func TestQuantizeMonotone(t *testing.T) {
 	var xr [576]float64
 	var seed uint64 = 99
 	next := func() float64 {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		return float64(seed>>11) / float64(1<<53)
+		return testsignal.LCG(&seed)
 	}
 	for i := range xr {
 		u := next()

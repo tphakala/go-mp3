@@ -9,17 +9,9 @@ import (
 	"testing"
 
 	mp3 "github.com/tphakala/go-mp3"
+	"github.com/tphakala/go-mp3/internal/testsignal"
 	mp3pcm "github.com/tphakala/go-mp3/pcm"
 )
-
-// lcgEncoderAPITest is a small deterministic PRNG mirroring
-// internal/enc/encoder_test.go's lcgEncoderTest helper. It is redefined
-// here, rather than reused, because test files are not importable across
-// packages.
-func lcgEncoderAPITest(seed *uint64) float64 {
-	*seed = *seed*6364136223846793005 + 1442695040888963407
-	return float64(*seed>>11) / float64(1<<53)
-}
 
 // planarNoise builds an nch x n planar float32 buffer of LCG noise scaled
 // to amp, staying within [-1, 1].
@@ -28,7 +20,7 @@ func planarNoise(seed *uint64, nch, n int, amp float32) [][]float32 {
 	for ch := range nch {
 		out[ch] = make([]float32, n)
 		for i := range out[ch] {
-			v := float32(lcgEncoderAPITest(seed))*2 - 1
+			v := float32(testsignal.LCG(seed))*2 - 1
 			out[ch][i] = v * amp
 		}
 	}

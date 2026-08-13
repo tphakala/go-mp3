@@ -19,6 +19,7 @@ import (
 
 	mp3 "github.com/tphakala/go-mp3"
 	"github.com/tphakala/go-mp3/internal/enc"
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // roundTripSideInfoBytes returns the byte length of one frame's side-info
@@ -38,36 +39,19 @@ func roundTripSideInfoBytes(nch int) int {
 // buildMultiTone returns nSamples samples of a deterministic multi-tone
 // program: a 440 Hz fundamental plus overtones at -6 dB (880 Hz) and -12 dB
 // (1320 Hz), scaled so |x[i]| <= peak for every i regardless of phase
-// alignment (dividing by the SUM of the three weights bounds the signal
-// pointwise, since |sum of sines| <= sum of amplitudes always; the actual
-// peak, reached only where the three tones align in phase, is <= this
-// bound). chPhase offsets the signal's phase so a second, decorrelated
+// alignment. chPhase offsets the signal's phase so a second, decorrelated
 // channel can be built by calling this with a different chPhase, rather
-// than duplicating the same samples across channels. math.Sin is a
-// test-only reference-signal generator, not part of any runtime encode
-// path (the package's no-math.Sin rule binds internal/enc's production
-// code, not this test).
+// than duplicating the same samples across channels. Delegates to
+// testsignal.MultiTone (peak 0.9), the shared generator this project's test
+// suites now reuse rather than each carrying its own copy.
 func buildMultiTone(sampleRate, nSamples int, chPhase float64) []float64 {
-	const f0 = 440.0
-	const peak = 0.9
-	const w1, w2, w3 = 1.0, 0.5011872336272722, 0.251188643150958 // 0, -6, -12 dB
-	scale := peak / (w1 + w2 + w3)
-
-	x := make([]float64, nSamples)
-	for i := range x {
-		t := float64(i) / float64(sampleRate)
-		v := w1*math.Sin(2*math.Pi*f0*t+chPhase) +
-			w2*math.Sin(2*math.Pi*2*f0*t+chPhase*1.3) +
-			w3*math.Sin(2*math.Pi*3*f0*t+chPhase*1.7)
-		x[i] = scale * v
-	}
-	return x
+	return testsignal.MultiTone(sampleRate, nSamples, chPhase, 0.9)
 }
 
 // framesForOneSecond returns the smallest number of 1152-sample MP3 frames
 // covering at least one second of audio at sampleRate.
 func framesForOneSecond(sampleRate int) int {
-	return (sampleRate + 1151) / 1152
+	return testsignal.FramesForOneSecond(sampleRate)
 }
 
 // encodeMultiTone builds nch channels of buildMultiTone (phase-offset per

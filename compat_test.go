@@ -18,6 +18,7 @@ import (
 	"time"
 
 	mp3 "github.com/tphakala/go-mp3"
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // compatCmdTimeout bounds every compat-gate subprocess call, so a hung
@@ -28,23 +29,15 @@ const compatCmdTimeout = 60 * time.Second
 // program (a 440 Hz fundamental plus overtones at -6 dB and -12 dB), scaled
 // so the signal stays within [-1, 1] regardless of phase alignment.
 // chPhase offsets a second channel's phase so a stereo stream is
-// decorrelated rather than the left channel duplicated. This is a small,
-// self-contained generator: internal/dec's dec_test package has an
-// equivalent helper (buildMultiTone), but it lives in a different,
-// non-importable test package, so it is not reused here.
+// decorrelated rather than the left channel duplicated. Delegates to
+// testsignal.MultiTone (peak 0.85), the shared generator internal/dec's
+// dec_test package's buildMultiTone also uses, converting each float64
+// sample to float32 at the call site.
 func compatMultiTone(sampleRate, nSamples int, chPhase float64) []float32 {
-	const f0 = 440.0
-	const peak = 0.85
-	const w1, w2, w3 = 1.0, 0.5011872336272722, 0.251188643150958 // 0, -6, -12 dB
-	scale := peak / (w1 + w2 + w3)
-
+	v := testsignal.MultiTone(sampleRate, nSamples, chPhase, 0.85)
 	x := make([]float32, nSamples)
-	for i := range x {
-		t := float64(i) / float64(sampleRate)
-		v := w1*math.Sin(2*math.Pi*f0*t+chPhase) +
-			w2*math.Sin(2*math.Pi*2*f0*t+chPhase*1.3) +
-			w3*math.Sin(2*math.Pi*3*f0*t+chPhase*1.7)
-		x[i] = float32(scale * v)
+	for i, s := range v {
+		x[i] = float32(s)
 	}
 	return x
 }
@@ -52,7 +45,7 @@ func compatMultiTone(sampleRate, nSamples int, chPhase float64) []float32 {
 // compatFramesForOneSecond returns the smallest number of FrameSize-sample
 // MP3 frames covering at least one second of audio at sampleRate.
 func compatFramesForOneSecond(sampleRate int) int {
-	return (sampleRate + mp3.FrameSize - 1) / mp3.FrameSize
+	return testsignal.FramesForOneSecond(sampleRate)
 }
 
 // compatEncodeStream encodes about one second of compatMultiTone at

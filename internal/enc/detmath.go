@@ -62,8 +62,10 @@ func plog(x float64) float64 {
 // pexp2 returns 2**x, bit-identically across architectures.
 //
 // Reduction: k is the nearest integer to x (math.Floor is exact), so
-// f = x - k is exact (both share the same binade scale for |x| < 2^52)
-// with |f| <= 1/2. Then 2^f = P(f), the truncated Taylor series in
+// |f| = |x - k| <= 1/2. The subtraction is exact away from the
+// round-half-to-even ties (e.g. x = 1/2 - 2^-54, where x + 1/2 rounds up
+// across a binade); at a tie it rounds to a value still within |f| <= 1/2,
+// which the Taylor series handles the same. Then 2^f = P(f), the series in
 // pexp2Poly evaluated in fixed Horner order, and Ldexp(P(f), k) applies
 // the exact power-of-two scale, correctly rounding into subnormals and
 // to 0/+Inf at the extremes.
@@ -87,7 +89,7 @@ func pexp2(x float64) float64 {
 	}
 
 	k := int(math.Floor(x + 0.5)) // nearest integer to x
-	f := x - float64(k)           // exact; |f| <= 1/2
+	f := x - float64(k)           // |f| <= 1/2 (exact off the round-to-even ties)
 	p := pexp2Poly[len(pexp2Poly)-1]
 	for i := len(pexp2Poly) - 2; i >= 0; i-- {
 		p = float64(p*f) + pexp2Poly[i]

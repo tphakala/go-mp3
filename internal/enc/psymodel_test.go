@@ -3,6 +3,8 @@ package enc
 import (
 	"math"
 	"testing"
+
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // Test-side copies of the generator's defining formulas (libm allowed in
@@ -239,5 +241,168 @@ func TestPsyTablesChecksum(t *testing.T) {
 	}
 	if gotU != psyLineMapsSHA {
 		t.Fatalf("psy line maps changed: %s, frozen %s", gotU, psyLineMapsSHA)
+	}
+}
+
+// polarUnpredictability is the annex's polar form (r/f extrapolation),
+// evaluated with unrestricted test-side libm: the independent reference
+// proving the runtime's Cartesian reformulation (roadmap D1, constraint
+// R2) computes the same quantity. Plan-time measurement: max abs diff
+// 1e-15 over 1e6 random triples.
+func polarUnpredictability(re, im, re1, im1, re2, im2 float64) float64 {
+	r := math.Hypot(re, im)
+	r1 := math.Hypot(re1, im1)
+	r2m := math.Hypot(re2, im2)
+	if r1 == 0 || r2m == 0 || (r == 0 && 2*r1-r2m == 0) {
+		return 1
+	}
+	f := math.Atan2(im, re)
+	f1 := math.Atan2(im1, re1)
+	f2 := math.Atan2(im2, re2)
+	rp := 2*r1 - r2m
+	fp := 2*f1 - f2
+	num := math.Hypot(r*math.Cos(f)-rp*math.Cos(fp), r*math.Sin(f)-rp*math.Sin(fp))
+	return num / (r + math.Abs(rp))
+}
+
+func TestPsyCartesianMatchesPolar(t *testing.T) {
+	var p PsyModel
+	p.Reset(0)
+	seed := uint64(31)
+	// Inject two random history spectra directly, then analyze a random
+	// third; compare every bin's cw against the polar reference.
+	var h1re, h1im, h2re, h2im [513]float64
+	for i := range 513 {
+		h2re[i], h2im[i] = testsignal.LCGSigned(&seed)*100, testsignal.LCGSigned(&seed)*100
+		h1re[i], h1im[i] = testsignal.LCGSigned(&seed)*100, testsignal.LCGSigned(&seed)*100
+	}
+	p.prevRe[1], p.prevIm[1] = h2re, h2im
+	p.prevRe[0], p.prevIm[0] = h1re, h1im
+	pcm := make([]float64, 1024)
+	for i := range pcm {
+		pcm[i] = testsignal.LCGSigned(&seed)
+	}
+	p.analyzeSpectrum(pcm)
+	for i := range 513 {
+		// The current spectrum is now history[0]; recover it from there.
+		re, im := p.prevRe[0][i], p.prevIm[0][i]
+		want := polarUnpredictability(re, im, h1re[i], h1im[i], h2re[i], h2im[i])
+		if d := math.Abs(p.cw[i] - want); d > 1e-12 {
+			t.Fatalf("bin %d: cw = %v, polar reference %v (diff %.3g)", i, p.cw[i], want, d)
+		}
+		if p.cw[i] < 0 || p.cw[i] > 1+1e-9 {
+			t.Fatalf("bin %d: cw = %v outside [0, 1]", i, p.cw[i])
+		}
+	}
+}
+
+func TestPsyZeroHistoryFallback(t *testing.T) {
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	seed := uint64(41)
+	for i := range pcm {
+		pcm[i] = testsignal.LCGSigned(&seed)
+	}
+	// First and second granule after Reset: zero history means r1 == 0 or
+	// r2 == 0 at every bin, so R3 forces cw == 1 everywhere.
+	for g := range 2 {
+		p.analyzeSpectrum(pcm)
+		for i := range 513 {
+			if p.cw[i] != 1 {
+				t.Fatalf("granule %d bin %d: cw = %v, want exactly 1 (R3)", g, i, p.cw[i])
+			}
+		}
+	}
+}
+
+func TestPsySineUnpredictability(t *testing.T) {
+	// A steady exact-bin sine is perfectly predictable: after two warmup
+	// granules, cw at the tone's bin must be near 0. White noise is not:
+	// its mean cw must be large. Measured once (this deterministic
+	// computation is bit-identical across arches, so the margins below are
+	// not a source of cross-arch flakiness): sine cw[64] = 1.49306328389232e-16,
+	// noise mean cw = 0.731515056185343. Floors are tightened to those
+	// measurements with a 10x/0.7x margin per the brief.
+	const bin = 64                        // 64 * 44100/1024 = 2756 Hz
+	const sineCeil = 1.49306328389232e-15 // measured 1.49306328389232e-16 * 10
+	const noiseFloor = 0.5120605393297401 // measured 0.731515056185343 * 0.7
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	for g := range 5 {
+		for i := range pcm {
+			n := g*576 + i // causal sliding window, hop 576
+			pcm[i] = 0.5 * math.Cos(2*math.Pi*float64(bin)*float64(n)/1024)
+		}
+		p.analyzeSpectrum(pcm)
+	}
+	if p.cw[bin] > sineCeil {
+		t.Errorf("steady sine: cw[%d] = %v, want < %v", bin, p.cw[bin], sineCeil)
+	}
+
+	p.Reset(0)
+	seed := uint64(51)
+	var meanCW float64
+	for range 5 {
+		for i := range pcm {
+			pcm[i] = testsignal.LCGSigned(&seed)
+		}
+		p.analyzeSpectrum(pcm)
+	}
+	for i := 1; i < 512; i++ {
+		meanCW += p.cw[i]
+	}
+	meanCW /= 511
+	if meanCW < noiseFloor {
+		t.Errorf("white noise: mean cw = %v, want >= %v", meanCW, noiseFloor)
+	}
+}
+
+// psySpectrumGoldenSHA: cross-arch determinism gate; never re-freeze on an
+// arch mismatch.
+const psySpectrumGoldenSHA = "0ee1f74fc294638167ef90f6e7d028626d5edfc118b51b44fbe3576a27a0f6c2" // FROZEN in Task 2 Step 4
+
+func TestPsySpectrumGolden(t *testing.T) {
+	var p PsyModel
+	p.Reset(1) // 48 kHz
+	pcm := make([]float64, 1024)
+	seed := uint64(61)
+	out := make([]float64, 0, (len(p.r2)+len(p.cw))*4)
+	for range 4 {
+		for i := range pcm {
+			pcm[i] = testsignal.LCGSigned(&seed)
+		}
+		p.analyzeSpectrum(pcm)
+		out = append(out, p.r2[:]...)
+		out = append(out, p.cw[:]...)
+	}
+	got := sha256Float64s(out...)
+	if psySpectrumGoldenSHA == "" {
+		t.Fatalf("FREEZE ME: const psySpectrumGoldenSHA = %q", got)
+	}
+	if got != psySpectrumGoldenSHA {
+		t.Fatalf("spectrum output changed: %s, frozen %s", got, psySpectrumGoldenSHA)
+	}
+}
+
+// TestPsyAnalyzeSpectrumAllocs pins analyzeSpectrum to zero heap
+// allocations per call: fftRe, fftIm, r2, cw, and the spectral history are
+// all PsyModel fields sized once in Reset, so a warm call must not grow
+// anything on the heap.
+func TestPsyAnalyzeSpectrumAllocs(t *testing.T) {
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	seed := uint64(71)
+	for i := range pcm {
+		pcm[i] = testsignal.LCGSigned(&seed)
+	}
+	for range 2 { // prime both history slots so the measured call takes the full R2 branch, not the R3 fallback
+		p.analyzeSpectrum(pcm)
+	}
+
+	if n := testing.AllocsPerRun(50, func() { p.analyzeSpectrum(pcm) }); n != 0 {
+		t.Fatalf("analyzeSpectrum allocates: %v allocs per run, want 0", n)
 	}
 }

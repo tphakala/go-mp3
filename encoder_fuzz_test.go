@@ -4,7 +4,7 @@
 // (0, 1, 1151, 1152, oversized), nil drains, audio-after-drain,
 // audio-after-short, wrong channel counts, or unequal channel lengths the
 // opcodes produce. This is exactly the set of internal enc.Encoder panic
-// contracts (see encoder.go's EncodeFrame doc comment) the public Encoder
+// contracts (see encoder.go's Encoder type doc comment) the public Encoder
 // promises to shield behind ordinary errors.
 //
 // The structural fuzz target FuzzEncodeValidate (internal/dec/encx_fuzz_test.go)

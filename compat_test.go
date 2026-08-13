@@ -7,6 +7,7 @@ package mp3_test
 
 import (
 	"bytes"
+	"context"
 	"math"
 	"os"
 	"os/exec"
@@ -14,9 +15,14 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	mp3 "github.com/tphakala/go-mp3"
 )
+
+// compatCmdTimeout bounds every compat-gate subprocess call, so a hung
+// ffmpeg/mpg123/ffprobe child cannot hang the whole test run.
+const compatCmdTimeout = 60 * time.Second
 
 // compatMultiTone returns nSamples samples of a deterministic multi-tone
 // program (a 440 Hz fundamental plus overtones at -6 dB and -12 dB), scaled
@@ -113,7 +119,9 @@ func requireCompatBinary(t *testing.T, name string) string {
 func compatCheckFfmpeg(t *testing.T, ffmpeg, path string) {
 	t.Helper()
 
-	cmd := exec.Command(ffmpeg, "-v", "error", "-xerror", "-i", path, "-f", "null", "-")
+	ctx, cancel := context.WithTimeout(t.Context(), compatCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ffmpeg, "-v", "error", "-xerror", "-i", path, "-f", "null", "-")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -129,7 +137,9 @@ func compatCheckFfmpeg(t *testing.T, ffmpeg, path string) {
 func compatCheckMpg123(t *testing.T, mpg123, path string) {
 	t.Helper()
 
-	cmd := exec.Command(mpg123, "-q", "--test", path)
+	ctx, cancel := context.WithTimeout(t.Context(), compatCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, mpg123, "-q", "--test", path)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("mpg123 --test failed on %s: %v\noutput:\n%s", path, err, out)
@@ -145,7 +155,9 @@ func compatCheckMpg123(t *testing.T, mpg123, path string) {
 func compatCheckDuration(t *testing.T, ffprobe, path string, sampleRate int, stats mp3.Stats) {
 	t.Helper()
 
-	cmd := exec.Command(ffprobe, "-v", "error", "-show_entries", "format=duration",
+	ctx, cancel := context.WithTimeout(t.Context(), compatCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ffprobe, "-v", "error", "-show_entries", "format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1", path)
 	out, err := cmd.Output()
 	if err != nil {
@@ -171,7 +183,7 @@ func compatCheckDuration(t *testing.T, ffprobe, path string, sampleRate int, sta
 func TestCompatFfmpegMpg123(t *testing.T) {
 	ffmpeg := requireCompatBinary(t, "ffmpeg")
 	mpg123 := requireCompatBinary(t, "mpg123")
-	ffprobe, ffprobeErr := exec.LookPath("ffprobe")
+	ffprobe := requireCompatBinary(t, "ffprobe")
 
 	sampleRates := []int{44100, 48000, 32000}
 	channelCounts := []int{1, 2}
@@ -193,11 +205,7 @@ func TestCompatFfmpegMpg123(t *testing.T) {
 
 					compatCheckFfmpeg(t, ffmpeg, path)
 					compatCheckMpg123(t, mpg123, path)
-					if ffprobeErr == nil {
-						compatCheckDuration(t, ffprobe, path, sr, stats)
-					} else {
-						t.Log("ffprobe not found on PATH, skipping the duration sub-check")
-					}
+					compatCheckDuration(t, ffprobe, path, sr, stats)
 				})
 			}
 		}

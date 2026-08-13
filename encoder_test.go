@@ -412,6 +412,54 @@ func TestEncoderInvalidAudio(t *testing.T) {
 	}
 }
 
+// TestEncoderShortFrameInvalidAudio requires a NaN/Inf inside a short
+// final frame to poison the encoder rather than finalize it: EncodeFrame
+// must not latch shortFrame on a failed encode, or a subsequent call
+// would wrongly observe ErrEncoderFinalized instead of the poison's
+// ErrInvalidAudio. Regression test for the precedence bug where
+// shortFrame was set before the delegating call's result was known.
+func TestEncoderShortFrameInvalidAudio(t *testing.T) {
+	cfg := mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: 128000}
+	e, err := mp3.NewEncoder(cfg)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+
+	seed := uint64(66)
+	short := planarNoise(&seed, 2, 799, 0.5)
+	short[0][400] = float32(math.NaN()) // interior sample, not the first or last
+
+	dst, err := e.EncodeFrame(nil, short)
+	if !errors.Is(err, mp3.ErrInvalidAudio) {
+		t.Fatalf("EncodeFrame with NaN in short final frame: err = %v, want ErrInvalidAudio", err)
+	}
+	if len(dst) != 0 {
+		t.Fatalf("EncodeFrame with NaN in short final frame: appended %d bytes, want 0", len(dst))
+	}
+
+	// (b) The failed short frame must not have latched shortFrame: a
+	// subsequent valid full frame must still observe the poison
+	// (ErrInvalidAudio), not ErrEncoderFinalized. This is the assertion
+	// that fails without the shortFrame-latches-only-on-success fix.
+	full := planarNoise(&seed, 2, mp3.FrameSize, 0.5)
+	if _, err := e.EncodeFrame(nil, full); !errors.Is(err, mp3.ErrInvalidAudio) {
+		t.Fatalf("EncodeFrame with a valid full frame after a poisoned short frame: err = %v, want ErrInvalidAudio", err)
+	}
+
+	// (c) A nil drain also observes the poison.
+	if _, err := e.EncodeFrame(nil, nil); !errors.Is(err, mp3.ErrInvalidAudio) {
+		t.Fatalf("nil drain after a poisoned short frame: err = %v, want ErrInvalidAudio", err)
+	}
+
+	// (d) Reset clears the poison and a fresh encode succeeds.
+	if err := e.Reset(cfg); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if _, err := e.EncodeFrame(nil, full); err != nil {
+		t.Fatalf("EncodeFrame after Reset: %v", err)
+	}
+}
+
 // TestEncoderDelaySplit pins TotalDelay and EncoderDelay against a
 // ChainDelay change: TotalDelay must equal 1057, and EncoderDelay must
 // equal TotalDelay - 529 (the standard decoder's own contribution).

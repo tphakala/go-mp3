@@ -201,6 +201,12 @@ func (e *Encoder) Reset(cfg EncoderConfig) error {
 // frame is zero-padded internally and finalizes the stream, so submitting
 // any further non-nil audio returns ErrEncoderFinalized until Reset.
 //
+// A non-nil samples must carry exactly one slice per configured channel,
+// all of equal, nonzero length no greater than FrameSize; violating any of
+// that (wrong channel count, an empty channel, unequal channel lengths, or
+// a channel longer than FrameSize) returns a distinct error, none of them
+// one of the three sentinels documented here.
+//
 // Pass a nil samples to drain: it appends the encoder's final flush frame
 // and is always legal, including right after a short final frame; further
 // nil calls append nothing more. Drained reports whether the drain has
@@ -256,14 +262,20 @@ func (e *Encoder) EncodeFrame(dst []byte, samples [][]float32) ([]byte, error) {
 
 	// Short final frame: copy into the reusable scratch buffer and
 	// zero-pad the tail to FrameSize. No allocation: scratch is sized
-	// once, in Reset.
+	// once, in Reset. shortFrame latches only on a successful encode: if
+	// this frame is itself invalid (NaN/Inf), the internal encoder
+	// poisons instead of finalizing, and every later call must see that
+	// poison (ErrInvalidAudio), not a wrongly latched ErrEncoderFinalized.
 	for ch := range samples {
 		clear(e.scratch[ch])
 		copy(e.scratch[ch], samples[ch])
 	}
-	e.shortFrame = true
 	out, err := e.enc.EncodeFrame(dst, e.scratch)
-	return out, translateInvalidAudio(err)
+	err = translateInvalidAudio(err)
+	if err == nil {
+		e.shortFrame = true
+	}
+	return out, err
 }
 
 // translateInvalidAudio maps the internal enc.ErrInvalidAudio to the

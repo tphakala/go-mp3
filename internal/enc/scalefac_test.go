@@ -3,6 +3,8 @@ package enc
 import (
 	"math"
 	"testing"
+
+	"github.com/tphakala/go-mp3/internal/bits"
 )
 
 func TestPow43ExactSpots(t *testing.T) {
@@ -76,5 +78,78 @@ func TestPow43Checksum(t *testing.T) {
 	}
 	if got != pow43SHA {
 		t.Fatalf("pow43 changed: %s, frozen %s", got, pow43SHA)
+	}
+}
+
+func TestChooseScalefacCompress(t *testing.T) {
+	var sf scfState
+	if idx, n, ok := chooseScalefacCompress(&sf, 0); !ok || idx != 0 || n != 0 {
+		t.Fatalf("all-zero scf: got (%d,%d,%v), want (0,0,true)", idx, n, ok)
+	}
+	sf.scf[0] = 1 // needs slen1 >= 1: cheapest covering is index 5 (1,1): 11+10=21? no:
+	// slen2 may be 0 only via indexes 0 and 4; max hi is 0 here, so index 4
+	// (3,0) costs 33, index 1 (0,1)... does not cover lo max 1. Walk the
+	// table: covering means 2^slen1-1 >= maxLo AND 2^slen2-1 >= maxHi.
+	// maxLo=1, maxHi=0: candidates: 4 (3,0) cost 33, 5 (1,1) cost 21,
+	// 1 (0,1) does NOT cover lo. Cheapest with slen1>=1, slen2>=0:
+	// index 5 (1,1) costs 11*1+10*1=21; index 4 costs 33. Want (5, 21).
+	if idx, n, ok := chooseScalefacCompress(&sf, 0); !ok || idx != 5 || n != 21 {
+		t.Fatalf("maxLo=1: got (%d,%d,%v), want (5,21,true)", idx, n, ok)
+	}
+	sf.scf[0] = 15
+	sf.scf[11] = 7 // needs slen1=4, slen2=3: only index 15 (4,3): 44+30=74
+	if idx, n, ok := chooseScalefacCompress(&sf, 0); !ok || idx != 15 || n != 74 {
+		t.Fatalf("maxima: got (%d,%d,%v), want (15,74,true)", idx, n, ok)
+	}
+	sf.scf[0] = 16 // beyond sfMaxLo: no pair covers
+	if _, _, ok := chooseScalefacCompress(&sf, 0); ok {
+		t.Fatal("scf 16 must not be coverable")
+	}
+	sf.scf[0] = 15
+	// scfsi mask 0b1000 skips group 0 (sfbs 0..5): maxLo now over 6..10.
+	if idx, n, ok := chooseScalefacCompress(&sf, 0b1000); !ok || idx == 15 {
+		t.Fatalf("masked group still drives selection: (%d,%d,%v)", idx, n, ok)
+	}
+}
+
+func TestScfsiDetectApply(t *testing.T) {
+	var g0, g1 granuleCoding
+	for s := range g0.sf.scf {
+		g0.sf.scf[s] = s % 4
+		g1.sf.scf[s] = s % 4
+	}
+	g1.sf.scf[8] = 3 // break group 1 (sfbs 6..10)
+	mask := detectScfsi(&g0, &g1)
+	if mask != 0b1011 {
+		t.Fatalf("mask = %04b, want 1011 (group 1 differs)", mask)
+	}
+	g1.sf.scalefacScale = 1
+	if detectScfsi(&g0, &g1) != 0 {
+		t.Fatal("scalefacScale mismatch must disable scfsi")
+	}
+	g1.sf.scalefacScale = 0
+	_, before, _ := chooseScalefacCompress(&g1.sf, 0)
+	g1.part2Bits = before
+	g1.part23Length = before + 100
+	saved := applyScfsi(&g1, mask)
+	if saved <= 0 || g1.part2Bits >= before || g1.part23Length != before+100-saved {
+		t.Fatalf("applyScfsi: saved %d, part2 %d->%d, part23 %d",
+			saved, before, g1.part2Bits, g1.part23Length)
+	}
+}
+
+func TestWriteScalefactorsBitCount(t *testing.T) {
+	var gc granuleCoding
+	for s := range gc.sf.scf {
+		gc.sf.scf[s] = min(s, 7)
+	}
+	idx, nbits, ok := chooseScalefacCompress(&gc.sf, 0)
+	if !ok {
+		t.Fatal("cover failed")
+	}
+	gc.scfCompress, gc.part2Bits = idx, nbits
+	w := bits.NewWriter(nil)
+	if got := writeScalefactors(&w, &gc); got != nbits {
+		t.Fatalf("wrote %d bits, counted %d", got, nbits)
 	}
 }

@@ -179,19 +179,22 @@ func (p *paddingState) next(bitrateKbps, sampleRate int) (padding int) {
 
 // appendFrame assembles one complete frame: header, side info (per the
 // exact MPEG-1 field layout l3ReadSideInfo consumes,
-// internal/dec/sideinfo.go:69), main data (the granule-channel Huffman bits
-// in granule-major channel-minor order), and zero stuffing to the exact
-// frame length. main_data_begin is 0.
+// internal/dec/sideinfo.go:69), main data (per granule-channel, in
+// granule-major channel-minor order: scalefactors via writeScalefactors
+// then the Huffman spectrum via writeSpectrum), and zero stuffing to the
+// exact frame length. main_data_begin is 0.
 //
 // sfbWidths is derived once from srIndex, &sfbWidthsLong[srIndex], and that
 // same pointer is passed to every writeSpectrum call in the frame: the
 // production source of truth for which sfb-width row a frame was coded
 // against is always srIndex, never a value threaded separately. appendFrame
-// panics if a writeSpectrum call's returned bit count disagrees with the
-// granule's own recorded ri.bits: that can only happen if the caller coded
-// the granule against a different sfbWidths row than srIndex names here, an
-// invariant violation in the caller, not a recoverable runtime condition
-// (same rationale as bits.Writer's n-range panic).
+// panics if a granule-channel's written part2 (writeScalefactors) or part3
+// (writeSpectrum) bit count disagrees with its own recorded part2Bits/
+// ri.bits, or their sum disagrees with part23Length: that can only happen
+// on an invariant violation in the caller (e.g. coding the granule against
+// a different sfbWidths row than srIndex names here, or setting
+// scfCompress/scfsi inconsistently with sf), not a recoverable runtime
+// condition (same rationale as bits.Writer's n-range panic).
 func appendFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2]granuleCoding, nch int) []byte {
 	frameStart := len(dst)
 	header := frameHeader(bitrateIndex, srIndex, padding, mode)
@@ -203,9 +206,10 @@ func appendFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2
 	for g := range 2 {
 		for ch := range nch {
 			gc := &gr[g][ch]
-			got := writeSpectrum(&w, &gc.ix, gc.part, gc.ri, sfb)
-			if got != gc.ri.bits {
-				panic("enc: appendFrame: writeSpectrum bit count diverged from codeGranule's recorded part23Length")
+			part2 := writeScalefactors(&w, gc)
+			part3 := writeSpectrum(&w, &gc.ix, gc.part, gc.ri, sfb)
+			if part2 != gc.part2Bits || part3 != gc.ri.bits || part2+part3 != gc.part23Length {
+				panic("enc: appendFrame: part2+part3 bit count diverged from codeGranule's recorded part23Length")
 			}
 		}
 	}
@@ -248,5 +252,65 @@ func AppendFramePin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr *[2
 			codeGranule(&xr[g][ch], budget, sfb, &gr[g][ch])
 		}
 	}
+	return appendFrame(dst, bitrateIndex, srIndex, padding, mode, &gr, nch)
+}
+
+// ScfPin is one granule-channel's pinned scalefactor state for
+// AppendFrameScfPin: the internal/dec encx_ readback tests drive the inner
+// rate loop at these exact scalefactors instead of the implicit all-zero
+// state codeGranule otherwise sees.
+type ScfPin struct {
+	Scf           [21]int
+	ScalefacScale int
+	Preflag       int
+}
+
+// AppendFrameScfPin codes xr[g][ch] through the production codeGranule with
+// each granule-channel's scalefactor state PRESET from pins (the inner rate
+// loop only; no outer loop chooses the scalefactors here, that is Task 4/5's
+// job), picks each granule-channel's cheapest covering scalefac_compress via
+// chooseScalefacCompress, optionally detects and applies scfsi across
+// granule 0/1 per channel, and assembles one frame via the production
+// appendFrame. Test-only, the AppendFramePin precedent.
+//
+// scalefac_compress is chosen, and gc.part2Bits set, BEFORE codeGranule
+// runs: chooseScalefacCompress depends only on the pinned sf, not on the
+// quantized spectrum, so the granule-channel's part2 cost is already known.
+// codeGranule is then budgeted at budget-part2 (not the raw per-granule
+// share), so its Huffman rate loop leaves exactly enough room for the
+// scalefactor bits appendFrame will also have to write; without that
+// reduction, part2 would land on top of an already-full Huffman budget and
+// overflow the frame's fixed byte length.
+func AppendFrameScfPin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr *[2][2][576]float64, pins *[2][2]ScfPin, useScfsi bool, nch int) []byte {
+	sfb := &sfbWidthsLong[srIndex]
+	budget := granuleBudgetBits(bitrateIndex, srIndex, padding, nch)
+
+	var gr [2][2]granuleCoding
+	for g := range 2 {
+		for ch := range nch {
+			gc := &gr[g][ch]
+			pin := pins[g][ch]
+			gc.sf.scf = pin.Scf
+			gc.sf.scalefacScale = pin.ScalefacScale
+			gc.sf.preflag = pin.Preflag
+
+			idx, part2, ok := chooseScalefacCompress(&gc.sf, 0)
+			if !ok {
+				panic("enc: AppendFrameScfPin: pinned scalefactors not coverable by any scalefac_compress index")
+			}
+			gc.scfCompress = idx
+			gc.part2Bits = part2
+
+			codeGranule(&xr[g][ch], budget-part2, sfb, gc)
+		}
+	}
+
+	if useScfsi {
+		for ch := range nch {
+			mask := detectScfsi(&gr[0][ch], &gr[1][ch])
+			applyScfsi(&gr[1][ch], mask)
+		}
+	}
+
 	return appendFrame(dst, bitrateIndex, srIndex, padding, mode, &gr, nch)
 }

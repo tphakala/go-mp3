@@ -47,3 +47,20 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+  compat:
+    name: Compat
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # ffmpeg and mpg123 are black-box decode references only (see
+      # PROVENANCE.md); their source is never consulted.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg mpg123
+      - run: go test ./ -run Compat -v
+        env:
+          MP3_REQUIRE_COMPAT: '1'

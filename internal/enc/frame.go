@@ -3,12 +3,17 @@ package enc
 import "github.com/tphakala/go-mp3/internal/bits"
 
 // granuleCoding is one coded granule-channel, ready for side info + main
-// data: the exact Huffman bit count (part2 is 0, Phase 3 carries no
-// scalefactors), the global gain that produced it, the spectrum partition
-// and region layout codeGranule settled on, and the quantized spectrum
-// itself.
+// data: the scalefactor state and its side-info encoding, the exact
+// Huffman bit count, the global gain that produced it, the spectrum
+// partition and region layout codeGranule settled on, and the quantized
+// spectrum itself.
 type granuleCoding struct {
-	part23Length int // exact Huffman bits (part2 is 0: no scalefactors in Phase 3)
+	sf          scfState // per-band scalefactor state (zero value: Phase 3 behavior)
+	part2Bits   int      // scalefactor side-info bits (0 until the outer loop, Task 4/5, sets sf)
+	scfCompress int      // scalefac_compress side-info value (0 until Task 4/5)
+	scfsi       int      // scfsi bits, granule 1 only (0 until Task 4/5)
+
+	part23Length int // part2Bits + Huffman bits (part3); part2Bits is 0 in PR A
 	globalGain   int
 	part         spectrumPartition
 	ri           regionInfo
@@ -23,12 +28,13 @@ type granuleCoding struct {
 // caps its effective budget at this value so that can never happen.
 const maxPart23Length = 4095
 
-// recode quantizes xr at gg, partitions the result, and chooses region
-// boundaries, writing straight into gc. A small shared step so codeGranule's
-// two rate-loop phases (raise gain, then spectral truncation) do not
-// duplicate the quantize/partition/choose sequence.
+// recode quantizes xr at gg under gc's scalefactor state, partitions the
+// result, and chooses region boundaries, writing straight into gc. A small
+// shared step so codeGranule's two rate-loop phases (raise gain, then
+// spectral truncation) do not duplicate the quantize/partition/choose
+// sequence.
 func recode(xr *[576]float64, gg int, sfbWidths *[22]int, gc *granuleCoding) {
-	quantizeGranule(xr, gg, &gc.ix)
+	quantizeGranule(xr, gg, &gc.sf, sfbWidths, &gc.ix)
 	gc.part = partitionSpectrum(&gc.ix)
 	gc.ri = chooseRegions(&gc.ix, gc.part, sfbWidths)
 }
@@ -47,7 +53,7 @@ func recode(xr *[576]float64, gg int, sfbWidths *[22]int, gc *granuleCoding) {
 func codeGranule(xr *[576]float64, budgetBits int, sfbWidths *[22]int, gc *granuleCoding) {
 	effBudget := min(budgetBits, maxPart23Length)
 
-	gg := minGlobalGain(xr)
+	gg := minGlobalGain(xr, &gc.sf, sfbWidths)
 	recode(xr, gg, sfbWidths, gc)
 
 	for gc.ri.bits > effBudget && gg < 255 {
@@ -61,7 +67,7 @@ func codeGranule(xr *[576]float64, budgetBits int, sfbWidths *[22]int, gc *granu
 	}
 
 	gc.globalGain = gg
-	gc.part23Length = gc.ri.bits
+	gc.part23Length = gc.part2Bits + gc.ri.bits
 }
 
 // zeroTopSfb zeros the highest-indexed scalefactor band of ix that has any

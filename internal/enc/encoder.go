@@ -51,7 +51,7 @@ func (c Config) validate() error {
 	if c.Channels != 1 && c.Channels != 2 {
 		return fmt.Errorf("go-mp3/enc: invalid channel count %d, want 1 or 2", c.Channels)
 	}
-	if _, ok := bitrateIndexForKbps[c.BitrateKbps]; !ok {
+	if !ValidBitrateKbps(c.BitrateKbps) {
 		return fmt.Errorf("go-mp3/enc: invalid bitrate %d kbps, want one of the 14 MPEG-1 Layer III CBR rates", c.BitrateKbps)
 	}
 	return nil

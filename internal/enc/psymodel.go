@@ -124,3 +124,75 @@ func (p *PsyModel) analyzeSpectrum(pcm []float64) {
 		p.prevRe[0][i], p.prevIm[0][i] = p.fftRe[i], p.fftIm[i]
 	}
 }
+
+// computeThresholds derives the per-partition masking threshold nb from
+// the current spectrum (r2, cw): partition energies and energy-weighted
+// unpredictability, spreading convolution in fixed index order, tonality
+// tb = clamp(-0.299 - 0.43*ln(cb/ecb), 0, 1) via plog, required SNR
+// tb*15.5 + (1-tb)*5.5 dB (flat TMN) converted through pexp2, spreading
+// normalization, the two-frame pre-echo cap min(raw, 2*nb1, 16*nb2), and
+// the absolute-threshold floor qthr. Rotates the threshold history.
+func (p *PsyModel) computeThresholds() {
+	tab := p.tab
+	n := tab.nParts
+
+	for b := range n {
+		p.e[b] = 0
+		p.ct[b] = 0
+	}
+	for i := range 513 {
+		b := tab.partOfLine[i]
+		p.e[b] += p.r2[i]
+		p.ct[b] += float64(p.cw[i] * p.r2[i])
+	}
+
+	for b := range n {
+		var ecb, cbs float64
+		sp := &tab.sprd[b]
+		for bb := range n {
+			ecb += float64(p.e[bb] * sp[bb])
+			cbs += float64(p.ct[bb] * sp[bb])
+		}
+		p.ecb[b] = ecb
+		p.cbs[b] = cbs
+
+		tb := 0.0
+		if ecb > 0 {
+			cbb := cbs / ecb
+			switch {
+			case cbb <= 0:
+				tb = 1 // fully predictable in the limit: tonal
+			default:
+				if cbb > 1 {
+					cbb = 1
+				}
+				tb = -0.299 - float64(0.43*plog(cbb))
+				if tb < 0 {
+					tb = 0
+				}
+				if tb > 1 {
+					tb = 1
+				}
+			}
+		}
+
+		snr := float64(tb*psyTmnDB) + float64((1-tb)*psyNmtDB)
+		bc := pexp2(-snr * psyLog2TenOver10)
+		raw := float64(float64(ecb*tab.norm[b]) * bc)
+
+		cap1 := float64(psyRpelev * p.nbPrev[0][b])
+		cap2 := float64(psyRpelev2 * p.nbPrev[1][b])
+		nb := min(raw, cap1, cap2)
+		if nb < tab.qthr[b] {
+			nb = tab.qthr[b]
+		}
+		p.nb[b] = nb
+	}
+
+	// Rotate threshold history with the UNFLOORED spread threshold? No:
+	// the annex compares against the previous FINAL thresholds; keep nb.
+	for b := range n {
+		p.nbPrev[1][b] = p.nbPrev[0][b]
+		p.nbPrev[0][b] = p.nb[b]
+	}
+}

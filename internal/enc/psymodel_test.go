@@ -406,3 +406,139 @@ func TestPsyAnalyzeSpectrumAllocs(t *testing.T) {
 		t.Fatalf("analyzeSpectrum allocates: %v allocs per run, want 0", n)
 	}
 }
+
+// analyzeN runs n granules of a generator function through spectrum +
+// thresholds, returning the model for inspection.
+func analyzeN(t *testing.T, srIndex, n int, gen func(g int, pcm []float64)) *PsyModel {
+	t.Helper()
+	var p PsyModel
+	p.Reset(srIndex)
+	pcm := make([]float64, 1024)
+	for g := range n {
+		gen(g, pcm)
+		p.analyzeSpectrum(pcm)
+		p.computeThresholds()
+	}
+	return &p
+}
+
+func sineGen(bin int, amp float64) func(int, []float64) {
+	return func(g int, pcm []float64) {
+		for i := range pcm {
+			n := g*576 + i
+			pcm[i] = amp * math.Cos(2*math.Pi*float64(bin)*float64(n)/1024)
+		}
+	}
+}
+
+func noiseGen(seed uint64) func(int, []float64) {
+	s := seed
+	return func(_ int, pcm []float64) {
+		for i := range pcm {
+			pcm[i] = testsignal.LCGSigned(&s) * 0.5
+		}
+	}
+}
+
+func TestPsyThresholdFloor(t *testing.T) {
+	for _, gen := range []func(int, []float64){
+		sineGen(64, 0.5), noiseGen(71),
+		func(_ int, pcm []float64) { clear(pcm) }, // silence
+	} {
+		p := analyzeN(t, 0, 4, gen)
+		for b := range p.tab.nParts {
+			if p.nb[b] < p.tab.qthr[b] {
+				t.Fatalf("part %d: nb = %g below qthr = %g", b, p.nb[b], p.tab.qthr[b])
+			}
+		}
+	}
+}
+
+func TestPsyTonalityContrast(t *testing.T) {
+	// A steady sine demands more SNR (tonal masker, flat TMN 15.5 dB)
+	// than white noise (NMT 5.5 dB): e/nb at the masker's partition must
+	// be clearly larger for the sine. Measured once (this deterministic
+	// computation is bit-identical across arches, so the margins below
+	// are not a source of cross-arch flakiness): sineDB = 20.899761521043345,
+	// noiseDB = 4.529705071145088 (gap 16.37 dB). Floors are tightened to
+	// those measurements with margin: sine >= 18 (2.9 dB below measured),
+	// gap >= 10 dB (6.37 dB below measured).
+	const bin = 64
+	ps := analyzeN(t, 0, 5, sineGen(bin, 0.5))
+	bSine := int(ps.tab.partOfLine[bin])
+	sineDB := 10 * math.Log10(ps.e[bSine]/ps.nb[bSine])
+
+	pn := analyzeN(t, 0, 5, noiseGen(81))
+	var noiseDB float64
+	cnt := 0
+	for b := 5; b < pn.tab.nParts-5; b++ {
+		if pn.e[b] > 0 && pn.nb[b] > pn.tab.qthr[b] {
+			noiseDB += 10 * math.Log10(pn.e[b]/pn.nb[b])
+			cnt++
+		}
+	}
+	noiseDB /= float64(cnt)
+
+	if sineDB < 18 {
+		t.Errorf("sine: e/nb = %.1f dB at masker partition, want >= 18", sineDB)
+	}
+	if noiseDB > sineDB-10 {
+		t.Errorf("noise mean e/nb = %.1f dB, want at least 10 dB below sine's %.1f", noiseDB, sineDB)
+	}
+}
+
+func TestPsySpreadingEffect(t *testing.T) {
+	// A single tone must raise thresholds in NEIGHBOR partitions above
+	// their quiet floor, decaying with distance.
+	const bin = 128
+	p := analyzeN(t, 0, 5, sineGen(bin, 0.5))
+	b := int(p.tab.partOfLine[bin])
+	if p.nb[b+1] <= p.tab.qthr[b+1] || p.nb[b-1] <= p.tab.qthr[b-1] {
+		t.Fatalf("neighbors of tone partition %d not elevated above qthr", b)
+	}
+	if !(p.nb[b] > p.nb[b+2] && p.nb[b+2] > p.nb[b+4]) {
+		t.Errorf("upward spreading not decaying: nb[b]=%g nb[b+2]=%g nb[b+4]=%g",
+			p.nb[b], p.nb[b+2], p.nb[b+4])
+	}
+}
+
+func TestPsyPreEchoRule(t *testing.T) {
+	// Quiet history then a loud attack: the attack granule's nb is capped
+	// by rpelev*nb1 computed from the QUIET frames, far below the raw
+	// spread threshold the loud frame alone would produce.
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	quiet := sineGen(64, 1e-4)
+	loud := sineGen(64, 0.9)
+	for g := range 4 {
+		quiet(g, pcm)
+		p.analyzeSpectrum(pcm)
+		p.computeThresholds()
+	}
+	nbQuiet := p.nb[p.tab.partOfLine[64]]
+	loud(4, pcm)
+	p.analyzeSpectrum(pcm)
+	p.computeThresholds()
+	b := p.tab.partOfLine[64]
+	cap1 := psyRpelev * nbQuiet
+	if p.nb[b] > cap1*(1+1e-9) && p.nb[b] > p.tab.qthr[b]*(1+1e-9) {
+		t.Errorf("attack nb = %g exceeds pre-echo cap %g (quiet nb was %g)", p.nb[b], cap1, nbQuiet)
+	}
+}
+
+const psyThresholdGoldenSHA = "32e0a8cf58619116d85c52001d236ef958cea04531aac1d269ee0e798b30f460" // FROZEN in Task 3 Step 4
+
+func TestPsyThresholdGolden(t *testing.T) {
+	p := analyzeN(t, 2, 4, noiseGen(91)) // 32 kHz leg for variety
+	out := make([]float64, 0, p.tab.nParts+p.tab.nParts)
+	out = append(out, p.e[:p.tab.nParts]...)
+	out = append(out, p.nb[:p.tab.nParts]...)
+	got := sha256Float64s(out...)
+	if psyThresholdGoldenSHA == "" {
+		t.Fatalf("FREEZE ME: const psyThresholdGoldenSHA = %q", got)
+	}
+	if got != psyThresholdGoldenSHA {
+		t.Fatalf("threshold output changed: %s, frozen %s", got, psyThresholdGoldenSHA)
+	}
+}

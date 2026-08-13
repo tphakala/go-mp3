@@ -16,14 +16,22 @@ const FrameSize = 1152
 // EncoderConfig leaves both Bitrate and Quality zero: 128 kb/s.
 const DefaultBitrate = 128000
 
+// standardDecoderDelay is the fixed algorithmic delay, in samples per
+// channel, a standard MPEG-1 Layer III decoder contributes to a LAME-style
+// tag's "encoder delay"/"decoder delay" split. This project's documentation
+// convention, not an independently measured figure here; kept consistent
+// with pcm/decoder.go's "~528-sample" wording.
+const standardDecoderDelay = 529
+
 // EncoderDelay is this encoder's own algorithmic delay, in samples per
 // channel, in the sense a LAME-style tag's "encoder delay" field uses: a
 // stream this package produces carries TotalDelay leading samples of
 // algorithmic delay once decoded, of which a standard MPEG-1 Layer III
-// decoder contributes its own fixed 529; EncoderDelay is the remainder,
-// attributable to the encoder alone. See TotalDelay for the number that
-// matters when trimming a decoded stream back to the original input.
-const EncoderDelay = enc.ChainDelay - 529
+// decoder contributes its own fixed standardDecoderDelay; EncoderDelay is
+// the remainder, attributable to the encoder alone. See TotalDelay for the
+// number that matters when trimming a decoded stream back to the original
+// input.
+const EncoderDelay = enc.ChainDelay - standardDecoderDelay
 
 // TotalDelay is the total encoder-plus-standard-decoder algorithmic delay,
 // in samples per channel, carried as leading samples in the decoded output
@@ -32,7 +40,7 @@ const EncoderDelay = enc.ChainDelay - 529
 // automatically, so a caller that wants to align decoded audio back to the
 // original input must subtract TotalDelay itself (drop the first
 // TotalDelay samples per channel after decoding). EncoderDelay (528) is
-// the encoder-only LAME-tag split: TotalDelay - 529.
+// the encoder-only LAME-tag split: TotalDelay - standardDecoderDelay.
 const TotalDelay = enc.ChainDelay
 
 // Sentinel errors returned by Encoder methods.
@@ -43,13 +51,13 @@ var (
 	// drain call, also returns ErrInvalidAudio until Reset.
 	ErrInvalidAudio = errors.New("go-mp3: invalid audio sample (NaN or Inf)")
 
-	// ErrEncoderClosed is returned by EncodeFrame on an Encoder that has
+	// ErrEncoderNotInitialized is returned by EncodeFrame on an Encoder that has
 	// not been successfully initialized by NewEncoder or Reset. This
 	// includes a zero-value Encoder and one whose only Reset call so far
 	// returned an error; it does not include an already-initialized
 	// Encoder whose later Reset call errors, since that leaves the prior
 	// successful state untouched.
-	ErrEncoderClosed = errors.New("go-mp3: encoder not initialized")
+	ErrEncoderNotInitialized = errors.New("go-mp3: encoder not initialized")
 
 	// ErrEncoderFinalized is returned by EncodeFrame when non-nil audio is
 	// submitted after the stream has already been finalized: either a
@@ -67,13 +75,6 @@ var (
 	errUnequalChannelLengths = errors.New("go-mp3: channels have unequal sample counts")
 	errFrameTooLong          = errors.New("go-mp3: channel sample count exceeds FrameSize")
 )
-
-// legalBitratesKbps is the set of MPEG-1 Layer III CBR bitrates, in
-// kilobits per second (ISO/IEC 11172-3 Table B.1).
-var legalBitratesKbps = map[int]bool{
-	32: true, 40: true, 48: true, 56: true, 64: true, 80: true, 96: true,
-	112: true, 128: true, 160: true, 192: true, 224: true, 256: true, 320: true,
-}
 
 // EncoderConfig configures a new or reset Encoder.
 type EncoderConfig struct {
@@ -126,7 +127,7 @@ func (cfg EncoderConfig) toEncConfig() (enc.Config, error) {
 		return enc.Config{}, fmt.Errorf("go-mp3: invalid bitrate %d, must be a whole multiple of 1000", bitrate)
 	}
 	kbps := bitrate / 1000
-	if !legalBitratesKbps[kbps] {
+	if !enc.ValidBitrateKbps(kbps) {
 		return enc.Config{}, fmt.Errorf("go-mp3: invalid bitrate %d, want one of the 14 MPEG-1 Layer III CBR rates", bitrate)
 	}
 
@@ -222,11 +223,11 @@ func (e *Encoder) Reset(cfg EncoderConfig) error {
 // drain also returns ErrEncoderFinalized.
 //
 // On an Encoder that has not been successfully initialized by NewEncoder
-// or Reset (see ErrEncoderClosed above for exactly what that covers),
-// EncodeFrame returns (dst, ErrEncoderClosed) unconditionally.
+// or Reset (see ErrEncoderNotInitialized above for exactly what that covers),
+// EncodeFrame returns (dst, ErrEncoderNotInitialized) unconditionally.
 func (e *Encoder) EncodeFrame(dst []byte, samples [][]float32) ([]byte, error) {
 	if e.enc == nil {
-		return dst, ErrEncoderClosed
+		return dst, ErrEncoderNotInitialized
 	}
 
 	if samples == nil {
@@ -323,13 +324,7 @@ func (e *Encoder) Stats() Stats {
 	if e.enc == nil {
 		return Stats{}
 	}
-	s := e.enc.Stats()
-	return Stats{
-		Frames:         s.Frames,
-		Bytes:          s.Bytes,
-		PaddedFrames:   s.PaddedFrames,
-		MeanGlobalGain: s.MeanGlobalGain,
-	}
+	return Stats(e.enc.Stats())
 }
 
 // Stats counts what an Encoder emitted since NewEncoder or the last Reset.

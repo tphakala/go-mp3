@@ -151,8 +151,7 @@ func TestChooseRegionsExhaustiveSmall(t *testing.T) {
 			if r0+r1+2 > 22 {
 				continue
 			}
-			a := min(r0+1, 22)
-			c := min(a+r1+1, 22)
+			a, c := regionBounds(r0, r1)
 			total := bruteRangeCost(0, a) + bruteRangeCost(a, c) + bruteRangeCost(c, 22)
 			if total < bestBits {
 				bestBits, wantR0, wantR1 = total, r0, r1

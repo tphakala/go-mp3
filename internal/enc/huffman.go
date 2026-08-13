@@ -201,6 +201,16 @@ func quadSignBits(v, w, x, y int32) int {
 	return n
 }
 
+// regionBounds converts region0Count/region1Count (ISO side-info
+// scalefactor-band counts) into pair-boundary sfb indices a and c: a is the
+// end of region 0 (clamped to 22), c is the end of region 1 (clamped to 22,
+// computed from the already-clamped a).
+func regionBounds(region0Count, region1Count int) (a, c int) {
+	a = min(region0Count+1, 22)
+	c = min(a+region1Count+1, 22)
+	return
+}
+
 // chooseRegions picks region boundaries (on scalefactor-band edges, per
 // ISO 2.4.2.7) and per-region codebooks minimizing total bits, by exact
 // search over region0Count x region1Count with per-sfb per-table prefix
@@ -224,8 +234,7 @@ func chooseRegions(ix *[576]int32, part spectrumPartition, sfbWidths *[22]int) r
 			if r0+r1+2 > 22 {
 				continue
 			}
-			a := min(r0+1, 22)
-			c := min(a+r1+1, 22)
+			a, c := regionBounds(r0, r1)
 			cost0, t0 := rangeCost(&prefixCost, &pb, 0, a)
 			cost1, t1 := rangeCost(&prefixCost, &pb, a, c)
 			cost2, t2 := rangeCost(&prefixCost, &pb, c, 22)
@@ -263,8 +272,7 @@ func chooseRegions(ix *[576]int32, part spectrumPartition, sfbWidths *[22]int) r
 func writeSpectrum(w *bits.Writer, ix *[576]int32, part spectrumPartition, ri regionInfo, sfbWidths *[22]int) int {
 	before := w.BitsWritten()
 	pb := pairBoundaries(sfbWidths, part.bigValues)
-	a := min(ri.region0Count+1, 22)
-	c := min(a+ri.region1Count+1, 22)
+	a, c := regionBounds(ri.region0Count, ri.region1Count)
 	region0End, region1End := pb[a], pb[c]
 
 	for p := range part.bigValues {

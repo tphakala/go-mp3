@@ -115,14 +115,14 @@ func TestEncoderConfigValidation(t *testing.T) {
 
 // TestEncoderZeroValue requires every method on a never-initialized
 // Encoder to behave per the documented zero-value contract, without
-// panicking: EncodeFrame returns ErrEncoderClosed and leaves dst
+// panicking: EncodeFrame returns ErrEncoderNotInitialized and leaves dst
 // unchanged, Drained is false, Delay is EncoderDelay, Stats is zero.
 func TestEncoderZeroValue(t *testing.T) {
 	var e mp3.Encoder
 
 	dst, err := e.EncodeFrame(nil, [][]float32{make([]float32, mp3.FrameSize), make([]float32, mp3.FrameSize)})
-	if !errors.Is(err, mp3.ErrEncoderClosed) {
-		t.Fatalf("EncodeFrame on zero value: err = %v, want ErrEncoderClosed", err)
+	if !errors.Is(err, mp3.ErrEncoderNotInitialized) {
+		t.Fatalf("EncodeFrame on zero value: err = %v, want ErrEncoderNotInitialized", err)
 	}
 	if dst != nil {
 		t.Fatalf("EncodeFrame on zero value: dst = %v, want nil (unchanged)", dst)

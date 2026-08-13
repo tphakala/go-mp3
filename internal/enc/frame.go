@@ -126,6 +126,15 @@ func sideInfoBits(nch int) int {
 	return 9 + privateBits + nch*4 + 2*nch*59
 }
 
+// granuleBudgetBits returns the per-granule-channel Huffman bit budget for a
+// frame: the frame's total byte length converted to bits, minus the 32-bit
+// header and the side-info block, split evenly across the frame's 2*nch
+// granule-channels.
+func granuleBudgetBits(bitrateIndex, srIndex, padding, nch int) int {
+	mainBits := frameLength(bitrateIndex, srIndex, padding)*8 - 32 - sideInfoBits(nch)
+	return mainBits / (2 * nch)
+}
+
 // frameHeader packs the 32-bit MPEG-1 Layer III header: sync(11)=0x7FF,
 // ID(2)=3 (MPEG-1), layer(2)=1 (Layer III), protection_bit(1)=1 (no CRC),
 // bitrate_index(4), sampling_frequency(2), padding_bit(1), private_bit(1)=0,
@@ -225,8 +234,7 @@ func appendFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2
 // frame via the production appendFrame. Test-only.
 func AppendFramePin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr *[2][2][576]float64, nch int) []byte {
 	sfb := &sfbWidthsLong[srIndex]
-	mainBits := frameLength(bitrateIndex, srIndex, padding)*8 - 32 - sideInfoBits(nch)
-	budget := mainBits / (2 * nch)
+	budget := granuleBudgetBits(bitrateIndex, srIndex, padding, nch)
 
 	var gr [2][2]granuleCoding
 	for g := range 2 {

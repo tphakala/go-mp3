@@ -170,9 +170,10 @@ func TestChooseRegionsExhaustiveSmall(t *testing.T) {
 	}
 }
 
-// TestWriteSpectrumBitsMatchCount runs the real quantize -> partition ->
-// chooseRegions -> writeSpectrum pipeline over LCG-random granules across
-// all three MPEG-1 rates, and requires writeSpectrum's returned bit count
+// TestWriteSpectrumBitsMatchCount runs the real partition -> chooseRegions
+// -> writeSpectrum pipeline (ix is built directly from the LCG, not via
+// quantizeGranule) over LCG-random granules across all three MPEG-1
+// rates, and requires writeSpectrum's returned bit count
 // always equals chooseRegions' predicted ri.bits: the two must never
 // diverge, or a real encoder would either overrun its declared part23
 // length or under-fill it.
@@ -217,8 +218,9 @@ func TestWriteSpectrumBitsMatchCount(t *testing.T) {
 
 // TestHuffmanGolden freezes the coded bytes of a fixed, LCG-generated
 // granule against a golden SHA-256: a cross-arch determinism gate for the
-// whole quantize -> partition -> chooseRegions -> writeSpectrum chain,
-// the same role TestFBGolden/TestMdctGolden play for the DSP front end.
+// partition -> chooseRegions -> writeSpectrum chain (ix is built directly
+// from the LCG, not via quantizeGranule), the same role
+// TestFBGolden/TestMdctGolden play for the DSP front end.
 func TestHuffmanGolden(t *testing.T) {
 	var seed uint64 = 42
 	next := func() float64 {

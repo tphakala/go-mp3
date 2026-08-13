@@ -264,6 +264,68 @@ func runCount1RoundTrip(t *testing.T, count1Table uint8, name string) {
 	}
 }
 
+// TestEncTable0RoundTrip round-trips a NON-EMPTY big-values region
+// encoded entirely with table 0, the empty/all-zero codebook the main
+// round-trip loop deliberately excludes (validEncBigTables starts at 1):
+// table 0 can only represent (0,0) pairs, at 0 bits each (bigTables[0]'s
+// single {0,0} codeword, huffman.go), so writeSpectrum must emit exactly
+// 0 bits for the whole region, and l3Huffman must still decode every
+// declared pair back to (0,0) while advancing 0 bits per pair -
+// huffmanLeaf's `leaf>>8` flush is 0 for table 0's all-zero-entry
+// codebook (internal/dec/huffman.go:113-128), so bigValCnt is decremented
+// by np pairs' worth per sfb exactly as any other table, purely from the
+// side-info-derived sfb widths, with no actual bitstream consumption.
+func TestEncTable0RoundTrip(t *testing.T) {
+	const bigValues = 20 // non-empty: enough pairs to span more than one sfb
+	var ix [576]int32    // already all zero; table 0 cannot represent anything else
+
+	sfbWidths := enc.SfbWidthsLongRow(1)
+	var buf []byte
+	w := bits.NewWriter(buf)
+	bitsWritten := enc.EncodeHuffmanPin(&w, &ix, bigValues, 0, 0, 0, &sfbWidths)
+	if bitsWritten != 0 {
+		t.Fatalf("table 0: writeSpectrum wrote %d bits for an all-zero region, want 0", bitsWritten)
+	}
+	buf = w.Flush()
+	buf = append(buf, make([]byte, 8)...) // see runBigTableRoundTrip's identical padding comment
+
+	br := bits.NewReader(buf)
+	gi := grInfo{
+		sfbTab:      scfLongTable[6][:],
+		nLongSfb:    22,
+		bigValues:   uint16(bigValues),
+		tableSelect: [3]uint8{0, 0, 0},
+		regionCount: [3]uint8{21, 0, 0},
+		count1Table: 0,
+	}
+	var scf [40]float32
+	for i := range scf {
+		scf[i] = 1
+	}
+	var dst [576]float32
+	l3Huffman(dst[:], &br, &gi, scf[:], bitsWritten)
+
+	if br.Overrun() {
+		t.Fatalf("table 0: decode overran the padded buffer")
+	}
+	// Tautological given l3Huffman's unconditional final bs.SetPos(layer3gr)
+	// (internal/dec/huffman.go:317), included for parity with the other
+	// round-trip helpers' documented pattern.
+	if br.Pos() != bitsWritten {
+		t.Fatalf("table 0: bits.Reader.Pos() = %d after the walk, want %d", br.Pos(), bitsWritten)
+	}
+	for i := range 2 * bigValues {
+		if got := recoverIx(dst[i]); got != 0 {
+			t.Fatalf("table 0: dst[%d] = %d, want 0", i, got)
+		}
+	}
+	for i := 2 * bigValues; i < 576; i++ {
+		if dst[i] != 0 {
+			t.Fatalf("table 0: dst[%d] = %v, want 0 (writeSpectrum wrote past its declared %d bits)", i, dst[i], bitsWritten)
+		}
+	}
+}
+
 // TestEncHuffmanDecRoundTrip is the arbiter of this package's Huffman
 // codeword transcription and writeSpectrum's bit field order: it encodes
 // with internal/enc's real writeSpectrum (via the EncodeHuffmanPin test

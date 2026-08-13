@@ -293,7 +293,7 @@ func writeSpectrum(w *bits.Writer, ix *[576]int32, part spectrumPartition, ri re
 			// the bitwise complement of the presence index (verified
 			// against tab33Table when the tables were derived; see
 			// hufftables.go's count1A doc comment).
-			w.WriteBits(uint32(^idx)&0xF, 4)
+			w.WriteBits(uint32(^idx&0xF), 4)
 		}
 		writeSign(w, v)
 		writeSign(w, wv)

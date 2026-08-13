@@ -54,19 +54,22 @@ func TestQuantizeKnownAnswers(t *testing.T) {
 // value (two chained sqrt roundings versus Pow's own exp/log-based
 // approximation, which is not documented as correctly-rounded), and their
 // disagreement is ordinary compounding floating-point noise, not evidence
-// either is wrong. Empirically (a 3,000,000-sample sweep with this same
-// generator), about 5% of samples land at exactly 2 ULP and a small tail
-// reaches 3-4 ULP, with no samples seen above 4. maxULPSanity below is that
-// observed max plus ample headroom, kept as a loose regression net (it would
-// catch a real defect, e.g. an accidentally transposed sqrt argument, which
-// would diverge far more than a few ULP); it is not the tolerance the brief
+// either is wrong. In a one-off local development sweep (3,000,000
+// samples with this same generator, not what CI runs), about 5% of
+// samples landed at exactly 2 ULP and a small tail reached 3-4 ULP, with
+// no samples seen above 4. maxULPSanity below is that observed max plus
+// ample headroom, kept as a loose regression net (it would catch a real
+// defect, e.g. an accidentally transposed sqrt argument, which would
+// diverge far more than a few ULP); it is not the tolerance the brief
 // cites.
 //
 // What the brief's parenthetical actually promises, and what quantizeGranule
 // actually depends on, is checked as the hard requirement instead: after
 // adding 0.4054 and truncating to int64 (the same nint step quantizeGranule
-// applies), the two formulas' outputs agree on every sample. Verified over
-// 2,000,000 samples with this generator: zero mismatches.
+// applies), the two formulas' outputs agree on every sample. CI runs the
+// 5,000-sample sweep below on every commit; a separate one-off local sweep
+// (2,000,000 samples with this same generator, not part of CI) also saw
+// zero mismatches.
 func TestQuantizePowRef(t *testing.T) {
 	const samples = 5000
 	const maxULPSanity = 10

@@ -17,8 +17,12 @@ package enc
 // See PROVENANCE.md; no LAME, Shine, dist10, libmad, mpg123, FFmpeg, or
 // Helix source was consulted.
 
-// codeEntry is one Huffman codeword: the code bits (MSB-aligned to length)
-// and the bit length. Transcribed from ISO/IEC 11172-3 Table B.7.
+// codeEntry is one Huffman codeword: the code bits and the bit length.
+// The codeword occupies the low len bits of code (right-justified, not
+// MSB-aligned within the uint32); bits.Writer.WriteBits(code, len) masks
+// to those low len bits and emits them MSB-first, which is how every
+// codeword actually reaches the bitstream (writePair, writeValue,
+// writeSpectrum's count1 loop). Transcribed from ISO/IEC 11172-3 Table B.7.
 type codeEntry struct {
 	code uint32
 	len  uint8

@@ -495,6 +495,9 @@ func TestPsyTonalityContrast(t *testing.T) {
 			cnt++
 		}
 	}
+	if cnt == 0 {
+		t.Fatal("noise contrast: no partition exceeded qthr, nothing measured")
+	}
 	noiseDB /= float64(cnt)
 
 	if sineDB < 18 {

@@ -542,3 +542,191 @@ func TestPsyThresholdGolden(t *testing.T) {
 		t.Fatalf("threshold output changed: %s, frozen %s", got, psyThresholdGoldenSHA)
 	}
 }
+
+func TestPsyModelSilenceAndTransientPE(t *testing.T) {
+	// Measured once (deterministic across arches, so the margins below are
+	// not a source of cross-arch flakiness): silence PE = 0 exactly (every
+	// partition's e/nb ratio sits at or below 1, so plog never
+	// accumulates); transient PE = 2423.6513074428426. Floors are
+	// tightened to those measurements with margin: silence <= 0.01 (a
+	// hair above exact 0), transient >= 2000 (about 17.5% below
+	// measured).
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	var out PsyOut
+	for range 4 {
+		clear(pcm)
+		p.AnalyzeGranule(pcm, &out)
+	}
+	if out.PE > 0.01 {
+		t.Errorf("silence PE = %v, want near 0", out.PE)
+	}
+	// A click after silence: PE must spike.
+	clear(pcm)
+	for i := 900; i < 1024; i++ {
+		pcm[i] = 0.9
+	}
+	p.AnalyzeGranule(pcm, &out)
+	if out.PE < 2000 {
+		t.Errorf("transient PE = %v, want a spike (>= 2000)", out.PE)
+	}
+}
+
+// TestPsyModelLevelAnchor gates roadmap D9: a tone at the assumed quiet
+// threshold (ATH at its frequency, under the full-scale = 96 dB SPL
+// anchor) must land within a few dB of its partition's qthr.
+func TestPsyModelLevelAnchor(t *testing.T) {
+	const bin = 90 // 90*44100/1024 ~ 3876 Hz, near the ATH minimum
+	f := float64(bin) * 44100 / 1024
+	ampDB := tstAthDB(f) - tstAnchorDB // dB below full scale
+	amp := math.Pow(10, ampDB/20)      // test-side libm fine
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	var out PsyOut
+	gen := sineGen(bin, amp)
+	for g := range 5 {
+		gen(g, pcm)
+		p.AnalyzeGranule(pcm, &out)
+	}
+	b := int(p.tab.partOfLine[bin])
+	got := 10 * math.Log10(p.e[b]/p.tab.qthr[b])
+	if math.Abs(got) > 6 {
+		t.Errorf("quiet-threshold tone: partition energy %.1f dB relative to qthr, want within +-6 dB", got)
+	}
+}
+
+func TestPsyModelSfbConservation(t *testing.T) {
+	// The per-MDCT-line density mapping conserves total threshold energy:
+	// sum of Xmin over the 22 sfbs (which tile all 576 MDCT lines) equals
+	// sum of nb over partitions, within accumulation rounding.
+	p := analyzeN(t, 0, 4, noiseGen(111))
+	var out PsyOut
+	pcm := make([]float64, 1024)
+	noiseGen(112)(0, pcm)
+	p.AnalyzeGranule(pcm, &out)
+	var sumX, sumNb float64
+	for s := range 22 {
+		sumX += out.Xmin[s]
+	}
+	for b := range p.tab.nParts {
+		sumNb += p.nb[b]
+	}
+	if r := math.Abs((sumX - sumNb) / sumNb); r > 1e-9 {
+		t.Errorf("sfb mapping not conservative: sum Xmin %g vs sum nb %g (rel %.3g)", sumX, sumNb, r)
+	}
+	for s := range 22 {
+		if out.Xmin[s] <= 0 {
+			t.Errorf("Xmin[%d] = %v, want > 0 (qthr floor)", s, out.Xmin[s])
+		}
+	}
+}
+
+func TestPsyModelEnergyMonotone(t *testing.T) {
+	// Doubling the input amplitude quadruples En (energy domain) and
+	// never lowers Xmin (thresholds track the masker).
+	run := func(amp float64) ([22]float64, [22]float64) {
+		var p PsyModel
+		p.Reset(0)
+		pcm := make([]float64, 1024)
+		var out PsyOut
+		gen := sineGen(64, amp)
+		for g := range 5 {
+			gen(g, pcm)
+			p.AnalyzeGranule(pcm, &out)
+		}
+		return out.En, out.Xmin
+	}
+	en1, x1 := run(0.2)
+	en2, x2 := run(0.4)
+	b := 0
+	for s := range 22 {
+		if en1[s] > en1[b] {
+			b = s
+		}
+	}
+	if r := en2[b] / en1[b]; math.Abs(r-4) > 0.2 {
+		t.Errorf("En scaling: x4 expected on 2x amplitude, got %v", r)
+	}
+	for s := range 22 {
+		if x2[s] < x1[s]*(1-1e-9) {
+			t.Errorf("Xmin[%d] decreased on louder input: %g -> %g", s, x1[s], x2[s])
+		}
+	}
+}
+
+const psyModelGoldenSHA = "320819bacd64361bb9dd6d2bcef57bbd1572dc465d20be74569b7a3af5b679e5" // FROZEN in Task 4 Step 4
+
+func TestPsyModelGolden(t *testing.T) {
+	// Three programs x three rates: LCG noise, a steady tone, and a
+	// silence-then-click transient; hash all PsyOut fields.
+	out := make([]float64, 0, 3*3*(len(PsyOut{}.Xmin)+len(PsyOut{}.En)+len(PsyOut{}.SMR)+1))
+	for sri := range 3 {
+		for prog := range 3 {
+			var p PsyModel
+			p.Reset(sri)
+			pcm := make([]float64, 1024)
+			var po PsyOut
+			seed := uint64(120 + prog)
+			for g := range 4 {
+				switch prog {
+				case 0:
+					for i := range pcm {
+						pcm[i] = testsignal.LCGSigned(&seed) * 0.6
+					}
+				case 1:
+					sineGen(100, 0.5)(g, pcm)
+				case 2:
+					clear(pcm)
+					if g == 3 {
+						for i := 800; i < 1024; i++ {
+							pcm[i] = 0.8
+						}
+					}
+				}
+				p.AnalyzeGranule(pcm, &po)
+			}
+			out = append(out, po.Xmin[:]...)
+			out = append(out, po.En[:]...)
+			out = append(out, po.SMR[:]...)
+			out = append(out, po.PE)
+		}
+	}
+	got := sha256Float64s(out...)
+	if psyModelGoldenSHA == "" {
+		t.Fatalf("FREEZE ME: const psyModelGoldenSHA = %q", got)
+	}
+	if got != psyModelGoldenSHA {
+		t.Fatalf("PsyModel output changed: %s, frozen %s", got, psyModelGoldenSHA)
+	}
+}
+
+func TestPsyModelAllocs(t *testing.T) {
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	var out PsyOut
+	seed := uint64(131)
+	for i := range pcm {
+		pcm[i] = testsignal.LCGSigned(&seed)
+	}
+	p.AnalyzeGranule(pcm, &out) // warm
+	if n := testing.AllocsPerRun(50, func() { p.AnalyzeGranule(pcm, &out) }); n != 0 {
+		t.Fatalf("AnalyzeGranule allocates: %v allocs per run, want 0", n)
+	}
+}
+
+func BenchmarkPsyAnalyzeGranule(b *testing.B) {
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	seed := uint64(1)
+	for i := range pcm {
+		pcm[i] = testsignal.LCGSigned(&seed)
+	}
+	var out PsyOut
+	for b.Loop() {
+		p.AnalyzeGranule(pcm, &out)
+	}
+}

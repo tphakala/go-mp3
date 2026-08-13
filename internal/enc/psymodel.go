@@ -46,7 +46,8 @@ const psyLog2E = 0x1.71547652b82fep+00
 // for field semantics. Not safe for concurrent use; all scratch is
 // preallocated here so AnalyzeGranule is allocation-free.
 type PsyModel struct {
-	tab *psyRateTable
+	tab     *psyRateTable
+	srIndex int
 
 	prevRe, prevIm [2][513]float64
 	nbPrev         [2][psyMaxParts]float64
@@ -60,7 +61,7 @@ type PsyModel struct {
 // Reset prepares the model for a fresh stream at srIndex (0 = 44100,
 // 1 = 48000, 2 = 32000, the project's srIndex order).
 func (p *PsyModel) Reset(srIndex int) {
-	*p = PsyModel{tab: &psyRateTables[srIndex]}
+	*p = PsyModel{tab: &psyRateTables[srIndex], srIndex: srIndex}
 	for i := range p.nbPrev {
 		for b := range p.nbPrev[i] {
 			p.nbPrev[i][b] = psyNbInit
@@ -195,4 +196,71 @@ func (p *PsyModel) computeThresholds() {
 		p.nbPrev[1][b] = p.nbPrev[0][b]
 		p.nbPrev[0][b] = p.nb[b]
 	}
+}
+
+// PsyOut is one granule-channel's psychoacoustic model output over the 22
+// long scalefactor bands of the current sample rate. Xmin is the allowed
+// noise energy per band (the outer loop's distortion target), En the
+// model's signal energy per band, SMR their ratio (0 where En is 0), and
+// PE the perceptual entropy in BITS (Johnston's convention: line counts
+// times log2 of the energy-to-threshold ratio), so increment 7's
+// block-switch decision can compare against the literature's absolute
+// thresholds (about 1800 bits) directly.
+type PsyOut struct {
+	Xmin [22]float64
+	En   [22]float64
+	SMR  [22]float64
+	PE   float64
+}
+
+// mapToSfb distributes partition thresholds and energies over the 22 long
+// scalefactor bands by per-MDCT-line density (nb[b]/mlines[b] per line),
+// which conserves totals across the 576-line domain, and computes PE in
+// bits (plog accumulation scaled once by the psyLog2E literal).
+func (p *PsyModel) mapToSfb(out *PsyOut) {
+	tab := p.tab
+	sfb := &sfbWidthsLong[p.srIndex]
+	line := 0
+	for s := range 22 {
+		var x, en float64
+		for range sfb[s] {
+			b := tab.partOfMdctLine[line]
+			x += tab.invMlinesTimes(p.nb[b], b)
+			en += tab.invMlinesTimes(p.e[b], b)
+			line++
+		}
+		out.Xmin[s] = x
+		out.En[s] = en
+		if x > 0 && en > 0 {
+			out.SMR[s] = en / x
+		} else {
+			out.SMR[s] = 0
+		}
+	}
+
+	pe := 0.0
+	for b := range tab.nParts {
+		if ratio := p.e[b] / p.nb[b]; ratio > 1 {
+			pe += float64(tab.lines[b] * plog(ratio))
+		}
+	}
+	out.PE = float64(pe * psyLog2E) // nats -> bits: one blocked multiply
+}
+
+// invMlinesTimes returns v/mlines[b]: a helper so the division appears
+// once (mlines is never zero: every partition receives at least one MDCT
+// line by construction, validated by TestPsyMdctLineMap).
+func (t *psyRateTable) invMlinesTimes(v float64, b uint8) float64 {
+	return v / t.mlines[b]
+}
+
+// AnalyzeGranule runs the full model 2 long-block analysis on the most
+// recent 1024 samples of one channel's PCM (float64 in [-1, 1], oldest
+// first: the CAUSAL window ending at the granule's last sample; the
+// one-frame lookahead recentering is increment 7) and fills out.
+// Allocation-free after Reset.
+func (p *PsyModel) AnalyzeGranule(pcm []float64, out *PsyOut) {
+	p.analyzeSpectrum(pcm)
+	p.computeThresholds()
+	p.mapToSfb(out)
 }

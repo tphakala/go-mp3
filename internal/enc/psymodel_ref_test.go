@@ -95,3 +95,62 @@ func TestPsyThresholdsMatchReference(t *testing.T) {
 		}
 	}
 }
+
+// TestPsyModelMatchesReference: full-pipeline agreement of the runtime
+// path (plog/pexp2/fixed order) with the libm reference: sfb outputs and
+// PE within refTol relative.
+func TestPsyModelMatchesReference(t *testing.T) {
+	var p PsyModel
+	p.Reset(1)
+	pcm := make([]float64, 1024)
+	seed := uint64(141)
+	var out PsyOut
+	for range 5 {
+		for i := range pcm {
+			pcm[i] = testsignal.LCGSigned(&seed) * 0.8
+		}
+		nb1 := slices.Clone(p.nbPrev[0][:p.tab.nParts])
+		nb2 := slices.Clone(p.nbPrev[1][:p.tab.nParts])
+		p.analyzeSpectrum(pcm)
+		r2 := slices.Clone(p.r2[:])
+		cw := slices.Clone(p.cw[:])
+		e, nb := refThresholds(p.tab, r2, cw, nb1, nb2)
+		// Reference sfb mapping + PE (same equations; PE in bits via
+		// math.Log2, matching the runtime's plog*psyLog2E scaling; the
+		// ratio argument is > 1, never subnormal, so plain libm is safe
+		// here and safeLog is not needed for PE).
+		var refXmin, refEn [22]float64
+		var refPE float64
+		line := 0
+		for s := range 22 {
+			for range sfbWidthsLong[1][s] {
+				b := p.tab.partOfMdctLine[line]
+				refXmin[s] += nb[b] / p.tab.mlines[b]
+				refEn[s] += e[b] / p.tab.mlines[b]
+				line++
+			}
+		}
+		for b := range p.tab.nParts {
+			if ratio := e[b] / nb[b]; ratio > 1 {
+				refPE += p.tab.lines[b] * math.Log2(ratio)
+			}
+		}
+		p.computeThresholds()
+		p.mapToSfb(&out)
+		for s := range 22 {
+			if r := math.Abs((out.Xmin[s] - refXmin[s]) / refXmin[s]); r > refTol {
+				t.Fatalf("Xmin[%d] rel diff %.3g", s, r)
+			}
+			if refEn[s] != 0 {
+				if r := math.Abs((out.En[s] - refEn[s]) / refEn[s]); r > refTol {
+					t.Fatalf("En[%d] rel diff %.3g", s, r)
+				}
+			}
+		}
+		if refPE != 0 {
+			if r := math.Abs((out.PE - refPE) / refPE); r > refTol {
+				t.Fatalf("PE = %v, reference %v (rel %.3g)", out.PE, refPE, r)
+			}
+		}
+	}
+}

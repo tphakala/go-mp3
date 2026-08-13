@@ -47,7 +47,8 @@ func TestEncLinbitsMatchDec(t *testing.T) {
 }
 
 // validEncBigTables lists every real (non-alias, non-invalid) big-values
-// codebook number the round-trip gate must cover: tables 1-13, 15-31.
+// codebook number the round-trip gate must cover: every populated
+// bigTables entry except the invalid slots 4 and 14 (1-3, 5-13, 15-31).
 var validEncBigTables = []int{
 	1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15,
 	16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
@@ -138,7 +139,7 @@ func runBigTableRoundTrip(t *testing.T, tnum int) {
 	sfbWidths := enc.SfbWidthsLongRow(1) // 48 kHz, matches scfLongTable[6] pinned below
 	var buf []byte
 	w := bits.NewWriter(buf)
-	bitsWritten := enc.EncodeHuffmanPin(&w, &ix, bigValues, 0, uint8(tnum), 0, sfbWidths)
+	bitsWritten := enc.EncodeHuffmanPin(&w, &ix, bigValues, 0, uint8(tnum), 0, &sfbWidths)
 	buf = w.Flush()
 	// l3Huffman's count1 walk always attempts one more codeword peek past
 	// the granule's declared length before its `bs.Pos() > layer3gr`
@@ -168,8 +169,22 @@ func runBigTableRoundTrip(t *testing.T, tnum int) {
 	if br.Overrun() {
 		t.Fatalf("table %d: decode overran the padded buffer", tnum)
 	}
-	if br.Pos() != bitsWritten {
-		t.Fatalf("table %d: bits.Reader.Pos() = %d after the walk, want %d (ri.bits)", tnum, br.Pos(), bitsWritten)
+	// A genuine (non-tautological) check that writeSpectrum wrote exactly
+	// bitsWritten bits and nothing more: l3Huffman never zeroes dst
+	// itself (see its doc comment), so any entry past the last pair this
+	// test actually encoded must still hold its zero-initialized value.
+	// l3Huffman's count1 loop always attempts one further codeword read
+	// before its `bs.Pos() > layer3gr` check catches the overshoot
+	// (internal/dec/huffman.go:251-258), but that check fires before any
+	// dst write for that iteration (every codeword is at least 1 bit, so
+	// starting exactly at bitsWritten always pushes position past
+	// layer3gr immediately), so this is not a false-positive risk from
+	// that mechanism - only a real over-write bug would trip it. Checked
+	// with sabotage: see task-5-report.md's fix-wave section.
+	for i := 2 * len(pairs); i < 576; i++ {
+		if dst[i] != 0 {
+			t.Fatalf("table %d: dst[%d] = %v, want 0 (writeSpectrum wrote past its declared %d bits)", tnum, i, dst[i], bitsWritten)
+		}
 	}
 	for i, p := range pairs {
 		gotX, gotY := recoverIx(dst[2*i]), recoverIx(dst[2*i+1])
@@ -213,7 +228,7 @@ func runCount1RoundTrip(t *testing.T, count1Table uint8, name string) {
 	sfbWidths := enc.SfbWidthsLongRow(1)
 	var buf []byte
 	w := bits.NewWriter(buf)
-	bitsWritten := enc.EncodeHuffmanPin(&w, &ix, 0, 16, 0, count1Table, sfbWidths)
+	bitsWritten := enc.EncodeHuffmanPin(&w, &ix, 0, 16, 0, count1Table, &sfbWidths)
 	buf = w.Flush()
 	buf = append(buf, make([]byte, 8)...) // see runBigTableRoundTrip's identical padding comment
 
@@ -234,12 +249,17 @@ func runCount1RoundTrip(t *testing.T, count1Table uint8, name string) {
 	if br.Overrun() {
 		t.Fatalf("%s: decode overran the padded buffer", name)
 	}
-	if br.Pos() != bitsWritten {
-		t.Fatalf("%s: bits.Reader.Pos() = %d after the walk, want %d (ri.bits)", name, br.Pos(), bitsWritten)
-	}
 	for i := range 64 {
 		if got := recoverIx(dst[i]); got != ix[i] {
 			t.Fatalf("%s: dst[%d] = %d, want %d", name, i, got, ix[i])
+		}
+	}
+	// See runBigTableRoundTrip's identical comment: a genuine check that
+	// nothing was written past the 16 quads (64 dst entries) this test
+	// actually encoded.
+	for i := 64; i < 576; i++ {
+		if dst[i] != 0 {
+			t.Fatalf("%s: dst[%d] = %v, want 0 (writeSpectrum wrote past its declared %d bits)", name, i, dst[i], bitsWritten)
 		}
 	}
 }
@@ -248,7 +268,8 @@ func runCount1RoundTrip(t *testing.T, count1Table uint8, name string) {
 // codeword transcription and writeSpectrum's bit field order: it encodes
 // with internal/enc's real writeSpectrum (via the EncodeHuffmanPin test
 // shim) and decodes with this package's independent, oracle-verified ISO
-// tables (l3Huffman). Every valid big-values table (1-13, 15-31) and
+// tables (l3Huffman). Every valid big-values table (validEncBigTables:
+// every populated bigTables entry except the invalid slots 4 and 14) and
 // both count1 tables (A, B) must round-trip every codeword exactly.
 func TestEncHuffmanDecRoundTrip(t *testing.T) {
 	for _, tnum := range validEncBigTables {

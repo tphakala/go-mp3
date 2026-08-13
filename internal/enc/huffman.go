@@ -311,6 +311,15 @@ func writeSpectrum(w *bits.Writer, ix *[576]int32, part spectrumPartition, ri re
 // nibble loop).
 func writePair(w *bits.Writer, bt huffTable, x, y int32) {
 	ax, ay := abs32(x), abs32(y)
+	// ix/iy stay unclamped when bt.linbits == 0 (no escape): that is safe
+	// only because the caller never hands this function an out-of-range
+	// index for such a table. quantizeGranule clamps every magnitude to
+	// maxQuant=8206, which is exactly the largest value any table can
+	// represent (15 + 2^13-1, the linbits-13 escape family's capacity),
+	// so chooseRegions' cost search (pairCost) always finds at least one
+	// feasible table for every pair and never selects a non-escape table
+	// whose dim-1 the pair's magnitude exceeds; writePair is only ever
+	// invoked with the table chooseRegions actually picked.
 	ix, iy := ax, ay
 	if bt.linbits > 0 {
 		maxDirect := int32(bt.dim - 1)
@@ -403,8 +412,11 @@ func BigTableDim(t int) int { return bigTables[t].dim }
 // BigTableLinbits is documented on BigTableDim.
 func BigTableLinbits(t int) int { return bigTables[t].linbits }
 
-// SfbWidthsLongRow returns sfbWidthsLong[rate] (rate: 0=44100, 1=48000,
-// 2=32000 Hz), for the round-trip gate's grInfo.sfbTab pin and for
-// cross-checking against the decoder's scfLongTable rows. See this
-// section's doc comment for why it is exported.
-func SfbWidthsLongRow(rate int) *[22]int { return &sfbWidthsLong[rate] }
+// SfbWidthsLongRow returns a copy of sfbWidthsLong[rate] (rate: 0=44100,
+// 1=48000, 2=32000 Hz), for the round-trip gate's grInfo.sfbTab pin and
+// for cross-checking against the decoder's scfLongTable rows. Returned by
+// value, not as a pointer into the package-level sfbWidthsLong array: a
+// live pointer would let any future cross-package caller mutate (or race
+// on) this package's internal table. See this section's doc comment for
+// why it is exported.
+func SfbWidthsLongRow(rate int) [22]int { return sfbWidthsLong[rate] }

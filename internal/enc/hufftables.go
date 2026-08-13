@@ -290,10 +290,13 @@ var table24Codes = []codeEntry{ //nolint:dupl // ISO Table B.7 data: dupl's clon
 // nonzero quad element), ISO Table B.7 count1 table A, recovered from
 // tab32Table by the same bit-walk method as the big-values tables above.
 //
-// count1 table B needs no array: TestZZZGenerateEncHuffTables (deleted
-// after use, see git history) confirmed every table B codeword is exactly
-// 4 bits with code = ^idx & 0xF, the bitwise complement of the presence
-// bits; huffman.go computes it directly from idx rather than storing it.
+// count1 table B needs no array: a one-off, uncommitted generator (not
+// retained) confirmed every table B codeword is exactly 4 bits with
+// code = ^idx & 0xF, the bitwise complement of the presence bits; that
+// claim is verified live by TestEncHuffmanDecRoundTrip's count1B subtest
+// (internal/dec/encx_huffman_test.go), which is the authority, not this
+// comment. huffman.go computes the codeword directly from idx rather than
+// storing it.
 var count1A = [16]codeEntry{
 	{0x1, 1}, // idx=0
 	{0x5, 4}, // idx=1

@@ -52,9 +52,12 @@ func invStep(gg int) float64 {
 // BEFORE the int32 conversion, not as an int32 range check after it: for a
 // low gg (invStep(0) is about 2^52.5) even a modest |xr[i]| makes v land far
 // outside int32's range, and converting an out-of-range float64 to int32 is
-// implementation-defined per the Go spec (observed to differ between amd64
-// and arm64 for extreme inputs), which the project's cross-arch determinism
-// rule forbids. Comparing in float64 first, and only converting to int32
+// implementation-defined per the Go spec, not merely a theoretical risk
+// here: Task 4's review traced the divergence to the instruction each
+// arch's compiler emits for the conversion (amd64's CVTTSD2SI returns an
+// INT_MIN sentinel on overflow; arm64's FCVTZS saturates to INT_MAX
+// instead), which the project's cross-arch determinism rule forbids.
+// Comparing in float64 first, and only converting to int32
 // once the value is known to be within [0, maxQuant], sidesteps that
 // entirely; the two forms agree on every line that would not have overflowed
 // anyway.

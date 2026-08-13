@@ -331,7 +331,10 @@ func TestEncoderRoundTripSNR(t *testing.T) {
 			margin := enc.ChainDelay + 1152
 			start, end := margin, totalSamples-margin
 
-			floor := roundTripSNRFloorsDB[c.kbps]
+			floor, ok := roundTripSNRFloorsDB[c.kbps]
+			if !ok {
+				t.Fatalf("no SNR floor declared for %d kbps; add one to roundTripSNRFloorsDB", c.kbps)
+			}
 			for ch := range c.nch {
 				y := deinterleaveChannel(decoded, c.nch, ch)
 				snr := computeSNR(input[ch], y, enc.ChainDelay, start, end)

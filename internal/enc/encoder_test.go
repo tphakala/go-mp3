@@ -354,6 +354,52 @@ func TestEncoderPanicsOnWrongSampleCount(t *testing.T) {
 	_, _ = e.EncodeFrame(nil, [][]float32{make([]float32, 1151)})
 }
 
+// TestEncoderEncodeAfterDrainPanics requires drain to be terminal: after N
+// audio frames plus one nil drain, a subsequent non-nil EncodeFrame call
+// panics (the caller-bug class, same precedent as the length-mismatch
+// panics above), while a repeated nil call after drain remains safe (no
+// panic, appends nothing). Without this, a caller could keep feeding real
+// audio after draining while Drained() stayed true and that audio's tail
+// (ChainDelay samples) never got flushed through the filterbank/MDCT
+// history: an undefined, misleading state.
+func TestEncoderEncodeAfterDrainPanics(t *testing.T) {
+	cfg := Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128}
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	seed := uint64(7)
+	for range 3 {
+		if _, err := e.EncodeFrame(nil, planarSamples(&seed, 2, 0.5)); err != nil {
+			t.Fatalf("EncodeFrame: %v", err)
+		}
+	}
+	dst, err := e.EncodeFrame(nil, nil) // drain
+	if err != nil {
+		t.Fatalf("drain EncodeFrame: %v", err)
+	}
+	if !e.Drained() {
+		t.Fatalf("Drained() = false after drain call")
+	}
+
+	// A repeated nil call after drain stays safe: no panic, nothing appended.
+	dst2, err := e.EncodeFrame(dst, nil)
+	if err != nil {
+		t.Fatalf("nil call after drain: %v", err)
+	}
+	if len(dst2) != len(dst) {
+		t.Fatalf("nil call after drain appended %d bytes, want 0", len(dst2)-len(dst))
+	}
+
+	// A non-nil call after drain panics: drain is terminal.
+	defer func() {
+		if recover() == nil {
+			t.Fatalf("EncodeFrame with real audio after drain: want panic")
+		}
+	}()
+	_, _ = e.EncodeFrame(dst, planarSamples(&seed, 2, 0.5))
+}
+
 // TestEncodeGolden freezes sha256(full encoded stream) for a 4-frame
 // LCG-noise input at three representative (sampleRate, channels, kbps)
 // configurations spanning both channel counts and the bitrate extremes.

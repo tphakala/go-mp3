@@ -179,13 +179,14 @@ func lcgStructural(seed *uint64) float64 {
 	return float64(*seed>>11) / float64(1<<53)
 }
 
-// runStructuralGrid builds nFrames synthetic frames at (sr, bitrateIndex,
-// mode, nch), amplitude-cycling through structuralGridAmplitudes, encodes
+// runStructuralGrid builds nFrames synthetic frames at (srIndex,
+// bitrateIndex, mode, nch), amplitude-cycling through
+// structuralGridAmplitudes, encodes
 // each through enc.AppendFramePin (the production codeGranule + appendFrame
 // pair), and validates the resulting stream with validateFrames.
-func runStructuralGrid(t *testing.T, sr, bitrateIndex, wantKbps, mode, nch, nFrames int) {
+func runStructuralGrid(t *testing.T, srIndex, bitrateIndex, wantKbps, mode, nch, nFrames int) {
 	t.Helper()
-	seed := uint64(sr)<<32 | uint64(bitrateIndex)<<8 | uint64(mode)
+	seed := uint64(srIndex)<<32 | uint64(bitrateIndex)<<8 | uint64(mode)
 
 	var stream []byte
 	for f := range nFrames {
@@ -202,10 +203,10 @@ func runStructuralGrid(t *testing.T, sr, bitrateIndex, wantKbps, mode, nch, nFra
 				}
 			}
 		}
-		stream = enc.AppendFramePin(stream, bitrateIndex, sr, 0, mode, &xr, nch)
+		stream = enc.AppendFramePin(stream, bitrateIndex, srIndex, 0, mode, &xr, nch)
 	}
 
-	validateFrames(t, stream, int(hdrHz[sr]), wantKbps, nch, nFrames)
+	validateFrames(t, stream, int(hdrHz[srIndex]), wantKbps, nch, nFrames)
 }
 
 // kbpsToIndex maps every MPEG-1 Layer III CBR bitrate to its side-info

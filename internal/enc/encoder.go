@@ -129,6 +129,12 @@ func (e *Encoder) Drained() bool { return e.drained }
 // suffices), marks the encoder drained, and is counted in Stats; further
 // nil calls after that append nothing and return a nil error.
 //
+// Drain is terminal: once drained, any subsequent non-nil call panics
+// (a caller-bug class, matching the length-mismatch panics below), rather
+// than silently encoding more audio whose tail (ChainDelay samples) would
+// never get flushed and whose Drained()==true state would then be
+// misleading. Reset is the only way to encode more audio after draining.
+//
 // For a non-nil call, samples must have exactly Channels entries, each of
 // exactly 1152 samples; a violation panics (a caller-bug class, distinct
 // from ErrInvalidAudio, matching bits.Writer's n-range panic precedent).
@@ -148,6 +154,10 @@ func (e *Encoder) EncodeFrame(dst []byte, samples [][]float32) ([]byte, error) {
 		}
 		e.drained = true
 		return e.codeFrame(dst, nil), nil
+	}
+
+	if e.drained {
+		panic("go-mp3/enc: EncodeFrame called after drain; Reset to reuse the encoder")
 	}
 
 	if len(samples) != e.nch {

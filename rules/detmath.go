@@ -27,11 +27,19 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 // discipline and so breaks cross-arch bit-identity, exactly what this rule
 // protects.
 //
-// Known limitation: this AST matcher catches direct call expressions only.
-// A function-pointer alias (f := math.Sin; f(x)) is not matched. The
-// cross-arch golden tests are the backstop that catches any determinism leak
-// such an alias would introduce; a bare-identifier match was rejected here
-// as high-noise for a near-zero real risk in this codebase.
+// Import aliasing is handled: ruleguard resolves the selector to the math
+// package, so an aliased import (import m "math"; m.Sin(x)) is matched the
+// same as math.Sin(x). Verified empirically against ruleguard dsl v0.3.23.
+//
+// Known limitation: this matches selector call expressions only. Two forms
+// are not matched: a dot import (import . "math"; Sin(x)) and a
+// function-pointer alias (f := math.Sin; f(x)). Both were left out on
+// purpose. Catching them needs a bare-identifier pattern (Sin($*_)), which
+// would flag any local function named Sin/Cos/... and so is high-noise for a
+// near-zero real risk here (dot-importing math is itself a red flag other
+// linters reject). The cross-arch golden tests (plog/pexp2/FFT digests on
+// the amd64+arm64 matrix) are the ultimate backstop: any determinism leak
+// such a call introduced would change a digest and fail CI.
 func EncNoLibmTranscendentals(m dsl.Matcher) {
 	m.Match(
 		`math.Sin($*_)`, `math.Cos($*_)`, `math.Tan($*_)`, `math.Sincos($*_)`,
@@ -49,5 +57,5 @@ func EncNoLibmTranscendentals(m dsl.Matcher) {
 	).
 		Where(m.File().PkgPath.Matches(`internal/enc$`) &&
 			!m.File().Name.Matches(`_test\.go$`)).
-		Report("internal/enc encode path must not call libm transcendentals (cross-arch bit-exact output rule): use plog/pexp2 (detmath.go) or literal hex-float tables; math.Sqrt/Abs/Ldexp/Frexp/Floor are the allowed exact operations")
+		Report("internal/enc encode path must not call libm transcendentals (cross-arch bit-exact output rule): use plog/pexp2 (detmath.go) or literal hex-float tables; the exact ops (Sqrt/Abs/Ldexp/Frexp/Floor/Trunc/Ceil/Mod/Copysign/... - see the rule doc) are allowed")
 }

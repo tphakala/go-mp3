@@ -63,6 +63,14 @@ func TestEncoderConfigValidate(t *testing.T) {
 	})
 }
 
+// bitrateIndex128kbps is the ISO/IEC 11172-3 Table B.1 header bitrate_index
+// for 128 kbps, spelled as an independent literal (not bitrateIndexForKbps[128])
+// so TestEncoderFrameSizes cross-checks the production frame-length math
+// against a hand-pinned index instead of the encoder's own map. Using the map
+// would be tautological: a wrong entry would shift want and len(dst) together
+// and pass.
+const bitrateIndex128kbps = 9
+
 // TestEncoderFrameSizes checks that 40 frames at 44.1kHz/128kbps/stereo
 // produce lengths in {417,418} matching the padding accumulator's exact
 // pattern, and that 48kHz frames (which never pad, per paddingState's doc
@@ -83,7 +91,7 @@ func TestEncoderFrameSizes(t *testing.T) {
 				t.Fatalf("frame %d: EncodeFrame: %v", f, err)
 			}
 			wantPad := pad.next(128, 44100)
-			want := frameLength(bitrateIndexForKbps[128], 0, wantPad)
+			want := frameLength(bitrateIndex128kbps, 0, wantPad)
 			if len(dst) != want {
 				t.Fatalf("frame %d: len = %d, want %d (padding=%d)", f, len(dst), want, wantPad)
 			}
@@ -99,7 +107,7 @@ func TestEncoderFrameSizes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
-		want := frameLength(bitrateIndexForKbps[128], 1, 0)
+		want := frameLength(bitrateIndex128kbps, 1, 0)
 		seed := uint64(2)
 		for f := range 20 {
 			samples := planarSamples(&seed, 2, 0.5)

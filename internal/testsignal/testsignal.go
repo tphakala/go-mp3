@@ -10,6 +10,13 @@
 // TestEncodeGolden, and others) replay these exact sequences byte for byte.
 // The expressions below may never change; doing so would silently change
 // every pinned golden hash and every SNR-floor test that consumes them.
+//
+// MultiTone calls math.Sin. That is deliberate and safe here: the project's
+// no-math.Sin/Cos-at-runtime rule (see internal/enc/mdcttables.go and
+// fbtables.go, whose coefficient tables are frozen literals for bit-exact
+// output) binds internal/enc's production encode path, not this test-support
+// leaf package. testsignal is imported only by _test.go files and never runs
+// on any encode path.
 package testsignal
 
 import "math"

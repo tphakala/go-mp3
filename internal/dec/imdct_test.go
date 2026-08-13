@@ -51,9 +51,9 @@ func TestImdctTablesMatchOracle(t *testing.T) {
 
 // compareFloatsBitExact fails t if got[:n] and want[:n] disagree anywhere
 // in their float32 bit patterns, identifying the mismatch by fixture,
-// frame position, granule, channel and dump stage. Generalizes
-// stereo_test.go's compareGrbuf576 (hardcoded to 576) since this task also
-// compares the 288-float overlap state.
+// frame position, granule, channel and dump stage. The explicit n parameter
+// handles both the 576-sample granule buffers and the 288-float overlap
+// state, so callers across the dec tests share one comparator.
 func compareFloatsBitExact(t *testing.T, fx string, pos, gr, ch int, stage string, got, want []float32, n int) {
 	t.Helper()
 	for i := range n {

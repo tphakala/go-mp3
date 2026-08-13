@@ -3,6 +3,7 @@ package dec
 import (
 	"fmt"
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/tphakala/go-mp3/internal/bits"
@@ -65,6 +66,25 @@ func deriveValidEncBigTables() []int {
 		}
 	}
 	return tables
+}
+
+// TestValidEncBigTablesComplete guards the derived validEncBigTables against a
+// silent shrink. deriveValidEncBigTables reads the encoder's own bigTables
+// shape, so an encoder regression that zeroed a real table's dim would drop it
+// from the set and make its TestEncHuffmanDecRoundTrip subtest vanish with
+// nothing to flag the loss. The expected set is the ISO/IEC 11172-3 big-values
+// codebook numbering (tables 1-3, 5-13, 15-31; table 0 encodes only zeros and
+// is covered by TestEncTable0RoundTrip, slots 4 and 14 are unused), pinned here
+// as an independent oracle rather than re-derived from the encoder.
+func TestValidEncBigTablesComplete(t *testing.T) {
+	want := []int{
+		1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+		15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+	}
+	if !slices.Equal(validEncBigTables, want) {
+		t.Fatalf("validEncBigTables = %v (len %d), want %v (len %d): the encoder's big-values table set changed; a shrink silently drops round-trip coverage",
+			validEncBigTables, len(validEncBigTables), want, len(want))
+	}
 }
 
 // recoverIx recovers a Huffman-decoded dequantized sample's original

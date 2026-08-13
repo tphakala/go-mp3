@@ -367,7 +367,15 @@ func TestPexp2Golden(t *testing.T) {
 	seed := uint64(99)
 	out := make([]float64, 0, 4096)
 	for range 4096 {
-		out = append(out, pexp2(testsignal.LCG(&seed)*2110-1080))
+		// float64(...) around the product is load-bearing: 2110 is not a
+		// power of two, so LCG*2110 rounds, and a bare LCG*2110 - 1080 fuses
+		// into a single FMSUB on arm64 (no FMA under GOAMD64=v1 on amd64).
+		// That fused input diverges from the amd64 input for ~half the sweep
+		// and is what made this golden mismatch cross-arch; pexp2 itself is
+		// bit-identical on both arches for identical inputs (including the
+		// full subnormal/underflow tail). Blocking the fusion here restores
+		// a cross-arch-identical input, so the frozen digest holds on both.
+		out = append(out, pexp2(float64(testsignal.LCG(&seed)*2110)-1080))
 	}
 	got := sha256Float64s(out...)
 	if pexp2GoldenSHA == "" {

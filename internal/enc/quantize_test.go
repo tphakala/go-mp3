@@ -18,14 +18,14 @@ func TestQuantizeKnownAnswers(t *testing.T) {
 		gg   int
 		want int32
 	}{
-		{"positive, invStep=1 (gg=210)", 1000, 210, 178},
-		{"negative, sign preserved", -1000, 210, -178},
-		{"exact zero", 0, 210, 0},
-		{"quantizes to 0", 0.3, 210, 0},
-		{"invStep=2 (gg=206, positive q remainder 0)", 1000, 206, 299},
-		{"invStep=0.5 (gg=214, negative q remainder 0)", 1000, 214, 106},
-		{"invStep=2^0.25 (gg=209, positive q remainder 1)", 500, 209, 120},
-		{"invStep=2^-0.25 (gg=211, negative q remainder 3)", 500, 211, 93},
+		{"positive, invStep=1 (gg=214)", 1000, 214, 178},
+		{"negative, sign preserved", -1000, 214, -178},
+		{"exact zero", 0, 214, 0},
+		{"quantizes to 0", 0.3, 214, 0},
+		{"invStep=2 (gg=210, positive q remainder 0)", 1000, 210, 299},
+		{"invStep=0.5 (gg=218, negative q remainder 0)", 1000, 218, 106},
+		{"invStep=2^0.25 (gg=213, positive q remainder 1)", 500, 213, 120},
+		{"invStep=2^-0.25 (gg=215, negative q remainder 3)", 500, 215, 93},
 		{"clamp engages (gg=0, huge invStep)", 1, 0, maxQuant},
 		{"clamp engages, sign preserved", -1, 0, -maxQuant},
 	}
@@ -141,9 +141,14 @@ func TestQuantizeMonotone(t *testing.T) {
 // rawQuant is an independent, unclamped reference for the quantized
 // magnitude at a given gg, used to test minGlobalGain's boundary without
 // relying on quantizeGranule's own hard clamp (which by design can never
-// report a value "exceeding" maxQuant).
+// report a value "exceeding" maxQuant). It reuses invStep's own
+// quantGainBase constant (quantize.go) rather than a duplicated literal,
+// so this oracle cannot silently drift out of sync with the production
+// value if quantGainBase is ever re-measured; see quantGainBase's doc
+// comment for why 214, not the textbook ISO 210, is the value this
+// encoder's decoder actually dequantizes against.
 func rawQuant(xrAbs float64, gg int) float64 {
-	t := xrAbs * math.Pow(2, float64(210-gg)/4.0)
+	t := xrAbs * math.Pow(2, float64(quantGainBase-gg)/4.0)
 	v := math.Pow(t, 0.75)
 	return math.Floor(v - 0.0946 + 0.5)
 }

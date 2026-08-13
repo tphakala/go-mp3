@@ -43,9 +43,12 @@ var (
 	// drain call, also returns ErrInvalidAudio until Reset.
 	ErrInvalidAudio = errors.New("go-mp3: invalid audio sample (NaN or Inf)")
 
-	// ErrEncoderClosed is returned by EncodeFrame when called on a
-	// zero-value Encoder, one that has never been passed through
-	// NewEncoder or Reset.
+	// ErrEncoderClosed is returned by EncodeFrame on an Encoder that has
+	// not been successfully initialized by NewEncoder or Reset. This
+	// includes a zero-value Encoder and one whose only Reset call so far
+	// returned an error; it does not include an already-initialized
+	// Encoder whose later Reset call errors, since that leaves the prior
+	// successful state untouched.
 	ErrEncoderClosed = errors.New("go-mp3: encoder not initialized")
 
 	// ErrEncoderFinalized is returned by EncodeFrame when non-nil audio is
@@ -192,9 +195,12 @@ func (e *Encoder) Reset(cfg EncoderConfig) error {
 	return nil
 }
 
-// EncodeFrame encodes the next frame of planar float32 PCM in [-1, 1] (one
-// slice per channel, up to FrameSize samples each) and appends the encoded
-// MP3 frame to dst, returning the extended slice. It is append-style, like
+// EncodeFrame encodes the next frame of planar float32 PCM (one slice per
+// channel, up to FrameSize samples each) and appends the encoded MP3 frame
+// to dst, returning the extended slice. Finite samples are accepted at any
+// magnitude; any sample outside [-1, 1] is clamped to [-1, 1] before
+// encoding. A NaN or an Inf anywhere returns ErrInvalidAudio instead (see
+// its doc comment above). EncodeFrame is append-style, like
 // strconv.AppendInt: allocation-free when dst has spare capacity.
 //
 // Only the final frame of a stream may be shorter than FrameSize; a short
@@ -207,13 +213,16 @@ func (e *Encoder) Reset(cfg EncoderConfig) error {
 // a channel longer than FrameSize) returns a distinct error, none of them
 // one of the three sentinels documented here.
 //
-// Pass a nil samples to drain: it appends the encoder's final flush frame
-// and is always legal, including right after a short final frame; further
-// nil calls append nothing more. Drained reports whether the drain has
-// already happened. Submitting non-nil audio after a drain also returns
-// ErrEncoderFinalized.
+// Pass a nil samples to drain: unless the encoder has been poisoned by
+// prior invalid audio (which makes every later call, including a drain,
+// return ErrInvalidAudio until Reset), a nil call appends the encoder's
+// final flush frame and is always legal, including right after a short
+// final frame; further nil calls append nothing more. Drained reports
+// whether the drain has already happened. Submitting non-nil audio after a
+// drain also returns ErrEncoderFinalized.
 //
-// On a zero-value Encoder (never passed through NewEncoder or Reset),
+// On an Encoder that has not been successfully initialized by NewEncoder
+// or Reset (see ErrEncoderClosed above for exactly what that covers),
 // EncodeFrame returns (dst, ErrEncoderClosed) unconditionally.
 func (e *Encoder) EncodeFrame(dst []byte, samples [][]float32) ([]byte, error) {
 	if e.enc == nil {

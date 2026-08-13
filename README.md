@@ -86,9 +86,10 @@ later phases.
 
 The encoded stream is tagless (no Xing/LAME header), so the `pcm` decoder
 below applies no gapless trim to it: the decoded output carries
-`mp3.TotalDelay` (1057) leading samples of algorithmic delay. Subtract
-`TotalDelay` from a decoded stream's start to align it back to the original
-input.
+`mp3.TotalDelay` (1057) leading samples of algorithmic delay, measured per
+channel. For the interleaved output that means discarding the first
+`TotalDelay * Channels` sample values (not `TotalDelay` values) to align
+the decoded audio back to the original input.
 
 ## Streaming decoder (package pcm)
 

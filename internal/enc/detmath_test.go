@@ -280,3 +280,116 @@ func BenchmarkPlog(b *testing.B) {
 		x = 1 + math.Abs(plog(1+x))*0.001
 	}
 }
+
+func TestPexp2SpecialCases(t *testing.T) {
+	if v := pexp2(math.NaN()); !math.IsNaN(v) {
+		t.Errorf("pexp2(NaN) = %v, want NaN", v)
+	}
+	if v := pexp2(math.Inf(1)); !math.IsInf(v, 1) {
+		t.Errorf("pexp2(+Inf) = %v, want +Inf", v)
+	}
+	if v := pexp2(math.Inf(-1)); v != 0 {
+		t.Errorf("pexp2(-Inf) = %v, want 0", v)
+	}
+	if v := pexp2(1100); !math.IsInf(v, 1) {
+		t.Errorf("pexp2(1100) = %v, want +Inf", v)
+	}
+	if v := pexp2(1024); !math.IsInf(v, 1) {
+		// k = 1024, P(0) = 1 exactly, Ldexp(1, 1024) overflows to +Inf.
+		t.Errorf("pexp2(1024) = %v, want +Inf", v)
+	}
+	if v := pexp2(-1075); v != 0 {
+		// Ldexp(1, -1075) = 2^-1075 is exactly half the smallest subnormal:
+		// rounds to 0 (ties to even).
+		t.Errorf("pexp2(-1075) = %v, want 0", v)
+	}
+	if v := pexp2(0); v != 1 {
+		t.Errorf("pexp2(0) = %v, want exactly 1", v)
+	}
+}
+
+func TestPexp2IntegerExact(t *testing.T) {
+	// f = 0 makes the Horner chain collapse to pexp2Poly[0] = 1 exactly,
+	// and Ldexp(1, k) is exact: every integer power of two is exact. The
+	// reference is math.Ldexp(1, k), exact by construction (no stdlib
+	// accuracy assumption).
+	for k := -1074; k <= 1023; k++ {
+		got, want := pexp2(float64(k)), math.Ldexp(1, k)
+		if got != want {
+			t.Fatalf("pexp2(%d) = %v, want exactly %v", k, got, want)
+		}
+	}
+}
+
+// pexp2KATMaxULP: measured 1 ulp at plan time on linux/amd64 go1.26.5; the
+// bound is 4 for the same per-architecture-reference reason as
+// plogKATMaxULP.
+const pexp2KATMaxULP = 4
+
+func TestPexp2MatchesMathExp2(t *testing.T) {
+	check := func(x float64) {
+		t.Helper()
+		got, want := pexp2(x), math.Exp2(x)
+		if u := ulpSteps(got, want, pexp2KATMaxULP); u > pexp2KATMaxULP {
+			t.Fatalf("pexp2(%v) = %v, math.Exp2 = %v: > %d ulp apart",
+				x, got, want, pexp2KATMaxULP)
+		}
+	}
+	seed := uint64(3)
+	for range 300000 {
+		check(testsignal.LCG(&seed)*2110 - 1080) // [-1080, 1030)
+	}
+	for i := -100000; i <= 100000; i++ {
+		check(float64(i) * 1e-8) // dense near 0
+	}
+	for k := -1074; k <= 1023; k++ {
+		check(float64(k) + 0.5) // every half-integer (the |f| = 0.5 extreme)
+	}
+	for _, x := range []float64{-1074.9, -1074.5, -1022.3, 1023.9, -0.5, 0.5} {
+		check(x)
+	}
+}
+
+func TestPexp2MonotoneSpot(t *testing.T) {
+	seed := uint64(13)
+	for range 50000 {
+		x := testsignal.LCG(&seed)*2000 - 1000
+		if pexp2(x+1e-9) < pexp2(x) {
+			t.Fatalf("pexp2 not monotone at x = %v", x)
+		}
+	}
+}
+
+// pexp2GoldenSHA: same contract as plogGoldenSHA.
+const pexp2GoldenSHA = "c7186a45ea0de70fe3f425b8cd0cace886c9a60edcd6d442606ef7bcbe938489" // FROZEN in Task 3 Step 4
+
+func TestPexp2Golden(t *testing.T) {
+	seed := uint64(99)
+	out := make([]float64, 0, 4096)
+	for range 4096 {
+		out = append(out, pexp2(testsignal.LCG(&seed)*2110-1080))
+	}
+	got := sha256Float64s(out...)
+	if pexp2GoldenSHA == "" {
+		t.Fatalf("FREEZE ME: const pexp2GoldenSHA = %q", got)
+	}
+	if got != pexp2GoldenSHA {
+		t.Fatalf("pexp2 output changed: sha256 = %s, frozen %s", got, pexp2GoldenSHA)
+	}
+}
+
+func TestDetmathAllocs(t *testing.T) {
+	if n := testing.AllocsPerRun(100, func() {
+		_ = plog(3.7)
+		_ = pexp2(-4.2)
+	}); n != 0 {
+		t.Fatalf("plog/pexp2 allocate: %v allocs per run, want 0", n)
+	}
+}
+
+func BenchmarkPexp2(b *testing.B) {
+	x := 0.123456789
+	for b.Loop() {
+		x = math.Mod(pexp2(x), 1) // stays in [0, 1)
+	}
+}

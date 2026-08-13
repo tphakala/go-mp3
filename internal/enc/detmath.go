@@ -58,3 +58,39 @@ func plog(x float64) float64 {
 	}
 	return float64(float64(e)*ln2Hi) + (float64(float64(e)*ln2Lo) + float64(s*p))
 }
+
+// pexp2 returns 2**x, bit-identically across architectures.
+//
+// Reduction: k is the nearest integer to x (math.Floor is exact), so
+// f = x - k is exact (both share the same binade scale for |x| < 2^52)
+// with |f| <= 1/2. Then 2^f = P(f), the truncated Taylor series in
+// pexp2Poly evaluated in fixed Horner order, and Ldexp(P(f), k) applies
+// the exact power-of-two scale, correctly rounding into subnormals and
+// to 0/+Inf at the extremes.
+//
+// Special cases:
+//
+//	pexp2(NaN) = NaN; pexp2(x >= 1100) = +Inf; pexp2(x <= -1100) = 0
+//
+// (which covers +-Inf). The +-1100 guards also keep the int conversion of
+// k in range: converting an out-of-range float64 to int is
+// implementation-defined and differs between amd64 and arm64, the same
+// hazard quantizeGranule documents.
+func pexp2(x float64) float64 {
+	switch {
+	case math.IsNaN(x):
+		return math.NaN()
+	case x >= 1100:
+		return math.Inf(1)
+	case x <= -1100:
+		return 0
+	}
+
+	k := int(math.Floor(x + 0.5)) // nearest integer to x
+	f := x - float64(k)           // exact; |f| <= 1/2
+	p := pexp2Poly[len(pexp2Poly)-1]
+	for i := len(pexp2Poly) - 2; i >= 0; i-- {
+		p = float64(p*f) + pexp2Poly[i]
+	}
+	return math.Ldexp(p, k)
+}

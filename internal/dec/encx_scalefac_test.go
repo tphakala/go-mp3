@@ -50,9 +50,7 @@ func readFrameScf(t *testing.T, frame []byte, nch int) (gr [2][2]grInfo, gains [
 		for ch := range nch {
 			gr[gi][ch] = g[gi*nch+ch]
 			// Position main at this granule-channel's part2 start.
-			for main.Pos() < pos {
-				main.Bits(1)
-			}
+			main.SetPos(pos)
 			l3ReadScalefactors(hdr, scf[:], istPos[ch][:], &gr[gi][ch], &main, ch)
 			copy(gains[gi][ch][:], scf[:22])
 			pos += int(gr[gi][ch].part23Length)

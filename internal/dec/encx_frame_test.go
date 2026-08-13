@@ -123,9 +123,7 @@ func validateGranules(t *testing.T, frameIdx int, hdr []byte, gr []grInfo, mainD
 
 			wantPart2 := expectedPart2Bits(int(g.scalefacCompress), int(g.scfsi))
 
-			for main.Pos() < pos {
-				main.Bits(1)
-			}
+			main.SetPos(pos)
 			before := main.Pos()
 			l3ReadScalefactors(hdr, scf[:], istPos[ch][:], g, &main, ch)
 			gotPart2 := main.Pos() - before

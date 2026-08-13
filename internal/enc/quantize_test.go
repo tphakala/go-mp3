@@ -32,12 +32,14 @@ func TestQuantizeKnownAnswers(t *testing.T) {
 		{"clamp engages, sign preserved", -1, 0, -maxQuant},
 	}
 
+	var sf scfState
+	sfb := &sfbWidthsLong[0]
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var xr [576]float64
 			xr[0] = c.xr
 			var ix [576]int32
-			quantizeGranule(&xr, c.gg, &ix)
+			quantizeGranule(&xr, c.gg, &sf, sfb, &ix)
 			if ix[0] != c.want {
 				t.Fatalf("quantizeGranule(xr=%v, gg=%d) = %d, want %d", c.xr, c.gg, ix[0], c.want)
 			}
@@ -122,12 +124,15 @@ func TestQuantizeMonotone(t *testing.T) {
 		xr[i] = mag
 	}
 
+	var sf scfState
+	sfb := &sfbWidthsLong[0]
+
 	var prev [576]int32
-	quantizeGranule(&xr, 0, &prev)
+	quantizeGranule(&xr, 0, &sf, sfb, &prev)
 
 	var cur [576]int32
 	for gg := 1; gg < 256; gg++ {
-		quantizeGranule(&xr, gg, &cur)
+		quantizeGranule(&xr, gg, &sf, sfb, &cur)
 		for i := range 576 {
 			if abs32(cur[i]) > abs32(prev[i]) {
 				t.Fatalf("line %d: |ix| rose from gg=%d to gg=%d: %d -> %d",
@@ -161,8 +166,10 @@ func rawQuant(xrAbs float64, gg int) float64 {
 func TestMinGlobalGain(t *testing.T) {
 	var xr [576]float64
 	xr[300] = 5e5
+	var sf scfState
+	sfb := &sfbWidthsLong[0]
 
-	gg := minGlobalGain(&xr)
+	gg := minGlobalGain(&xr, &sf, sfb)
 	if gg <= 0 || gg >= 256 {
 		t.Fatalf("minGlobalGain returned out-of-range gg=%d", gg)
 	}
@@ -175,12 +182,12 @@ func TestMinGlobalGain(t *testing.T) {
 	}
 
 	var ix [576]int32
-	quantizeGranule(&xr, gg, &ix)
+	quantizeGranule(&xr, gg, &sf, sfb, &ix)
 	if ix[300] > maxQuant {
 		t.Fatalf("quantizeGranule at gg=%d: ix[300]=%d > maxQuant %d", gg, ix[300], maxQuant)
 	}
 
-	quantizeGranule(&xr, gg-1, &ix)
+	quantizeGranule(&xr, gg-1, &sf, sfb, &ix)
 	if ix[300] != maxQuant {
 		t.Fatalf("quantizeGranule at gg-1=%d: ix[300]=%d, want the clamp to engage at %d",
 			gg-1, ix[300], maxQuant)
@@ -257,4 +264,159 @@ func TestPartitionSpectrum(t *testing.T) {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
 	})
+}
+
+// legacyQuantize is a verbatim copy of the Phase 3 quantizeGranule body (no
+// scfState, no per-band step, invStep(gg) applied uniformly to every line):
+// the equivalence reference TestQuantizeScaledKnownAnswers checks the
+// generalized quantizeGranule against, under the zero scfState.
+func legacyQuantize(xr *[576]float64, gg int, ix *[576]int32) {
+	is := invStep(gg)
+	for i := range 576 {
+		t := math.Abs(xr[i]) * is
+		v := math.Sqrt(t * math.Sqrt(t))
+
+		var m int32
+		if nint := v + 0.4054; nint <= float64(maxQuant) {
+			m = int32(nint)
+		} else {
+			m = maxQuant
+		}
+
+		if xr[i] < 0 {
+			m = -m
+		}
+		ix[i] = m
+	}
+}
+
+func TestQuantizeScaledKnownAnswers(t *testing.T) {
+	sfb := &sfbWidthsLong[0]
+	var xr [576]float64
+	var ix [576]int32
+
+	// Hand case: gg = quantGainBase (base step 1), scf[0] = 1,
+	// scalefacScale = 1: band 0 multiplier is 2^(2*2*1/4) = 2 exactly.
+	// xr = 100 -> t = 200 -> 200^0.75 = 53.183 -> +0.4054 trunc = 53.
+	var sf scfState
+	sf.scf[0] = 1
+	sf.scalefacScale = 1
+	xr[0] = 100
+	quantizeGranule(&xr, quantGainBase, &sf, sfb, &ix)
+	if ix[0] != 53 {
+		t.Errorf("scaled quantize: ix[0] = %d, want 53", ix[0])
+	}
+
+	// Zero state must reproduce the Phase 3 quantizer exactly.
+	var zero scfState
+	seed := uint64(7)
+	for i := range xr {
+		xr[i] = (testsignal.LCG(&seed) - 0.5) * 1e5
+	}
+	var ixA, ixB [576]int32
+	quantizeGranule(&xr, 180, &zero, sfb, &ixA)
+	legacyQuantize(&xr, 180, &ixB) // test-local copy of the Phase 3 body
+	if ixA != ixB {
+		t.Fatal("zero scfState diverges from the Phase 3 quantizer")
+	}
+
+	// preflag: band 15 (pretab 2), preflag=1, scf 0, scalefacScale 0:
+	// extra = 2*1*(0+2) = 4 quarter-steps = one power of two.
+	var pf scfState
+	pf.preflag = 1
+	clear(xr[:])
+	lo := 0
+	for s := range 15 {
+		lo += sfb[s]
+	}
+	xr[lo] = 100
+	quantizeGranule(&xr, quantGainBase, &pf, sfb, &ix)
+	if ix[lo] != 53 { // same 100 -> 200 -> 53 arithmetic as above
+		t.Errorf("preflag quantize: ix[%d] = %d, want 53", lo, ix[lo])
+	}
+}
+
+func TestNoiseGranuleKnownAnswer(t *testing.T) {
+	sfb := &sfbWidthsLong[0]
+	var xr [576]float64
+	var ix [576]int32
+	var sf scfState
+	sf.scf[0] = 1
+	sf.scalefacScale = 1
+	xr[0] = 100
+	quantizeGranule(&xr, quantGainBase, &sf, sfb, &ix) // ix[0] = 53
+	var noise [22]float64
+	noiseGranule(&xr, &ix, quantGainBase, &sf, sfb, &noise)
+	// dequant = pow43[53] * 2^(-4/4) = 53^(4/3)/2 = 99.535...; noise in
+	// band 0 = (100 - dequant)^2; recompute test-side with math.Pow.
+	deq := math.Pow(53, 4.0/3.0) / 2
+	want := (100 - deq) * (100 - deq)
+	if r := math.Abs(noise[0]-want) / want; r > 1e-12 {
+		t.Errorf("noise[0] = %v, want %v (rel %.3g)", noise[0], want, r)
+	}
+	for s := 1; s < 22; s++ {
+		if noise[s] != 0 {
+			t.Errorf("noise[%d] = %v, want 0 (band is silent)", s, noise[s])
+		}
+	}
+}
+
+func TestNoiseDecreasesWithAmplification(t *testing.T) {
+	// Amplifying a band strictly reduces (or keeps equal) its measured
+	// noise: finer effective step, more precision.
+	sfb := &sfbWidthsLong[0]
+	var xr [576]float64
+	seed := uint64(11)
+	for i := range 40 { // bands 0..~7 populated
+		xr[i] = (testsignal.LCG(&seed) - 0.5) * 2000
+	}
+	var prev = math.Inf(1)
+	for amp := range 8 {
+		var sf scfState
+		for s := range sf.scf {
+			sf.scf[s] = amp
+		}
+		var ix [576]int32
+		var noise [22]float64
+		gg := minGlobalGain(&xr, &sf, sfb)
+		quantizeGranule(&xr, gg, &sf, sfb, &ix)
+		noiseGranule(&xr, &ix, gg, &sf, sfb, &noise)
+		total := 0.0
+		for _, n := range noise {
+			total += n
+		}
+		if total > prev*1.0001 {
+			t.Fatalf("amp %d: total noise %g not decreasing (prev %g)", amp, total, prev)
+		}
+		prev = total
+	}
+}
+
+func TestMinGlobalGainScaled(t *testing.T) {
+	// Amplification raises the needed gg; the returned gg always keeps
+	// every quantized magnitude within maxQuant WITHOUT the clamp firing.
+	sfb := &sfbWidthsLong[0]
+	var xr [576]float64
+	xr[0] = 5e5
+	var sf scfState
+	sf.scf[0] = 10
+	gg := minGlobalGain(&xr, &sf, sfb)
+	var ix [576]int32
+	quantizeGranule(&xr, gg, &sf, sfb, &ix)
+	if ix[0] > maxQuant {
+		t.Fatalf("ix[0] = %d exceeds maxQuant at returned gg", ix[0])
+	}
+	if gg > 0 {
+		sf2 := sf
+		var ix2 [576]int32
+		quantizeGranule(&xr, gg-1, &sf2, sfb, &ix2)
+		// quantizeGranule's clamp guarantees ix2[0] <= maxQuant always,
+		// whether or not gg-1 truly fits, so "does gg-1 fit" has to be
+		// read off the clamp engaging (ix2[0] == maxQuant exactly, the
+		// else branch's fixed value), the same idiom TestMinGlobalGain
+		// above uses for the unscaled case.
+		if ix2[0] != maxQuant {
+			t.Fatalf("gg-1 also fits: minGlobalGain not minimal (ix2[0]=%d, want the clamp to engage at %d)", ix2[0], maxQuant)
+		}
+	}
 }

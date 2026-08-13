@@ -59,7 +59,8 @@ func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps,
 		}
 
 		frameMainBits := frameBytes*8 - 32 - sideInfoBitsFor(wantNch)
-		validateGranules(t, frames, gr, frameMainBits)
+		mainData := frame[4+sideInfoBitsFor(wantNch)/8:]
+		validateGranules(t, frames, frame[:4], gr, mainData, wantNch, frameMainBits)
 
 		pos += frameBytes
 		frames++
@@ -73,43 +74,100 @@ func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps,
 }
 
 // validateGranules checks every granule-channel's side-info invariants
-// (long blocks only, no scalefactor amplification/reuse fields set, valid
-// codebook numbers) and that their combined part2_3 length fits the frame's
+// (long blocks only, valid codebook numbers, legal scalefac_compress/
+// preflag/scalefac_scale range, granule 0 never masks via scfsi), that
+// l3ReadScalefactors consumes EXACTLY the part2 bits expectedPart2Bits
+// predicts from scalefacCompress and the scfsi mask (walking the frame's
+// main data with a bits.Reader, the same technique readFrameScf uses), and
+// that the granule-channels' combined part2_3 length fits the frame's
 // main-data budget.
-func validateGranules(t *testing.T, frameIdx int, gr []grInfo, frameMainBits int) {
+func validateGranules(t *testing.T, frameIdx int, hdr []byte, gr []grInfo, mainData []byte, nch, frameMainBits int) {
 	t.Helper()
 
+	main := bits.NewReader(mainData)
+	var istPos [2][40]uint8
+	var scf [40]float32
+	pos := 0
 	sumPart23 := 0
-	for i := range gr {
-		g := &gr[i]
-		if g.bigValues > 288 {
-			t.Fatalf("frame %d gr %d: bigValues = %d, want <= 288", frameIdx, i, g.bigValues)
-		}
-		if g.blockType != 0 {
-			t.Fatalf("frame %d gr %d: blockType = %d, want 0 (long blocks only)", frameIdx, i, g.blockType)
-		}
-		if g.mixedBlockFlag != 0 {
-			t.Fatalf("frame %d gr %d: mixedBlockFlag = %d, want 0", frameIdx, i, g.mixedBlockFlag)
-		}
-		if g.scalefacCompress != 0 {
-			t.Fatalf("frame %d gr %d: scalefacCompress = %d, want 0", frameIdx, i, g.scalefacCompress)
-		}
-		if g.preflag != 0 {
-			t.Fatalf("frame %d gr %d: preflag = %d, want 0", frameIdx, i, g.preflag)
-		}
-		if g.scalefacScale != 0 {
-			t.Fatalf("frame %d gr %d: scalefacScale = %d, want 0", frameIdx, i, g.scalefacScale)
-		}
-		for r, ts := range g.tableSelect {
-			if ts == 4 || ts == 14 {
-				t.Fatalf("frame %d gr %d region %d: tableSelect = %d, invalid codebook number", frameIdx, i, r, ts)
+
+	for gi := range 2 {
+		for ch := range nch {
+			i := gi*nch + ch
+			g := &gr[i]
+			if g.bigValues > 288 {
+				t.Fatalf("frame %d gr %d ch %d: bigValues = %d, want <= 288", frameIdx, gi, ch, g.bigValues)
 			}
+			if g.blockType != 0 {
+				t.Fatalf("frame %d gr %d ch %d: blockType = %d, want 0 (long blocks only)", frameIdx, gi, ch, g.blockType)
+			}
+			if g.mixedBlockFlag != 0 {
+				t.Fatalf("frame %d gr %d ch %d: mixedBlockFlag = %d, want 0", frameIdx, gi, ch, g.mixedBlockFlag)
+			}
+			if g.scalefacCompress > 15 {
+				t.Fatalf("frame %d gr %d ch %d: scalefacCompress = %d, want in [0,15]", frameIdx, gi, ch, g.scalefacCompress)
+			}
+			if g.preflag > 1 {
+				t.Fatalf("frame %d gr %d ch %d: preflag = %d, want 0 or 1", frameIdx, gi, ch, g.preflag)
+			}
+			if g.scalefacScale > 1 {
+				t.Fatalf("frame %d gr %d ch %d: scalefacScale = %d, want 0 or 1", frameIdx, gi, ch, g.scalefacScale)
+			}
+			for r, ts := range g.tableSelect {
+				if ts == 4 || ts == 14 {
+					t.Fatalf("frame %d gr %d ch %d region %d: tableSelect = %d, invalid codebook number", frameIdx, gi, ch, r, ts)
+				}
+			}
+			if gi == 0 && g.scfsi != 0 {
+				t.Fatalf("frame %d gr 0 ch %d: scfsi = %04b, want 0 (granule 0 never masks)", frameIdx, ch, g.scfsi)
+			}
+
+			wantPart2 := expectedPart2Bits(int(g.scalefacCompress), int(g.scfsi))
+
+			main.SetPos(pos)
+			before := main.Pos()
+			l3ReadScalefactors(hdr, scf[:], istPos[ch][:], g, &main, ch)
+			gotPart2 := main.Pos() - before
+			if gotPart2 != wantPart2 {
+				t.Fatalf("frame %d gr %d ch %d: l3ReadScalefactors consumed %d bits, want %d (scalefacCompress %d, scfsi %04b)",
+					frameIdx, gi, ch, gotPart2, wantPart2, g.scalefacCompress, g.scfsi)
+			}
+			if int(g.part23Length) < wantPart2 {
+				t.Fatalf("frame %d gr %d ch %d: part23Length = %d, want >= part2 = %d", frameIdx, gi, ch, g.part23Length, wantPart2)
+			}
+
+			pos += int(g.part23Length)
+			sumPart23 += int(g.part23Length)
 		}
-		sumPart23 += int(g.part23Length)
 	}
 	if sumPart23 > frameMainBits {
 		t.Fatalf("frame %d: sum(part23Length) = %d, exceeds mainBits = %d", frameIdx, sumPart23, frameMainBits)
 	}
+}
+
+// expectedPart2Bits recomputes the exact part2 (scalefactor) bit count a
+// granule-channel's side info predicts: scalefacCompress selects the
+// {slen1, slen2} pair via the decoder's own scfcDecodeTable (mirroring
+// ISO 2.4.2.7's slen table, cross-checked independently by
+// internal/enc's TestSlenTabKnownAnswer), and scfsi masks out groups
+// reused from granule 0 (bit 3 = group 0 ... bit 0 = group 3, the
+// side-info order); group widths are scfPartitionsTable[0][:4] (6,5,5,5),
+// the same MPEG1 long-block scfCount l3ReadScalefactorsRaw consumes.
+func expectedPart2Bits(scalefacCompress, scfsi int) int {
+	part := int(scfcDecodeTable[scalefacCompress])
+	slen1, slen2 := part>>2, part&3
+	widths := scfPartitionsTable[0][:4]
+	total := 0
+	for i, w := range widths {
+		if scfsi&(1<<(3-i)) != 0 {
+			continue
+		}
+		slen := slen1
+		if i >= 2 {
+			slen = slen2
+		}
+		total += int(w) * slen
+	}
+	return total
 }
 
 // validateFrameDecode feeds stream through the internal decoder, not the

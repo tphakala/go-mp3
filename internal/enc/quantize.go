@@ -7,7 +7,7 @@ import "math"
 const maxQuant = 8206
 
 // pow2Quarter holds 2^0, 2^(1/4), 2^(1/2) and 2^(3/4) as exact hex float
-// literals, the four quarter-integer steps invStep interpolates between
+// literals, the four quarter-integer steps stepQ interpolates between
 // powers of two. Hard-coded rather than computed with math.Pow at init, per
 // the package's determinism rule (no math.Pow/Sin/Cos/Exp/Log in the runtime
 // encode path).
@@ -18,10 +18,21 @@ var pow2Quarter = [4]float64{
 	0x1.ae89f995ad3adp+0,
 }
 
-// invStep returns 2^((quantGainBase-gg)/4), the per-line multiplier ISO
-// annex C.1.5.4 applies before raising the magnitude to the 3/4 power. gg
-// is the global gain (0..255).
+// stepQ returns 2^(q/4) exactly, q may be negative: q splits into an integer
+// part q>>2 (arithmetic shift right, which floors for negative q too) and a
+// remainder q&3 in [0,3] (Go's bitwise AND on the low two bits of a two's
+// complement value is already the non-negative floor-mod, for negative q as
+// well as positive), so pow2Quarter[q&3] scaled by 2^(q>>2) via math.Ldexp
+// reproduces 2^(q/4) exactly, with no math.Pow call.
 //
+// invStep(gg) is the gg-only special case stepQ(quantGainBase - gg). Task 2
+// (the per-band quantizer, quantizeGranule/minGlobalGain/noiseGranule)
+// generalizes on this: those need a per-band exponent, gg plus that band's
+// bandExtraQuarters amplification, not just gg alone.
+func stepQ(q int) float64 {
+	return math.Ldexp(pow2Quarter[q&3], q>>2)
+}
+
 // quantGainBase is 214, not the textbook ISO constant 210: the Task 7
 // full-chain round-trip gate (internal/dec/encx_roundtrip_test.go,
 // TestEncoderRoundTripSNR) discovered that this project's decoder (a
@@ -44,23 +55,56 @@ var pow2Quarter = [4]float64{
 // convention exponent-for-exponent, and only an end-to-end round trip
 // against the real decoder can catch it. See PCMScale's doc comment for
 // the same pattern in the filterbank stage.
-//
-// q := quantGainBase - gg splits into an integer part q>>2 (arithmetic
-// shift right, which floors for negative q too) and a remainder q&3 in
-// [0,3] (Go's bitwise AND on the low two bits of a two's complement value
-// is already the non-negative floor-mod, for negative q as well as
-// positive). So pow2Quarter[q&3] scaled by 2^(q>>2) reproduces 2^(q/4)
-// exactly, with no math.Pow call.
 const quantGainBase = 214
 
+// invStep returns 2^((quantGainBase-gg)/4), the per-line multiplier ISO
+// annex C.1.5.4 applies before raising the magnitude to the 3/4 power, with
+// every band's scalefactor amplification at 0 (bandExtraQuarters' zero
+// case). gg is the global gain (0..255). quantizeGranule and noiseGranule
+// no longer call this directly (they need the per-band exponent stepQ
+// exposes), but it stays as the documented gg-only special case.
 func invStep(gg int) float64 {
-	q := quantGainBase - gg
-	return math.Ldexp(pow2Quarter[q&3], q>>2)
+	return stepQ(quantGainBase - gg)
 }
 
-// quantizeGranule quantizes xr at global gain gg (0..255) into ix:
-// ix[i] = sign(xr[i]) * nint((|xr[i]| * invStep(gg))^(3/4) - 0.0946), the ISO
-// annex C.1.5.4 power-law quantizer with scalefactors all zero.
+// scfState is one granule-channel's scalefactor state. The zero value is
+// exactly Phase 3 behavior (no amplification, no preemphasis, half-step
+// scale), which is what keeps PR A behavior-preserving.
+type scfState struct {
+	scf           [21]int // integer scalefactors, sfbs 0..20
+	scalefacScale int     // 0 or 1
+	preflag       int     // 0 or 1
+}
+
+// bandExtraQuarters returns the amplification exponent for band sfb in
+// quarter-power-of-two steps: 2*(scalefacScale+1)*(scf+preflag*pretab). sfb
+// 21 (no scalefactor) returns 0.
+func (sf *scfState) bandExtraQuarters(sfb int) int {
+	if sfb >= 21 {
+		return 0
+	}
+	pretab := 0
+	if sf.preflag != 0 {
+		pretab = pretabLong[sfb]
+	}
+	return 2 * (sf.scalefacScale + 1) * (sf.scf[sfb] + pretab)
+}
+
+// quantizeGranule quantizes xr at global gain gg (0..255) under the per-band
+// scalefactor state sf into ix: for each line i in band sfb, ix[i] =
+// sign(xr[i]) * nint((|xr[i]| * stepQ((quantGainBase-gg)+sf.bandExtraQuarters(sfb)))^0.75
+// - 0.0946), the ISO annex C.1.5.4 power-law quantizer generalized with
+// per-band scalefactor amplification (2.4.3.4.5): scalefac_scale doubles the
+// scalefactor's quarter-step weight, preflag adds a fixed per-band boost
+// from pretabLong, and bandExtraQuarters folds both into the single
+// quarter-power-of-two exponent stepQ consumes. sf's zero value makes
+// bandExtraQuarters 0 for every band, so this reduces exactly to Phase 3's
+// invStep(gg) formula (TestQuantizeScaledKnownAnswers' zero-state case
+// checks this holds bit-for-bit against a frozen copy of the Phase 3 body).
+//
+// The band step is hoisted out of the per-line loop: one stepQ call per
+// band (bandExtraQuarters and gg are constant across a band), not one per
+// line.
 //
 // x^0.75 is computed as sqrt(x*sqrt(x)) rather than math.Pow, per the
 // package's determinism rule; TestQuantizePowRef documents the substitution
@@ -86,52 +130,107 @@ func invStep(gg int) float64 {
 // once the value is known to be within [0, maxQuant], sidesteps that
 // entirely; the two forms agree on every line that would not have overflowed
 // anyway.
-func quantizeGranule(xr *[576]float64, gg int, ix *[576]int32) {
-	is := invStep(gg)
-	for i := range 576 {
-		t := math.Abs(xr[i]) * is
-		v := math.Sqrt(t * math.Sqrt(t))
+func quantizeGranule(xr *[576]float64, gg int, sf *scfState, sfbWidths *[22]int, ix *[576]int32) {
+	i := 0
+	for sfb := range 22 {
+		is := stepQ((quantGainBase - gg) + sf.bandExtraQuarters(sfb))
+		end := i + sfbWidths[sfb]
+		for ; i < end; i++ {
+			t := math.Abs(xr[i]) * is
+			v := math.Sqrt(t * math.Sqrt(t))
 
-		var m int32
-		if nint := v + 0.4054; nint <= float64(maxQuant) {
-			m = int32(nint)
-		} else {
-			m = maxQuant
-		}
+			var m int32
+			if nint := v + 0.4054; nint <= float64(maxQuant) {
+				m = int32(nint)
+			} else {
+				m = maxQuant
+			}
 
-		if xr[i] < 0 {
-			m = -m
+			if xr[i] < 0 {
+				m = -m
+			}
+			ix[i] = m
 		}
-		ix[i] = m
 	}
 }
 
-// minGlobalGain returns the smallest gg (0..255) that keeps every |ix| <=
-// maxQuant when xr is quantized at that gg. invStep(gg) is monotonically
-// non-increasing in gg, so the quantized magnitude of the single largest
-// |xr| value is monotonically non-increasing too (TestQuantizeMonotone
-// confirms this holds for every line, not just the largest); the first gg
-// that clears the bound for that largest magnitude therefore clears it for
-// every line. Bounded by 256 iterations of scalar work.
+// minGlobalGain returns the smallest gg (0..255) that keeps every amplified
+// line's quantized magnitude within maxQuant under sf, scanning per band
+// with that band's own worst-case |xr|. bandExtraQuarters can vary the
+// effective step from band to band, so the single loudest line in the whole
+// spectrum no longer determines the bound by itself (as it did in Phase 3,
+// where every band shared the same step): minGlobalGain tracks each band's
+// own worst-case line and requires the returned gg to clear every band's
+// bound, not just the globally loudest one.
+//
+// stepQ(...) is monotonically non-increasing in gg for any fixed extra, so
+// each band's worst-case quantized magnitude is itself monotonically
+// non-increasing in gg (the same reasoning TestQuantizeMonotone established
+// for Phase 3's uniform step); the first gg that clears every band's bound
+// is therefore also the smallest. Bounded by 256 iterations of scalar work,
+// same as Phase 3.
 //
 // Like quantizeGranule, the bound check compares in float64 before any
 // int32 conversion, for the same overflow-avoidance reason.
-func minGlobalGain(xr *[576]float64) int {
-	maxAbs := 0.0
-	for _, x := range xr {
-		if a := math.Abs(x); a > maxAbs {
-			maxAbs = a
+func minGlobalGain(xr *[576]float64, sf *scfState, sfbWidths *[22]int) int {
+	var bandMax [22]float64
+	i := 0
+	for sfb := range 22 {
+		m := 0.0
+		end := i + sfbWidths[sfb]
+		for ; i < end; i++ {
+			if a := math.Abs(xr[i]); a > m {
+				m = a
+			}
 		}
+		bandMax[sfb] = m
 	}
 
 	for gg := range 256 {
-		t := maxAbs * invStep(gg)
-		v := math.Sqrt(t * math.Sqrt(t))
-		if v+0.4054 <= float64(maxQuant) {
+		fits := true
+		for sfb := range 22 {
+			is := stepQ((quantGainBase - gg) + sf.bandExtraQuarters(sfb))
+			t := bandMax[sfb] * is
+			v := math.Sqrt(t * math.Sqrt(t))
+			if v+0.4054 > float64(maxQuant) {
+				fits = false
+				break
+			}
+		}
+		if fits {
 			return gg
 		}
 	}
 	return 255
+}
+
+// noiseGranule measures quantization noise energy per band: for each band
+// sfb, the sum over the band's lines of (|xr[i]| - pow43[|ix[i]|] *
+// stepQ((gg-quantGainBase)-sf.bandExtraQuarters(sfb)))^2. The stepQ argument
+// is the exact negation of quantizeGranule's own per-band exponent, so
+// stepQ((gg-quantGainBase)-extra) is the exact inverse of the step that
+// produced ix: pow43[|ix[i]|]*that inverse is the dequantized magnitude the
+// decoder would reconstruct at this gg and sf, not an approximation.
+//
+// The dequant-error arithmetic (pow43 lookup, difference, square, running
+// sum) is FMA-blocked: float64(diff*diff) forces the squared difference to
+// round to float64 before the running sum's addition, so the result is
+// bit-identical on amd64 and arm64 regardless of whether the compiler would
+// otherwise fuse the multiply-add (see quantGainBase's doc comment, and the
+// package's determinism rule, for why this matters).
+func noiseGranule(xr *[576]float64, ix *[576]int32, gg int, sf *scfState, sfbWidths *[22]int, noise *[22]float64) {
+	i := 0
+	for sfb := range 22 {
+		inv := stepQ((gg - quantGainBase) - sf.bandExtraQuarters(sfb))
+		end := i + sfbWidths[sfb]
+		sum := 0.0
+		for ; i < end; i++ {
+			dequant := float64(pow43[abs32(ix[i])] * inv)
+			diff := math.Abs(xr[i]) - dequant
+			sum += float64(diff * diff)
+		}
+		noise[sfb] = sum
+	}
 }
 
 // spectrumPartition is the rzero/count1/big-values split of a quantized
@@ -163,7 +262,8 @@ func partitionSpectrum(ix *[576]int32) spectrumPartition {
 	return spectrumPartition{bigValues: i / 2, count1: count1}
 }
 
-// abs32 is the int32 absolute value used by partitionSpectrum's quad scan.
+// abs32 is the int32 absolute value used by partitionSpectrum's quad scan
+// and noiseGranule's pow43 lookup.
 func abs32(v int32) int32 {
 	if v < 0 {
 		return -v

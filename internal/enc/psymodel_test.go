@@ -431,6 +431,24 @@ func sineGen(bin int, amp float64) func(int, []float64) {
 	}
 }
 
+// toneFS4 is a bit-portable steady tone at fs/4 (bin 256 of the 1024-point
+// analysis). cos(2*pi*(fs/4)*n/fs) = cos(pi*n/2) folds to the EXACT sequence
+// [1, 0, -1, 0][n mod 4], so the generated PCM contains no libm cos and is
+// bit-identical on every architecture (amd64 and arm64 differ by ~1 ulp in
+// math.Cos). The frozen PsyModel golden hashes its output, so its tone input
+// must be cross-arch exact; a plain amp*{1,0,-1} product is a bare multiply
+// (no add to fuse) and stays exact. The hop of 576 is a multiple of 4, so the
+// tone is phase-locked granule to granule: a perfectly steady, tonal input.
+func toneFS4(amp float64) func(int, []float64) {
+	quarter := [4]float64{1, 0, -1, 0}
+	return func(g int, pcm []float64) {
+		for i := range pcm {
+			n := g*576 + i
+			pcm[i] = amp * quarter[n&3]
+		}
+	}
+}
+
 func noiseGen(seed uint64) func(int, []float64) {
 	s := seed
 	return func(_ int, pcm []float64) {
@@ -656,7 +674,7 @@ func TestPsyModelEnergyMonotone(t *testing.T) {
 	}
 }
 
-const psyModelGoldenSHA = "320819bacd64361bb9dd6d2bcef57bbd1572dc465d20be74569b7a3af5b679e5" // FROZEN in Task 4 Step 4
+const psyModelGoldenSHA = "7f9a7876b404fecead2ab1c1f2f10aa61dd0b2d612a15c6c3113c48155799e40" // FROZEN in Task 4 Step 4 (bit-portable fs/4 tone input)
 
 func TestPsyModelGolden(t *testing.T) {
 	// Three programs x three rates: LCG noise, a steady tone, and a
@@ -676,7 +694,7 @@ func TestPsyModelGolden(t *testing.T) {
 						pcm[i] = testsignal.LCGSigned(&seed) * 0.6
 					}
 				case 1:
-					sineGen(100, 0.5)(g, pcm)
+					toneFS4(0.5)(g, pcm)
 				case 2:
 					clear(pcm)
 					if g == 3 {

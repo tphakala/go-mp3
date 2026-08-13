@@ -109,9 +109,18 @@ func TestHannWindowsKnownAnswer(t *testing.T) {
 			}
 		}
 		for i := 0; i <= c.n/2; i++ {
+			// closeToFormula (not a raw ulp bound): the reference chains
+			// several roundings (2*pi*i/N, then math.Cos, then two more
+			// mults and a subtract), and math.Cos is not bit-identical
+			// across amd64 and arm64, so the recompute lands up to ~2 ulp
+			// from the committed literal on arm64 (e.g. w[154] at N=1024).
+			// The literal is the runtime truth, frozen by the checksum and
+			// symmetry checks above; this only proves the transcription. The
+			// 1e-12 absolute tolerance also sidesteps ulpDistance's cap of 4,
+			// which would mask a >4 ulp divergence.
 			want := norm * 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(c.n)))
-			if d := ulpDistance(c.w[i], want); d > 1 {
-				t.Errorf("N=%d w[%d]: %d ulp from the closed form", c.n, i, d)
+			if !closeToFormula(c.w[i], want) {
+				t.Errorf("N=%d w[%d] = %x: not close to closed form %x", c.n, i, c.w[i], want)
 			}
 		}
 	}

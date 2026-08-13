@@ -6,14 +6,9 @@ import (
 	"errors"
 	"math"
 	"testing"
-)
 
-// lcgEncoderTest is the shared PCG-style LCG generator used across this
-// project's encoder tests (same recurrence as frame_test.go/mdct_test.go).
-func lcgEncoderTest(seed *uint64) float64 {
-	*seed = *seed*6364136223846793005 + 1442695040888963407
-	return float64(*seed>>11) / float64(1<<53)
-}
+	"github.com/tphakala/go-mp3/internal/testsignal"
+)
 
 // planarSamples builds an nch x 1152 planar float32 buffer of LCG noise at
 // the given amplitude (kept within [-1,1] so it needs no clamp to exercise
@@ -23,7 +18,7 @@ func planarSamples(seed *uint64, nch int, amp float32) [][]float32 {
 	for ch := range nch {
 		out[ch] = make([]float32, 1152)
 		for i := range out[ch] {
-			v := float32(lcgEncoderTest(seed))*2 - 1
+			v := float32(testsignal.LCG(seed))*2 - 1
 			out[ch][i] = v * amp
 		}
 	}
@@ -68,6 +63,14 @@ func TestEncoderConfigValidate(t *testing.T) {
 	})
 }
 
+// bitrateIndex128kbps is the ISO/IEC 11172-3 Table B.1 header bitrate_index
+// for 128 kbps, spelled as an independent literal (not bitrateIndexForKbps[128])
+// so TestEncoderFrameSizes cross-checks the production frame-length math
+// against a hand-pinned index instead of the encoder's own map. Using the map
+// would be tautological: a wrong entry would shift want and len(dst) together
+// and pass.
+const bitrateIndex128kbps = 9
+
 // TestEncoderFrameSizes checks that 40 frames at 44.1kHz/128kbps/stereo
 // produce lengths in {417,418} matching the padding accumulator's exact
 // pattern, and that 48kHz frames (which never pad, per paddingState's doc
@@ -88,7 +91,7 @@ func TestEncoderFrameSizes(t *testing.T) {
 				t.Fatalf("frame %d: EncodeFrame: %v", f, err)
 			}
 			wantPad := pad.next(128, 44100)
-			want := frameLength(kbpsToIndexEncoderTest(128), 0, wantPad)
+			want := frameLength(bitrateIndex128kbps, 0, wantPad)
 			if len(dst) != want {
 				t.Fatalf("frame %d: len = %d, want %d (padding=%d)", f, len(dst), want, wantPad)
 			}
@@ -104,7 +107,7 @@ func TestEncoderFrameSizes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
-		want := frameLength(kbpsToIndexEncoderTest(128), 1, 0)
+		want := frameLength(bitrateIndex128kbps, 1, 0)
 		seed := uint64(2)
 		for f := range 20 {
 			samples := planarSamples(&seed, 2, 0.5)
@@ -117,17 +120,6 @@ func TestEncoderFrameSizes(t *testing.T) {
 			}
 		}
 	})
-}
-
-// kbpsToIndexEncoderTest mirrors bitrateKbpsTable's inverse for this test
-// file only (a small hand-specified map, independent of encoder.go's own
-// table, so this test does not just check the table against itself).
-func kbpsToIndexEncoderTest(kbps int) int {
-	m := map[int]int{
-		32: 1, 40: 2, 48: 3, 56: 4, 64: 5, 80: 6, 96: 7,
-		112: 8, 128: 9, 160: 10, 192: 11, 224: 12, 256: 13, 320: 14,
-	}
-	return m[kbps]
 }
 
 // TestEncoderDrain requires that after N audio frames, one nil call appends

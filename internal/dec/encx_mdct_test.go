@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/tphakala/go-mp3/internal/enc"
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // ulp32Distance walks the float32 sequence from a towards b with
@@ -95,15 +96,6 @@ func TestEncMdctWindowMatchesDec(t *testing.T) {
 	}
 }
 
-// lcgFloat is the shared PCG-style LCG used across this project's fuzz-ish
-// determinism tests (see internal/enc/filterbank_test.go's TestFBGolden and
-// internal/bits/writer_test.go): it returns a pseudo-random float64 in
-// [-1, 1) and advances seed.
-func lcgFloat(seed *uint64) float64 {
-	*seed = *seed*6364136223846793005 + 1442695040888963407
-	return (float64(*seed>>11)/float64(1<<53))*2 - 1
-}
-
 // TestEncAliasCancellation checks that the decoder's l3Antialias exactly
 // undoes enc.AliasReduce: apply the encoder butterflies to LCG-random
 // spectral lines, run the decoder's inverse butterflies on a float32 copy,
@@ -114,7 +106,7 @@ func TestEncAliasCancellation(t *testing.T) {
 	var seed uint64 = 1
 	var xr, want [576]float64
 	for i := range xr {
-		xr[i] = lcgFloat(&seed)
+		xr[i] = testsignal.LCGSigned(&seed)
 		want[i] = xr[i]
 	}
 
@@ -165,7 +157,7 @@ func TestEncMdctTDACRoundTrip(t *testing.T) {
 	for g := range granules {
 		for tt := range 18 {
 			for b := range 32 {
-				raws[g][tt][b] = lcgFloat(&seed)
+				raws[g][tt][b] = testsignal.LCGSigned(&seed)
 			}
 		}
 	}

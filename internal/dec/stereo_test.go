@@ -47,19 +47,6 @@ func TestStereoTablesMatchOracle(t *testing.T) {
 	}
 }
 
-// compareGrbuf576 fails t if got and want disagree anywhere in their
-// first 576 float32 bit patterns, identifying the mismatch by fixture,
-// frame position, granule, channel and dump stage.
-func compareGrbuf576(t *testing.T, fx string, pos, gr, ch int, stage string, got, want []float32) {
-	t.Helper()
-	for i := range 576 {
-		if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
-			t.Fatalf("%s: frame at %d granule %d ch %d %s[%d] = %08x, want %08x",
-				fx, pos, gr, ch, stage, i, math.Float32bits(got[i]), math.Float32bits(want[i]))
-		}
-	}
-}
-
 // decodeHuffmanGranule runs l3ReadScalefactors and l3Huffman for each of
 // the granule's nch channels (mirroring upstream L3_decode's first
 // per-channel loop, tools/oracle/minimp3.h:1242-1247), comparing each
@@ -83,7 +70,7 @@ func decodeHuffmanGranule(t *testing.T, fx string, pos, gr, nch int, hdr []byte,
 		}
 
 		l3Huffman(grbuf[ch][:], mainBS, gi, scf[:], layer3grLimit)
-		compareGrbuf576(t, fx, pos, gr, ch, "grbuf_huff", grbuf[ch][:], huffRecs[idx].F32)
+		compareFloatsBitExact(t, fx, pos, gr, ch, "grbuf_huff", grbuf[ch][:], huffRecs[idx].F32, 576)
 	}
 
 	return grbuf
@@ -130,7 +117,7 @@ func stereoReorderAntialiasGranule(t *testing.T, fx string, pos, gr, nch int, hd
 		if idx >= len(preRecs) {
 			t.Fatalf("%s: frame at %d granule %d ch %d: ran out of grbuf_pre_imdct records", fx, pos, gr, ch)
 		}
-		compareGrbuf576(t, fx, pos, gr, ch, "grbuf_pre_imdct", grbuf[ch][:], preRecs[idx].F32)
+		compareFloatsBitExact(t, fx, pos, gr, ch, "grbuf_pre_imdct", grbuf[ch][:], preRecs[idx].F32, 576)
 	}
 }
 

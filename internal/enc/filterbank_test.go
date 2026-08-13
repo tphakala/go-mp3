@@ -1,11 +1,10 @@
 package enc
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"math"
 	"testing"
+
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // TestFBMatrixKnownAnswer recomputes every fbMatrix[b][j] with math.Cos and
@@ -69,14 +68,7 @@ func closeToFormula(got, want float64) bool {
 func TestFBWindowChecksum(t *testing.T) {
 	const wantHex = "7995d3fca1baed4209c9d0d609a8c8db3a024967498685731ed78e782e43178b"
 
-	h := sha256.New()
-	var buf8 [8]byte
-	for _, v := range fbWindow {
-		binary.LittleEndian.PutUint64(buf8[:], math.Float64bits(v))
-		h.Write(buf8[:])
-	}
-
-	got := hex.EncodeToString(h.Sum(nil))
+	got := sha256Float64s(fbWindow[:]...)
 	if got != wantHex {
 		t.Fatalf("fbWindow checksum = %s, want %s", got, wantHex)
 	}
@@ -124,12 +116,19 @@ func TestFBWindowStructure(t *testing.T) {
 // level. A single wrong window digit of meaningful magnitude breaks the
 // stopband and fails this test long before TestReconstructionGate would
 // catch it.
+//
+// Bands 0 and 31 (DC-adjacent and Nyquist-adjacent, with only one interior
+// neighbor) are included alongside the interior bands: measured with
+// `go test -run TestFBSineConcentration -v` plus temporary instrumentation,
+// every band (0, 1, 5, 15, 30, 31) lands at ~100% near-band concentration
+// and a worst-case stopband around -106 dB, both comfortably inside the
+// interior thresholds below, so no per-band relaxation is needed.
 func TestFBSineConcentration(t *testing.T) {
 	const sr = 44100.0
 	const granules = 3
 	const samplesPerGranule = 18 * 32
 
-	for _, b := range []int{1, 5, 15, 30} {
+	for _, b := range []int{0, 1, 5, 15, 30, 31} {
 		freq := (float64(b) + 0.5) * sr / 64
 		var fb Filterbank
 		var outs [granules][18][32]float64
@@ -200,8 +199,7 @@ func TestFilterbankReset(t *testing.T) {
 
 	var seed uint64 = 1
 	next := func() float64 {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		return (float64(seed>>11)/float64(1<<53))*2 - 1
+		return testsignal.LCGSigned(&seed)
 	}
 
 	// Warm fb up with nonzero granule history, then reset it.
@@ -244,15 +242,13 @@ func TestFBGolden(t *testing.T) {
 
 	var seed uint64 = 1
 	next := func() float64 {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		return (float64(seed>>11)/float64(1<<53))*2 - 1
+		return testsignal.LCGSigned(&seed)
 	}
 
 	var fb Filterbank
-	h := sha256.New()
-	var buf8 [8]byte
 	var out [18][32]float64
 	in := make([]float64, samplesPerGranule)
+	var vals []float64
 
 	for range granules {
 		for i := range in {
@@ -260,15 +256,12 @@ func TestFBGolden(t *testing.T) {
 		}
 		fb.AnalyzeGranule(in, &out)
 		for _, row := range out {
-			for _, v := range row {
-				binary.LittleEndian.PutUint64(buf8[:], math.Float64bits(v))
-				h.Write(buf8[:])
-			}
+			vals = append(vals, row[:]...)
 		}
 	}
 
 	const wantHex = "593b5f4c950fa16ba359b1c241d51ffb2ccd2abc6a3a3520bec91dd4f4f1a311"
-	got := hex.EncodeToString(h.Sum(nil))
+	got := sha256Float64s(vals...)
 	if got != wantHex {
 		t.Fatalf("TestFBGolden checksum = %s, want %s", got, wantHex)
 	}

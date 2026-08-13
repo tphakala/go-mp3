@@ -1,6 +1,10 @@
 package enc
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/tphakala/go-mp3/internal/testsignal"
+)
 
 // TestFrameHeaderKnownBytes hand-computes the packed header bytes for a
 // small grid of cases and checks frameHeader against them bit by bit, never
@@ -97,13 +101,6 @@ func TestPaddingAccumulator(t *testing.T) {
 	})
 }
 
-// lcgFrameTest is the shared PCG-style LCG generator used across this
-// project's encoder tests (same recurrence as mdct_test.go/quantize_test.go).
-func lcgFrameTest(seed *uint64) float64 {
-	*seed = *seed*6364136223846793005 + 1442695040888963407
-	return float64(*seed>>11) / float64(1<<53)
-}
-
 // fullScaleSpectrum builds a 576-line LCG spectrum tapered toward the tail
 // (so partitionSpectrum sometimes finds a nonempty count1/rzero region) but
 // scaled to amp at the low-frequency end, which quantizeGranule and
@@ -112,8 +109,8 @@ func fullScaleSpectrum(seed *uint64, amp float64) [576]float64 {
 	var xr [576]float64
 	for i := range xr {
 		frac := float64(576-i) / 576
-		v := lcgFrameTest(seed) * amp * frac
-		if lcgFrameTest(seed) < 0.5 {
+		v := testsignal.LCG(seed) * amp * frac
+		if testsignal.LCG(seed) < 0.5 {
 			v = -v
 		}
 		xr[i] = v

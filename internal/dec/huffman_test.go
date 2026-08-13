@@ -105,7 +105,7 @@ func TestL3HuffmanMatchesOracle(t *testing.T) {
 				mainBS, mainData, ok := l3RestoreReservoir(&res, &bs, bsData, mainDataBegin, maindata)
 				if ok {
 					for g := range grCount {
-						ch := g % nch
+						gr, ch := g/nch, g%nch
 						gi := &grBuf[g]
 						layer3grLimit := mainBS.Pos() + int(gi.part23Length)
 
@@ -124,12 +124,7 @@ func TestL3HuffmanMatchesOracle(t *testing.T) {
 
 						rec := huffRecs[ci]
 						ci++
-						for i := range 576 {
-							if math.Float32bits(dst[i]) != math.Float32bits(rec.F32[i]) {
-								t.Fatalf("%s: frame at %d granule-ch %d dst[%d] = %08x, want %08x",
-									fx, pos, g, i, math.Float32bits(dst[i]), math.Float32bits(rec.F32[i]))
-							}
-						}
+						compareFloatsBitExact(t, fx, pos, gr, ch, "grbuf_huff", dst[:], rec.F32, 576)
 					}
 				}
 				l3SaveReservoir(&res, mainBS, mainData)

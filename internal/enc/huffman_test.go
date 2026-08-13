@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/tphakala/go-mp3/internal/bits"
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // allHuffCodeTables lists every distinct transcribed ISO Table B.7
@@ -180,8 +181,7 @@ func TestChooseRegionsExhaustiveSmall(t *testing.T) {
 func TestWriteSpectrumBitsMatchCount(t *testing.T) {
 	var seed uint64 = 7
 	next := func() float64 {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		return float64(seed>>11) / float64(1<<53)
+		return testsignal.LCG(&seed)
 	}
 
 	for rate := range 3 {
@@ -224,8 +224,7 @@ func TestWriteSpectrumBitsMatchCount(t *testing.T) {
 func TestHuffmanGolden(t *testing.T) {
 	var seed uint64 = 42
 	next := func() float64 {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		return float64(seed>>11) / float64(1<<53)
+		return testsignal.LCG(&seed)
 	}
 
 	var ix [576]int32

@@ -1,11 +1,10 @@
 package enc
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"math"
 	"testing"
+
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // TestMdctWindowKnownAnswer recomputes every MDCTWindow[i] with math.Sin and
@@ -67,29 +66,15 @@ func TestAliasCoefficientsKnownAnswer(t *testing.T) {
 func TestMdctTablesChecksum(t *testing.T) {
 	const wantHex = "ac9065a7e278e69f5a6c4215a7e672aa16bfeb976eacfe3e740c6d011b40bb58"
 
-	h := sha256.New()
-	var buf8 [8]byte
-	write := func(v float64) {
-		binary.LittleEndian.PutUint64(buf8[:], math.Float64bits(v))
-		h.Write(buf8[:])
-	}
-
-	for _, v := range MDCTWindow {
-		write(v)
-	}
+	var vals []float64
+	vals = append(vals, MDCTWindow[:]...)
 	for _, row := range mdctCos {
-		for _, v := range row {
-			write(v)
-		}
+		vals = append(vals, row[:]...)
 	}
-	for _, v := range AliasCS {
-		write(v)
-	}
-	for _, v := range AliasCA {
-		write(v)
-	}
+	vals = append(vals, AliasCS[:]...)
+	vals = append(vals, AliasCA[:]...)
 
-	got := hex.EncodeToString(h.Sum(nil))
+	got := sha256Float64s(vals...)
 	if got != wantHex {
 		t.Fatalf("mdct tables checksum = %s, want %s", got, wantHex)
 	}
@@ -106,12 +91,10 @@ func TestMdctGolden(t *testing.T) {
 
 	var seed uint64 = 1
 	next := func() float64 {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		return (float64(seed>>11)/float64(1<<53))*2 - 1
+		return testsignal.LCGSigned(&seed)
 	}
 
-	h := sha256.New()
-	var buf8 [8]byte
+	vals := make([]float64, 0, 576*granules)
 
 	var prev [18][32]float64
 	for range granules {
@@ -127,16 +110,13 @@ func TestMdctGolden(t *testing.T) {
 		MDCTGranule(&prev, &cur, &xr)
 		AliasReduce(&xr)
 
-		for _, v := range xr {
-			binary.LittleEndian.PutUint64(buf8[:], math.Float64bits(v))
-			h.Write(buf8[:])
-		}
+		vals = append(vals, xr[:]...)
 
 		prev = cur
 	}
 
 	const wantHex = "4281aa40cdf26eb1a7ea0489d53fcca561bd5c26de62115993599609f92956e0"
-	got := hex.EncodeToString(h.Sum(nil))
+	got := sha256Float64s(vals...)
 	if got != wantHex {
 		t.Fatalf("TestMdctGolden checksum = %s, want %s", got, wantHex)
 	}

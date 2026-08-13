@@ -141,12 +141,14 @@ func TestQuantizeMonotone(t *testing.T) {
 // rawQuant is an independent, unclamped reference for the quantized
 // magnitude at a given gg, used to test minGlobalGain's boundary without
 // relying on quantizeGranule's own hard clamp (which by design can never
-// report a value "exceeding" maxQuant). The 214 constant mirrors invStep's
-// own quantGainBase (quantize.go): see its doc comment for why 214, not
-// the textbook ISO 210, is the value this encoder's decoder actually
-// dequantizes against.
+// report a value "exceeding" maxQuant). It reuses invStep's own
+// quantGainBase constant (quantize.go) rather than a duplicated literal,
+// so this oracle cannot silently drift out of sync with the production
+// value if quantGainBase is ever re-measured; see quantGainBase's doc
+// comment for why 214, not the textbook ISO 210, is the value this
+// encoder's decoder actually dequantizes against.
 func rawQuant(xrAbs float64, gg int) float64 {
-	t := xrAbs * math.Pow(2, float64(214-gg)/4.0)
+	t := xrAbs * math.Pow(2, float64(quantGainBase-gg)/4.0)
 	v := math.Pow(t, 0.75)
 	return math.Floor(v - 0.0946 + 0.5)
 }

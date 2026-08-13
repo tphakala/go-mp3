@@ -267,11 +267,12 @@ func (e *Encoder) Stats() Stats {
 // per channel: decoding this encoder's output reproduces the input shifted
 // by exactly this many samples. Measured once at 44.1kHz/320kbps/mono by
 // cross-correlating a deterministic multi-tone input against the decoded
-// output (internal/dec/encx_roundtrip_test.go, TestEncoderChainDelay, peak
-// of the normalized cross-correlation over a lag window of [0, 2304)):
-// 1057 samples, exactly the predicted 1057 = 576 (one granule of MDCT
-// prev-history buffering: MDCTGranule needs the PRECEDING granule's
-// subband samples before it emits the first granule's true output) + 481
+// output (internal/dec/encx_roundtrip_test.go, TestEncoderChainDelay: the
+// lag that maximizes the raw, unnormalized input-vs-output dot product,
+// over a lag window of [0, 2304)): 1057 samples, exactly the predicted
+// 1057 = 576 (one granule of MDCT prev-history buffering: MDCTGranule
+// needs the PRECEDING granule's subband samples before it emits the first
+// granule's true output) + 481
 // (the analysis+synthesis polyphase filterbank chain delay, frozen as
 // fbChainDelay in internal/dec/encx_filterbank_test.go:90). ChainDelay <
 // 1152 is asserted alongside the measurement: it is what makes the

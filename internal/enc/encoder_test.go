@@ -169,48 +169,76 @@ func TestEncoderDrain(t *testing.T) {
 	}
 }
 
-// TestEncoderNaN requires a NaN anywhere in samples to return
-// ErrInvalidAudio, append nothing, and poison the encoder until Reset.
+// TestEncoderNaN requires a NaN OR an Inf (+Inf and -Inf both checked)
+// anywhere in samples to return ErrInvalidAudio, append nothing, and
+// poison the encoder until Reset. Each bad value sits at an interior
+// channel/sample index (not the first or last of either), matching how a
+// real corrupt-upstream sample would arrive. Without dedicated Inf
+// coverage, deleting the `|| math.IsInf(f, 0)` half of EncodeFrame's guard
+// would leave this suite green while an Inf silently clamped to 1.0
+// instead of poisoning; each subtest below exercises the full contract
+// (reject, append nothing, poison persists across a subsequent clean call
+// and a nil drain call, Reset clears it) for its own bad value.
 func TestEncoderNaN(t *testing.T) {
-	cfg := Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128}
-	e, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	seed := uint64(4)
-	samples := planarSamples(&seed, 2, 0.5)
-	samples[1][500] = float32(math.NaN())
-
-	dst, err := e.EncodeFrame(nil, samples)
-	if !errors.Is(err, ErrInvalidAudio) {
-		t.Fatalf("EncodeFrame with NaN: err = %v, want ErrInvalidAudio", err)
-	}
-	if len(dst) != 0 {
-		t.Fatalf("EncodeFrame with NaN: appended %d bytes, want 0", len(dst))
+	cases := []struct {
+		name    string
+		ch, idx int
+		bad     float32
+	}{
+		{"NaN", 1, 500, float32(math.NaN())},
+		{"PositiveInf", 0, 300, float32(math.Inf(1))},
+		{"NegativeInf", 1, 800, float32(math.Inf(-1))},
 	}
 
-	// Poisoned: even clean input now fails.
-	clean := planarSamples(&seed, 2, 0.5)
-	if _, err := e.EncodeFrame(nil, clean); !errors.Is(err, ErrInvalidAudio) {
-		t.Fatalf("EncodeFrame after poison: err = %v, want ErrInvalidAudio", err)
-	}
-	// Poisoned: nil drain call also fails.
-	if _, err := e.EncodeFrame(nil, nil); !errors.Is(err, ErrInvalidAudio) {
-		t.Fatalf("drain EncodeFrame after poison: err = %v, want ErrInvalidAudio", err)
-	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128}
+			e, err := New(cfg)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			seed := uint64(4)
+			samples := planarSamples(&seed, 2, 0.5)
+			samples[c.ch][c.idx] = c.bad
 
-	if err := e.Reset(cfg); err != nil {
-		t.Fatalf("Reset: %v", err)
-	}
-	if _, err := e.EncodeFrame(nil, clean); err != nil {
-		t.Fatalf("EncodeFrame after Reset: %v", err)
+			dst, err := e.EncodeFrame(nil, samples)
+			if !errors.Is(err, ErrInvalidAudio) {
+				t.Fatalf("EncodeFrame with %s: err = %v, want ErrInvalidAudio", c.name, err)
+			}
+			if len(dst) != 0 {
+				t.Fatalf("EncodeFrame with %s: appended %d bytes, want 0", c.name, len(dst))
+			}
+
+			// Poisoned: even clean input now fails.
+			clean := planarSamples(&seed, 2, 0.5)
+			if _, err := e.EncodeFrame(nil, clean); !errors.Is(err, ErrInvalidAudio) {
+				t.Fatalf("EncodeFrame after %s poison: err = %v, want ErrInvalidAudio", c.name, err)
+			}
+			// Poisoned: nil drain call also fails.
+			if _, err := e.EncodeFrame(nil, nil); !errors.Is(err, ErrInvalidAudio) {
+				t.Fatalf("drain EncodeFrame after %s poison: err = %v, want ErrInvalidAudio", c.name, err)
+			}
+
+			if err := e.Reset(cfg); err != nil {
+				t.Fatalf("Reset: %v", err)
+			}
+			if _, err := e.EncodeFrame(nil, clean); err != nil {
+				t.Fatalf("EncodeFrame after Reset (%s): %v", c.name, err)
+			}
+		})
 	}
 }
 
 // TestEncoderClampsLoudInput requires a granule of +-1e9 samples to encode
-// without error into structurally valid frames: the ingest clamp to [-1,1]
-// plus the Task 4 maxQuant clamp both hold, so no Huffman-table lookup can
-// fail regardless of how loud the finite input is.
+// without error: err == nil across 5 consecutive frames is what this test
+// actually checks. It does not itself decode or otherwise verify frame
+// structure (that is TestEncoderStructuralGrid's and
+// TestEncoderRoundTripSNR's job, in internal/dec, over real Encoder
+// output); what err == nil here proves is that the ingest clamp to [-1,1]
+// plus the Task 4 maxQuant=8206 clamp both hold, so no Huffman-table
+// lookup can ever fail (which would otherwise be the only way
+// EncodeFrame could return a non-nil error or panic on finite input),
+// regardless of how loud the finite input is.
 func TestEncoderClampsLoudInput(t *testing.T) {
 	cfg := Config{SampleRate: 44100, Channels: 2, BitrateKbps: 320}
 	e, err := New(cfg)
@@ -265,9 +293,28 @@ func TestEncoderStatsCount(t *testing.T) {
 	if st.Bytes != int64(len(stream)) {
 		t.Fatalf("Bytes = %d, want %d (len(stream))", st.Bytes, len(stream))
 	}
-	if st.PaddedFrames < 0 || st.PaddedFrames > st.Frames {
-		t.Fatalf("PaddedFrames = %d, out of [0,%d]", st.PaddedFrames, st.Frames)
+
+	// PaddedFrames is exactly derivable: codeFrame calls pad.next once per
+	// EncodeFrame call, including the drain call (codeFrame does not
+	// special-case samples == nil for padding), so an independent
+	// paddingState run over the same nFrames+1 calls at the same
+	// bitrate/sample rate reproduces the encoder's own padding decisions
+	// exactly, not just a plausible range.
+	var pad paddingState
+	wantPadded := int64(0)
+	for range nFrames + 1 {
+		if pad.next(cfg.BitrateKbps, cfg.SampleRate) != 0 {
+			wantPadded++
+		}
 	}
+	if st.PaddedFrames != wantPadded {
+		t.Fatalf("PaddedFrames = %d, want exactly %d (reference paddingState over %d frames)", st.PaddedFrames, wantPadded, nFrames+1)
+	}
+
+	// MeanGlobalGain is not exactly derivable here without re-running the
+	// full rate loop per granule-channel (codeGranule's search path
+	// depends on the LCG noise content, not just frame count/bitrate), so
+	// this stays a range sanity check rather than an exact assertion.
 	if st.MeanGlobalGain < 0 || st.MeanGlobalGain > 255 {
 		t.Fatalf("MeanGlobalGain = %v, out of [0,255]", st.MeanGlobalGain)
 	}

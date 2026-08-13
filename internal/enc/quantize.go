@@ -18,18 +18,43 @@ var pow2Quarter = [4]float64{
 	0x1.ae89f995ad3adp+0,
 }
 
-// invStep returns 2^((210-gg)/4), the per-line multiplier ISO annex C.1.5.4
-// applies before raising the magnitude to the 3/4 power. gg is the global
-// gain (0..255).
+// invStep returns 2^((quantGainBase-gg)/4), the per-line multiplier ISO
+// annex C.1.5.4 applies before raising the magnitude to the 3/4 power. gg
+// is the global gain (0..255).
 //
-// q := 210 - gg splits into an integer part q>>2 (arithmetic shift right,
-// which floors for negative q too) and a remainder q&3 in [0,3] (Go's
-// bitwise AND on the low two bits of a two's complement value is already
-// the non-negative floor-mod, for negative q as well as positive). So
-// pow2Quarter[q&3] scaled by 2^(q>>2) reproduces 2^(q/4) exactly, with no
-// math.Pow call.
+// quantGainBase is 214, not the textbook ISO constant 210: the Task 7
+// full-chain round-trip gate (internal/dec/encx_roundtrip_test.go,
+// TestEncoderRoundTripSNR) discovered that this project's decoder (a
+// faithful port of minimp3, not an abstract ISO reference decoder)
+// dequantizes with gainExp = globalGain - 4 - 210 (internal/dec/
+// scalefactors.go's l3ReadScalefactors: gainExp := int(gr.globalGain) +
+// bitsDequantizerOut*4 - 210 - msAdj, with bitsDequantizerOut = -1), an
+// extra -4 baked into minimp3's own fixed-point convention that the pure
+// textbook formula does not carry. Left uncorrected, the encoder and
+// decoder's exponents diverge by a constant 4 (in quarter-steps), i.e. a
+// factor of 2^(-4/4) = 0.5, on every reconstructed line, independent of
+// gg: TestEncoderRoundTripSNR measured a flat ~6dB SNR ceiling across
+// every bitrate and sample rate before this fix (exactly what a systematic
+// half-amplitude reconstruction predicts: 20*log10(2) = 6.02dB), jumping to
+// 30-78dB after it (see TestEncoderRoundTripSNR's doc comment,
+// internal/dec/encx_roundtrip_test.go, for the full measured ranges). This
+// mirrors PCMScale and mdctScale (filterbank.go, mdct.go): a value the ISO
+// formula alone predicts incorrectly, because
+// minimp3's internal fixed-point conventions don't match the textbook
+// convention exponent-for-exponent, and only an end-to-end round trip
+// against the real decoder can catch it. See PCMScale's doc comment for
+// the same pattern in the filterbank stage.
+//
+// q := quantGainBase - gg splits into an integer part q>>2 (arithmetic
+// shift right, which floors for negative q too) and a remainder q&3 in
+// [0,3] (Go's bitwise AND on the low two bits of a two's complement value
+// is already the non-negative floor-mod, for negative q as well as
+// positive). So pow2Quarter[q&3] scaled by 2^(q>>2) reproduces 2^(q/4)
+// exactly, with no math.Pow call.
+const quantGainBase = 214
+
 func invStep(gg int) float64 {
-	q := 210 - gg
+	q := quantGainBase - gg
 	return math.Ldexp(pow2Quarter[q&3], q>>2)
 }
 
@@ -50,7 +75,7 @@ func invStep(gg int) float64 {
 // of how gg was chosen, so no line is ever uncodeable by any Huffman table
 // regardless of the caller. The clamp is applied as a float64 comparison
 // BEFORE the int32 conversion, not as an int32 range check after it: for a
-// low gg (invStep(0) is about 2^52.5) even a modest |xr[i]| makes v land far
+// low gg (invStep(0) is about 2^53.5) even a modest |xr[i]| makes v land far
 // outside int32's range, and converting an out-of-range float64 to int32 is
 // implementation-defined per the Go spec, not merely a theoretical risk
 // here: Task 4's review traced the divergence to the instruction each

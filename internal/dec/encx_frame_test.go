@@ -312,3 +312,78 @@ func TestEncHeaderSampleRateRowMapping(t *testing.T) {
 		}
 	}
 }
+
+// encoderStructuralGridAmplitudes are the LCG-cycled amplitudes
+// runEncoderStructuralGrid drives the real Encoder with, scaled into
+// [-1,1] (the Encoder's documented input domain): silence, quiet, loud,
+// and near-full-scale, so the rate loop exercises easy, moderate, and
+// heavily-compressed granules exactly as structuralGridAmplitudes does for
+// the synthetic-spectrum grid above.
+var encoderStructuralGridAmplitudes = [4]float64{0, 0.02, 0.4, 0.95}
+
+// runEncoderStructuralGrid drives the production enc.Encoder (Task 7)
+// through nFrames real PCM frames plus one drain frame and validates the
+// resulting stream with validateFrames, the same validator
+// TestEncFrameStructuralGrid runs over the synthetic-spectrum
+// AppendFramePin path above. This is the addendum's CF3 requirement
+// (section d): the structural invariants must hold for the real end-to-end
+// PCM-in/MP3-out pipeline, not only for hand-built spectra.
+func runEncoderStructuralGrid(t *testing.T, sampleRate, kbps, nch, nFrames int) {
+	t.Helper()
+
+	e, err := enc.New(enc.Config{SampleRate: sampleRate, Channels: nch, BitrateKbps: kbps})
+	if err != nil {
+		t.Fatalf("enc.New: %v", err)
+	}
+
+	seed := uint64(sampleRate)<<32 | uint64(kbps)<<8 | uint64(nch)
+
+	var stream []byte
+	for f := range nFrames {
+		amp := encoderStructuralGridAmplitudes[f%len(encoderStructuralGridAmplitudes)]
+		samples := make([][]float32, nch)
+		for ch := range nch {
+			samples[ch] = make([]float32, 1152)
+			for i := range 1152 {
+				v := lcgStructural(&seed)*2 - 1
+				samples[ch][i] = float32(v * amp)
+			}
+		}
+		stream, err = e.EncodeFrame(stream, samples)
+		if err != nil {
+			t.Fatalf("frame %d: EncodeFrame: %v", f, err)
+		}
+	}
+	stream, err = e.EncodeFrame(stream, nil) // drain: one extra frame
+	if err != nil {
+		t.Fatalf("drain: EncodeFrame: %v", err)
+	}
+
+	validateFrames(t, stream, sampleRate, kbps, nch, nFrames+1)
+}
+
+// TestEncoderStructuralGrid reruns TestEncFrameStructuralGrid's grid (every
+// sample rate x bitrate in {32,128,320} x mono/stereo) through the real
+// Task 7 Encoder instead of the synthetic AppendFramePin spectra, closing
+// the addendum's CF3 gap: the structural validator must also see real
+// PCM-in/MP3-out output, not just hand-built granule spectra.
+func TestEncoderStructuralGrid(t *testing.T) {
+	sampleRates := [3]int{44100, 48000, 32000}
+	modes := []struct {
+		mode int
+		nch  int
+	}{
+		{0, 2}, // stereo
+		{3, 1}, // single_channel
+	}
+
+	for sr := range 3 {
+		for _, kbps := range []int{32, 128, 320} {
+			for _, m := range modes {
+				t.Run(fmt.Sprintf("sr%d_kbps%d_nch%d", sampleRates[sr], kbps, m.nch), func(t *testing.T) {
+					runEncoderStructuralGrid(t, sampleRates[sr], kbps, m.nch, 20)
+				})
+			}
+		}
+	}
+}

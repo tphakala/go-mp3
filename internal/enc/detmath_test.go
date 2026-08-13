@@ -178,8 +178,8 @@ func TestPlogMatchesMathLog(t *testing.T) {
 	// Full normal exponent range, LCG-composed (deterministic).
 	seed := uint64(1)
 	for range 300000 {
-		m := 0.5 + testsignal.LCG(&seed)/2                // [0.5, 1)
-		e := int(testsignal.LCG(&seed)*2100) - 1050       // [-1050, 1050)
+		m := 0.5 + testsignal.LCG(&seed)/2          // [0.5, 1)
+		e := int(testsignal.LCG(&seed)*2100) - 1050 // [-1050, 1050)
 		x := math.Ldexp(m, e)
 		if x < 2.2250738585072014e-308 || math.IsInf(x, 0) {
 			continue // subnormal/overflow: covered by TestPlogSubnormalIdentity
@@ -216,9 +216,9 @@ func TestPlogSubnormalIdentity(t *testing.T) {
 				x, got, want, r)
 		}
 	}
-	check(math.SmallestNonzeroFloat64)                  // 5e-324 = 2^-1074
-	check(math.Float64frombits(0x000FFFFFFFFFFFFF))     // largest subnormal
-	check(math.Float64frombits(0x2adecac52eb))          // the plan-time probe value
+	check(math.SmallestNonzeroFloat64)              // 5e-324 = 2^-1074
+	check(math.Float64frombits(0x000FFFFFFFFFFFFF)) // largest subnormal
+	check(math.Float64frombits(0x2adecac52eb))      // the plan-time probe value
 	seed := uint64(7)
 	for range 100000 {
 		m := 0.5 + testsignal.LCG(&seed)/2

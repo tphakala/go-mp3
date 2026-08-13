@@ -48,10 +48,23 @@ func TestEncLinbitsMatchDec(t *testing.T) {
 
 // validEncBigTables lists every real (non-alias, non-invalid) big-values
 // codebook number the round-trip gate must cover: every populated
-// bigTables entry except the invalid slots 4 and 14 (1-3, 5-13, 15-31).
-var validEncBigTables = []int{
-	1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15,
-	16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+// bigTables entry (enc.BigTableDim != 0) for t in 1..31. Table 0 is
+// deliberately excluded (dim 1, encodes only zeros; TestEncTable0RoundTrip
+// covers it separately, and this round-trip loop starts at 1); the
+// invalid slots 4 and 14 (zero-value huffTable, dim 0) fall out naturally.
+var validEncBigTables = deriveValidEncBigTables()
+
+// deriveValidEncBigTables computes validEncBigTables from the encoder's own
+// bigTables shape data rather than a hand-maintained literal, so the set
+// can never drift from what the encoder actually implements.
+func deriveValidEncBigTables() []int {
+	var tables []int
+	for t := 1; t < 32; t++ {
+		if enc.BigTableDim(t) != 0 {
+			tables = append(tables, t)
+		}
+	}
+	return tables
 }
 
 // recoverIx recovers a Huffman-decoded dequantized sample's original
@@ -114,6 +127,16 @@ func buildBigDomainPairs(tnum int) [][2]int32 {
 			seen[m] = true
 			pairs = append(pairs, [2]int32{m * nextSign(), m * nextSign()})
 		}
+
+		// Mixed direct/escape pairs: one coordinate stays inside the
+		// direct region, the other sits at the escape-magnitude ceiling.
+		// Every escape-capable table has dim=16 (hufftables.go), so
+		// smallDirect=1 is always strictly inside the direct region.
+		const smallDirect = int32(1)
+		pairs = append(pairs,
+			[2]int32{smallDirect * nextSign(), maxEsc * nextSign()},
+			[2]int32{maxEsc * nextSign(), smallDirect * nextSign()},
+		)
 	}
 
 	return pairs

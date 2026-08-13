@@ -83,7 +83,7 @@ func TestEncoderFrameSizes(t *testing.T) {
 				t.Fatalf("frame %d: EncodeFrame: %v", f, err)
 			}
 			wantPad := pad.next(128, 44100)
-			want := frameLength(kbpsToIndexEncoderTest(128), 0, wantPad)
+			want := frameLength(bitrateIndexForKbps[128], 0, wantPad)
 			if len(dst) != want {
 				t.Fatalf("frame %d: len = %d, want %d (padding=%d)", f, len(dst), want, wantPad)
 			}
@@ -99,7 +99,7 @@ func TestEncoderFrameSizes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
-		want := frameLength(kbpsToIndexEncoderTest(128), 1, 0)
+		want := frameLength(bitrateIndexForKbps[128], 1, 0)
 		seed := uint64(2)
 		for f := range 20 {
 			samples := planarSamples(&seed, 2, 0.5)
@@ -112,17 +112,6 @@ func TestEncoderFrameSizes(t *testing.T) {
 			}
 		}
 	})
-}
-
-// kbpsToIndexEncoderTest mirrors bitrateKbpsTable's inverse for this test
-// file only (a small hand-specified map, independent of encoder.go's own
-// table, so this test does not just check the table against itself).
-func kbpsToIndexEncoderTest(kbps int) int {
-	m := map[int]int{
-		32: 1, 40: 2, 48: 3, 56: 4, 64: 5, 80: 6, 96: 7,
-		112: 8, 128: 9, 160: 10, 192: 11, 224: 12, 256: 13, 320: 14,
-	}
-	return m[kbps]
 }
 
 // TestEncoderDrain requires that after N audio frames, one nil call appends

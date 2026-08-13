@@ -210,6 +210,46 @@ var kbpsToIndex = map[int]int{
 	112: 8, 128: 9, 160: 10, 192: 11, 224: 12, 256: 13, 320: 14,
 }
 
+// gridMode pairs a side-info channel-mode index (mode) with its channel
+// count (nch): the (stereo, mono) combinations TestEncFrameStructuralGrid
+// and TestEncoderStructuralGrid both grid over.
+type gridMode struct {
+	mode int
+	nch  int
+}
+
+// gridSampleRates, gridBitratesKbps and gridModes are the shared coverage
+// TestEncFrameStructuralGrid and TestEncoderStructuralGrid both sweep via
+// forEachGridCase: every MPEG-1 sample rate x bitrate in {32,128,320} x
+// (stereo, mono).
+var gridSampleRates = [3]int{44100, 48000, 32000}
+
+var gridBitratesKbps = []int{32, 128, 320}
+
+var gridModes = []gridMode{
+	{0, 2}, // stereo
+	{3, 1}, // single_channel
+}
+
+// forEachGridCase drives the sample-rate x bitrate x mode grid shared by
+// TestEncFrameStructuralGrid and TestEncoderStructuralGrid, invoking run as
+// its own subtest for every case, named "sr<Hz>_kbps<kbps>_nch<nch>" (same
+// naming and iteration order both tests used before this helper existed).
+// sr is the MPEG-1 sample-rate index (0=44100, 1=48000, 2=32000, matching
+// srIndex elsewhere in this package); m is the (mode, nch) pair.
+func forEachGridCase(t *testing.T, run func(t *testing.T, sr, kbps int, m gridMode)) {
+	t.Helper()
+	for sr := range 3 {
+		for _, kbps := range gridBitratesKbps {
+			for _, m := range gridModes {
+				t.Run(fmt.Sprintf("sr%d_kbps%d_nch%d", gridSampleRates[sr], kbps, m.nch), func(t *testing.T) {
+					run(t, sr, kbps, m)
+				})
+			}
+		}
+	}
+}
+
 // TestEncFrameStructuralGrid is the no-oracle centerpiece for Task 6: every
 // (sample rate) x (bitrate in {32,128,320}) x (mono,stereo) combination,
 // 20 frames each, run through the production codeGranule/appendFrame pair
@@ -236,24 +276,10 @@ var kbpsToIndex = map[int]int{
 // content. A full 14-bitrate sweep at 44.1 kHz stereo is included
 // separately.
 func TestEncFrameStructuralGrid(t *testing.T) {
-	sampleRates := [3]int{44100, 48000, 32000}
-	modes := []struct {
-		mode int
-		nch  int
-	}{
-		{0, 2}, // stereo
-		{3, 1}, // single_channel
-	}
-
-	for sr := range 3 {
-		for _, kbps := range []int{32, 128, 320} {
-			for _, m := range modes {
-				t.Run(fmt.Sprintf("sr%d_kbps%d_nch%d", sampleRates[sr], kbps, m.nch), func(t *testing.T) {
-					runStructuralGrid(t, sr, kbpsToIndex[kbps], kbps, m.mode, m.nch, 20)
-				})
-			}
-		}
-	}
+	forEachGridCase(t, func(t *testing.T, sr, kbps int, m gridMode) {
+		t.Helper()
+		runStructuralGrid(t, sr, kbpsToIndex[kbps], kbps, m.mode, m.nch, 20)
+	})
 
 	for kbps, idx := range kbpsToIndex {
 		t.Run(fmt.Sprintf("sweep_44100_stereo_kbps%d", kbps), func(t *testing.T) {
@@ -362,22 +388,8 @@ func runEncoderStructuralGrid(t *testing.T, sampleRate, kbps, nch, nFrames int) 
 // the addendum's CF3 gap: the structural validator must also see real
 // PCM-in/MP3-out output, not just hand-built granule spectra.
 func TestEncoderStructuralGrid(t *testing.T) {
-	sampleRates := [3]int{44100, 48000, 32000}
-	modes := []struct {
-		mode int
-		nch  int
-	}{
-		{0, 2}, // stereo
-		{3, 1}, // single_channel
-	}
-
-	for sr := range 3 {
-		for _, kbps := range []int{32, 128, 320} {
-			for _, m := range modes {
-				t.Run(fmt.Sprintf("sr%d_kbps%d_nch%d", sampleRates[sr], kbps, m.nch), func(t *testing.T) {
-					runEncoderStructuralGrid(t, sampleRates[sr], kbps, m.nch, 20)
-				})
-			}
-		}
-	}
+	forEachGridCase(t, func(t *testing.T, sr, kbps int, m gridMode) {
+		t.Helper()
+		runEncoderStructuralGrid(t, gridSampleRates[sr], kbps, m.nch, 20)
+	})
 }

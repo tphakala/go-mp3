@@ -189,8 +189,7 @@ func TestAppendFrameLength(t *testing.T) {
 		for bitrateIndex := 1; bitrateIndex <= 14; bitrateIndex++ {
 			for _, m := range modes {
 				for _, padding := range []int{0, 1} {
-					mainBits := frameLength(bitrateIndex, sr, padding)*8 - 32 - sideInfoBits(m.nch)
-					budget := mainBits / (2 * m.nch)
+					budget := granuleBudgetBits(bitrateIndex, sr, padding, m.nch)
 
 					var gr [2][2]granuleCoding
 					for g := range 2 {

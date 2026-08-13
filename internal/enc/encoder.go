@@ -25,6 +25,14 @@ var bitrateIndexForKbps = map[int]int{
 	112: 8, 128: 9, 160: 10, 192: 11, 224: 12, 256: 13, 320: 14,
 }
 
+// ValidBitrateKbps reports whether kbps is one of the 14 legal MPEG-1 Layer
+// III CBR bitrates, ISO/IEC 11172-3 Table B.1. The single source of truth
+// for bitrate legality: bitrateIndexForKbps's key set.
+func ValidBitrateKbps(kbps int) bool {
+	_, ok := bitrateIndexForKbps[kbps]
+	return ok
+}
+
 // Config is the validated internal encoder configuration.
 type Config struct {
 	SampleRate  int // 32000, 44100, 48000
@@ -43,7 +51,7 @@ func (c Config) validate() error {
 	if c.Channels != 1 && c.Channels != 2 {
 		return fmt.Errorf("go-mp3/enc: invalid channel count %d, want 1 or 2", c.Channels)
 	}
-	if _, ok := bitrateIndexForKbps[c.BitrateKbps]; !ok {
+	if !ValidBitrateKbps(c.BitrateKbps) {
 		return fmt.Errorf("go-mp3/enc: invalid bitrate %d kbps, want one of the 14 MPEG-1 Layer III CBR rates", c.BitrateKbps)
 	}
 	return nil
@@ -212,8 +220,7 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 
 	padding := e.pad.next(e.cfg.BitrateKbps, e.cfg.SampleRate)
 	sfb := &sfbWidthsLong[e.srIndex]
-	mainBits := frameLength(e.bitrateIndex, e.srIndex, padding)*8 - 32 - sideInfoBits(e.nch)
-	budget := mainBits / (2 * e.nch)
+	budget := granuleBudgetBits(e.bitrateIndex, e.srIndex, padding, e.nch)
 
 	for g := range 2 {
 		if samples != nil {

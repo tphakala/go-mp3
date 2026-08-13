@@ -23,11 +23,22 @@ with exactly these flags (the compiler and flags are part of the pin):
 
 ## Encoder
 
-The encoder (later phase) is an independent implementation from ISO/IEC
+The encoder in internal/enc is an independent implementation from ISO/IEC
 11172-3 and published literature. No LGPL, GPL, or field-of-use-restricted
 codec source (LAME, Shine, dist10, libmad, mpg123, FFmpeg, Helix) is
 consulted during its development. LAME, ffmpeg, and mpg123 binaries are
 used only as black-box compatibility and quality references.
+
+Its normative tables are transcribed directly from the standard: Table B.7
+Huffman code tables (internal/enc/hufftables.go), Table B.8 scalefactor
+band widths (internal/enc/sfbtables.go), Table B.9 alias-reduction c
+coefficients converted to cs/ca (internal/enc/mdcttables.go), and Annex C
+Table 3-C.1 analysis window (internal/enc/fbtables.go), plus the
+closed-form window and twiddle definitions of Annex C section C.1.5.1. All
+of these are generated as exact hex float literals, cross-checked against
+the decoder's independently derived (minimp3/CC0) copies by the
+internal/dec `encx_` test suite, with no third-party encoder source
+consulted at any point.
 
 ## Float parity fallback sites
 

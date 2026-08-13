@@ -33,3 +33,6 @@ tasks:
       - task: oracle:build
       - task: oracle:dump
       - go test ./... -run 'Oracle|Conformance'
+  compat:
+    desc: Encode the compat grid and verify with ffmpeg/mpg123 black-box binaries (fails if either is missing)
+    cmds: [MP3_REQUIRE_COMPAT=1 go test ./ -run Compat -v]

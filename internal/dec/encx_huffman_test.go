@@ -359,9 +359,10 @@ func TestEncTable0RoundTrip(t *testing.T) {
 func TestEncHuffmanDecRoundTrip(t *testing.T) {
 	for _, tnum := range validEncBigTables {
 		t.Run(fmt.Sprintf("table%d", tnum), func(t *testing.T) {
+			t.Parallel()
 			runBigTableRoundTrip(t, tnum)
 		})
 	}
-	t.Run("count1A", func(t *testing.T) { runCount1RoundTrip(t, 0, "count1A") })
-	t.Run("count1B", func(t *testing.T) { runCount1RoundTrip(t, 1, "count1B") })
+	t.Run("count1A", func(t *testing.T) { t.Parallel(); runCount1RoundTrip(t, 0, "count1A") })
+	t.Run("count1B", func(t *testing.T) { t.Parallel(); runCount1RoundTrip(t, 1, "count1B") })
 }

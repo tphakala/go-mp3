@@ -243,6 +243,7 @@ func forEachGridCase(t *testing.T, run func(t *testing.T, sr, kbps int, m gridMo
 		for _, kbps := range gridBitratesKbps {
 			for _, m := range gridModes {
 				t.Run(fmt.Sprintf("sr%d_kbps%d_nch%d", gridSampleRates[sr], kbps, m.nch), func(t *testing.T) {
+					t.Parallel()
 					run(t, sr, kbps, m)
 				})
 			}
@@ -283,6 +284,7 @@ func TestEncFrameStructuralGrid(t *testing.T) {
 
 	for kbps, idx := range kbpsToIndex {
 		t.Run(fmt.Sprintf("sweep_44100_stereo_kbps%d", kbps), func(t *testing.T) {
+			t.Parallel()
 			runStructuralGrid(t, 0, idx, kbps, 0, 2, 20)
 		})
 	}

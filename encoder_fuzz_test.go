@@ -16,6 +16,7 @@
 // target: after the fuzzed opcode chaos, a fresh, contract-clean sequence
 // (full frames then a drain) must produce bytes that decode with zero
 // errors through the public mp3.Decoder's documented frame loop.
+
 package mp3_test
 
 import (

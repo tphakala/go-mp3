@@ -3,6 +3,7 @@
 // cleanly under two independent, widely deployed MP3 decoders neither of
 // whose source this project ever consults (PROVENANCE.md's Encoder
 // section). ffmpeg and mpg123 are used strictly as black-box binaries here.
+
 package mp3_test
 
 import (
@@ -189,6 +190,7 @@ func TestCompatFfmpegMpg123(t *testing.T) {
 			for _, kbps := range kbpsList {
 				name := "sr" + strconv.Itoa(sr) + "_nch" + strconv.Itoa(nch) + "_kbps" + strconv.Itoa(kbps)
 				t.Run(name, func(t *testing.T) {
+					t.Parallel()
 					stream, stats := compatEncodeStream(t, sr, nch, kbps)
 
 					path := filepath.Join(dir, name+".mp3")

@@ -308,6 +308,7 @@ func TestEncoderRoundTripSNR(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(fmt.Sprintf("sr%d_kbps%d_nch%d", c.sampleRate, c.kbps, c.nch), func(t *testing.T) {
+			t.Parallel()
 			stream, input, nFrames := encodeMultiTone(t, c.sampleRate, c.nch, c.kbps)
 			decoded := decodeStream(t, stream, c.sampleRate, c.kbps, c.nch, nFrames+1)
 

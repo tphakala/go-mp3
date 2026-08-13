@@ -77,6 +77,37 @@ func TestReconstructionGate(t *testing.T) {
 
 	delay := measureDelay(x, pcm)
 
+	// Cold-start sanity sweep: the granules-0..7 warm-up transient (before
+	// the shift register and synthesis history have filled) is skipped by
+	// the steady-state gain check below, so it otherwise goes entirely
+	// unchecked. This does not weaken that check; it only adds a bounded
+	// sanity pass over the previously-unchecked region: every reconstructed
+	// sample must be finite, and the peak magnitude must stay under a
+	// measured bound.
+	const coldStartGranules = 8
+	coldStartPeak := 0.0
+	for i := range coldStartGranules * samplesPerGranule {
+		v := float64(pcm[i])
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			t.Fatalf("cold-start sample %d = %v, want finite", i, pcm[i])
+		}
+		if abs := math.Abs(v); abs > coldStartPeak {
+			coldStartPeak = abs
+		}
+	}
+	// Measure-then-freeze: the observed cold-start peak is 1.0625 (measured
+	// with `go test -run TestReconstructionGate -v`), close to the input's
+	// own peak (a1+a2 = 1.1) with no runaway warm-up overshoot. The bound
+	// below sits at roughly 2x that measurement, generous headroom against
+	// run-to-run noise while still catching an actual blow-up (e.g. a
+	// scaling or history-priming bug turning the transient into a spike far
+	// past the input's amplitude budget).
+	const coldStartMaxAbs = 2.0
+	if coldStartPeak > coldStartMaxAbs {
+		t.Fatalf("cold-start (granules 0..%d) peak |sample| = %v, want <= %v", coldStartGranules-1, coldStartPeak, coldStartMaxAbs)
+	}
+	t.Logf("cold-start (granules 0..%d) peak |sample| = %v", coldStartGranules-1, coldStartPeak)
+
 	// fbChainDelay is the measured round-trip sample delay of the analysis
 	// (512-tap window, this task) plus synthesis (mp3dSynthGranule,
 	// internal/dec/synth.go) filterbank pair, found by cross-correlating

@@ -31,6 +31,7 @@
 //     a nil drain); an all-finite frame (however far outside [-1, 1]) must
 //     encode without panicking and validate cleanly, per the Task 7 ingest
 //     clamp and the Task 4 maxQuant clamp.
+
 package dec
 
 import (
@@ -98,13 +99,17 @@ type fuzzEncSeed struct {
 func fuzzEncodeValidateSeeds() []fuzzEncSeed {
 	return []fuzzEncSeed{
 		{fuzzSeedSamples(2*2*1152, func(int) uint32 { return 0 }), 0, 0, 0}, // silence
+		// math.MaxInt32's bit pattern (0x7fffffff) is a NaN under Variant2's
+		// math.Float32frombits reinterpretation, so this seed also exercises
+		// the NaN/poison path on half its samples: bonus coverage beyond the
+		// square wave's own purpose (worst-case spectrum for Variant1).
 		{fuzzSeedSamples(2*2*1152, func(i int) uint32 { // full-scale square wave
 			if i%2 == 0 {
 				return fuzzInt32Bits(math.MinInt32)
 			}
 			return fuzzInt32Bits(math.MaxInt32)
 		}), 0, 1, 8},
-		{fuzzSeedSamples(1152, func(i int) uint32 { // single impulse
+		{fuzzSeedSamples(1152, func(i int) uint32 { // single impulse; also NaN under Variant2 (see the square-wave seed's comment above)
 			if i == 0 {
 				return fuzzInt32Bits(math.MaxInt32)
 			}
@@ -141,12 +146,13 @@ func fuzzSeedSamples(n int, gen func(i int) uint32) []byte {
 
 // fuzzBuildFrames splits data into up to fuzzEncMaxFrames frames of exactly
 // nch channels x 1152 samples each, converting every 4-byte chunk with
-// convert. Chunks are consumed channel-major (all of channel 0's frame,
-// then channel 1's) so "split across channels" gives each channel its own
-// contiguous run of the input. The last frame that had any real data at all
-// is zero-filled to exactly 1152 in every channel (the internal length
-// contract), matching the brief's "zero-fill the final partial frame"; a
-// frame with no real data left at all is not built.
+// convert. Chunks are consumed frame by frame; within each frame, channel-
+// major (channel 0's full 1152 samples first, then channel 1's), so each
+// frame's per-channel data comes from its own contiguous run of the input
+// before consumption moves on to the next frame. The last frame that had
+// any real data at all is zero-filled to exactly 1152 in every channel (the
+// internal length contract), matching the brief's "zero-fill the final
+// partial frame"; a frame with no real data left at all is not built.
 func fuzzBuildFrames(data []byte, nch int, convert func(chunk []byte) float32) [][][]float32 {
 	nChunks := len(data) / 4
 	frames := make([][][]float32, 0, fuzzEncMaxFrames)

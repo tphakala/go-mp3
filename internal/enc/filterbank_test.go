@@ -116,12 +116,19 @@ func TestFBWindowStructure(t *testing.T) {
 // level. A single wrong window digit of meaningful magnitude breaks the
 // stopband and fails this test long before TestReconstructionGate would
 // catch it.
+//
+// Bands 0 and 31 (DC-adjacent and Nyquist-adjacent, with only one interior
+// neighbor) are included alongside the interior bands: measured with
+// `go test -run TestFBSineConcentration -v` plus temporary instrumentation,
+// every band (0, 1, 5, 15, 30, 31) lands at ~100% near-band concentration
+// and a worst-case stopband around -106 dB, both comfortably inside the
+// interior thresholds below, so no per-band relaxation is needed.
 func TestFBSineConcentration(t *testing.T) {
 	const sr = 44100.0
 	const granules = 3
 	const samplesPerGranule = 18 * 32
 
-	for _, b := range []int{1, 5, 15, 30} {
+	for _, b := range []int{0, 1, 5, 15, 30, 31} {
 		freq := (float64(b) + 0.5) * sr / 64
 		var fb Filterbank
 		var outs [granules][18][32]float64

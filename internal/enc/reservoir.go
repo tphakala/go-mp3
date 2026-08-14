@@ -140,7 +140,8 @@ func ResCapBytesPin(kbps, sampleRateHz, nch int) int {
 
 // commitFrame records a coded frame: occupancy gains the unspent bytes.
 // Callers guarantee lo <= spentBytes <= hi, so 0 <= occ <= cap holds as an
-// invariant (asserted in tests, panicked on in debug form here).
+// invariant (asserted in the reservoir tests; commitFrame itself does no
+// bounds checking, trusting the spendBounds-clamped inputs).
 func (r *reservoir) commitFrame(area, spentBytes int) {
 	r.occ += area - spentBytes
 }

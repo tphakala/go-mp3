@@ -425,7 +425,7 @@ type ScfPin struct {
 // quantized spectrum, so the granule-channel's part2 cost is already known.
 // codeGranule is then budgeted at budget-part2 (not the raw per-granule
 // share), so its Huffman rate loop leaves exactly enough room for the
-// scalefactor bits appendFrame will also have to write; without that
+// scalefactor bits assembleFrame will also have to write; without that
 // reduction, part2 would land on top of an already-full Huffman budget and
 // overflow the frame's fixed byte length.
 func AppendFrameScfPin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr *[2][2][576]float64, pins *[2][2]ScfPin, useScfsi bool, nch int) []byte {

@@ -126,10 +126,11 @@ type Encoder struct {
 	// mainScratch is the reusable render buffer for both header+side-info
 	// and main-data bytes (renderFrameInto copies its output into the FIFO
 	// slot via push before mainScratch is reused for renderMainData, so the
-	// two renders never alias). Sized to the largest possible main-data
-	// spend (huffCap = 2*nch*maxPart23Length/8, planFrame's own Huffman
-	// field ceiling) plus mainScratchSlack headroom, preallocated once in
-	// Reset so codeFrame never grows it.
+	// two renders never alias). Sized to the LARGER of the Huffman field
+	// ceiling and the frame's main-data area (renderMainData pads up to the
+	// area when the reservoir forces a high spendMin; see Reset), plus
+	// mainScratchSlack headroom, preallocated once in Reset so codeFrame
+	// never grows it.
 	mainScratch []byte
 
 	poisoned bool
@@ -147,7 +148,11 @@ type Encoder struct {
 
 // maskEscalationMaxCalls bounds codeFrame's Stage 2 masking-driven budget
 // escalation (design decision 9, third revision): a pure COST ceiling on
-// outerLoop invocations, not a correctness requirement. Termination is
+// outerLoop invocations, not a correctness requirement. Each escalation
+// attempt (escAttempt) issues up to two outerLoop calls (the full-capacity
+// budget and the flat-budget probe when they differ) and the cap is checked
+// per attempt, so the effective bound is up to 2*maskEscalationMaxCalls
+// invocations; the loose factor is immaterial for a cost ceiling. Termination is
 // proven without it (see escalateForMasking's doc comment): the main
 // loop's Phi measure (count of unsatisfied-unparked granule-channels,
 // then their summed over-count, lexicographic) strictly decreases every
@@ -200,12 +205,11 @@ func New(cfg Config) (*Encoder, error) {
 	return e, nil
 }
 
-// mainScratchSlack is headroom added on top of mainScratch's theoretical
-// worst-case content size (huffCap = 2*nch*maxPart23Length/8, planFrame's
-// own Huffman field ceiling: see reservoir.go's planFrame doc comment)
-// to preallocate: floor-division rounding in that formula and
-// bits.Writer.Flush's final partial-byte pad can each cost up to a byte
-// per granule-channel, well inside this margin.
+// mainScratchSlack is headroom added on top of mainScratch's worst-case
+// content size (see Reset, which sizes the buffer for the LARGER of the
+// coded Huffman ceiling and the frame's main-data area) to preallocate:
+// bits.Writer.Flush's final partial-byte pad can cost up to a byte per
+// granule-channel, well inside this margin.
 const mainScratchSlack = 8
 
 // Reset clears all stream state (filterbank history, MDCT overlap, padding
@@ -230,7 +234,16 @@ func (e *Encoder) Reset(cfg Config) error {
 		e.fb[ch].Reset()
 		e.psy[ch].Reset(e.srIndex)
 	}
-	e.mainScratch = make([]byte, 0, 2*e.nch*maxPart23Length/8+mainScratchSlack)
+	// renderMainData reuses this buffer for two renders: the coded Huffman
+	// bytes (bounded by the part_2_3_length ceiling) and the ancillary pad
+	// up to spendMin==lo, which reaches the frame's main-data area when
+	// occupancy sits at the reservoir cap. Size for the LARGER so codeFrame
+	// never grows it (a grown slice is never stored back, so growth would
+	// allocate on every frame); mono high-rate (e.g. 320kbps/32kHz, area
+	// 1419) exceeds the Huffman ceiling (1024), stereo the reverse.
+	huffCapBytes := (2*e.nch*maxPart23Length + 7) / 8
+	maxAreaBytes := mainAreaBytes(e.bitrateIndex, e.srIndex, 1, e.nch)
+	e.mainScratch = make([]byte, 0, max(huffCapBytes, maxAreaBytes)+mainScratchSlack)
 	return nil
 }
 
@@ -477,7 +490,7 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 	n := frameLength(e.bitrateIndex, e.srIndex, padding)
 	e.fifo.push(hdr, n)
 
-	lo, _ := e.resv.spendBounds(area, capBytes, e.nch)
+	lo, _ := e.resv.spendBounds(area, capBytes)
 	spendMin := max(lo, 0)
 	mainData := renderMainData(e.mainScratch[:0], &e.gr, e.nch, spendMin)
 	e.fifo.place(mainData)
@@ -670,7 +683,7 @@ func (e *Encoder) escAttempt(i int, sfb *[22]int, hiB, loB int) {
 // truncation, which is the cost tripwire doing its job, not a false
 // positive.
 func (e *Encoder) escalateForMasking(nGC int, sfb *[22]int, padding, area, capBytes int) {
-	_, hi := e.resv.spendBounds(area, capBytes, e.nch)
+	_, hi := e.resv.spendBounds(area, capBytes)
 	flatShare := granuleBudgetBits(e.bitrateIndex, e.srIndex, padding, e.nch)
 
 	// Seed the cross-budget best-pass cache from Stage 1's initial pass.

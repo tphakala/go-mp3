@@ -340,8 +340,14 @@ func (e *Encoder) Stats() Stats {
 	}
 }
 
-// Stats counts what an Encoder emitted since NewEncoder or the last Reset.
+// Stats reports what an Encoder produced since NewEncoder or the last Reset.
 type Stats struct {
+	// Frames and PaddedFrames count frames CODED (one per non-drain
+	// EncodeFrame call, plus the drain frame). With the bit reservoir a coded
+	// frame may stay buffered across EncodeFrame calls, so mid-stream these
+	// can lead the number of frames actually appended to dst; after Drain
+	// they equal the emitted frame count. Bytes, in contrast, counts bytes
+	// actually appended to dst.
 	Frames         int64
 	Bytes          int64
 	PaddedFrames   int64

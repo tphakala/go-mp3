@@ -25,9 +25,9 @@ type reservoir struct{ occ int }
 // (design decision 3): lo = max(0, occ+area-cap), hi = occ+area. The
 // Huffman field capacity is deliberately NOT folded into hi; it caps only
 // the coded portion inside planFrame (the decoupling agy's review
-// mandated: at 320kbps/32kHz mono, area 1419 exceeds huffCap 1023, and a
+// mandated: at 320kbps/32kHz mono, area 1419 exceeds huffCap 1024, and a
 // field-capped hi would fall below lo near full occupancy).
-func (r *reservoir) spendBounds(area, capBytes, nch int) (lo, hi int) {
+func (r *reservoir) spendBounds(area, capBytes int) (lo, hi int) {
 	hi = r.occ + area
 	lo = max(0, r.occ+area-capBytes)
 	return lo, hi
@@ -72,7 +72,11 @@ func (r *reservoir) planFrame(demands *[4]int, nGC, area, capBytes int) (spendBy
 		sum += demands[i]
 	}
 
-	huffCap := nGC * maxPart23Length / 8
+	// Ceil, not floor: nGC part_2_3_length fields can legally sum to
+	// nGC*maxPart23Length bits, which for an odd byte remainder (mono:
+	// 2*4095=8190 bits) needs one more byte than floor division gives, so
+	// floor would cap huffTarget a byte below the legal maximum.
+	huffCap := (nGC*maxPart23Length + 7) / 8
 	huffTarget := min((sum+7)/8, min(r.occ+area, huffCap))
 
 	huffBits := huffTarget * 8
@@ -126,7 +130,7 @@ func (r *reservoir) planFrame(demands *[4]int, nGC, area, capBytes int) (spendBy
 		}
 	}
 
-	lo, _ := r.spendBounds(area, capBytes, 2)
+	lo, _ := r.spendBounds(area, capBytes)
 	spendBytes = max(huffTarget, lo)
 	return spendBytes, huffTarget, budgets
 }

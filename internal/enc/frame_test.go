@@ -272,7 +272,7 @@ func TestFrameFIFOOccupancyAgreement(t *testing.T) {
 		f.push(hdr, 4+32+area)
 		seed = seed*6364136223846793005 + 1442695040888963407
 		spend := 200 + int(seed>>58) // 200..263 bytes, always < area: occ grows
-		lo, hi := r.spendBounds(area, 511, 2)
+		lo, hi := r.spendBounds(area, 511)
 		if spend < lo {
 			spend = lo
 		}

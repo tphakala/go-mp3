@@ -1,8 +1,10 @@
 package enc
 
 import (
+	"bytes"
 	"testing"
 
+	"github.com/tphakala/go-mp3/internal/bits"
 	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
@@ -166,14 +168,14 @@ func TestCodeGranuleBudgetCap(t *testing.T) {
 	}
 }
 
-// TestAppendFrameLength requires appendFrame's assembled frame length
+// TestAssembleFrameLength requires assembleFrame's assembled frame length
 // equals the ISO CBR formula 144000*kbps/sr + padding exactly, over every
 // sample rate, every one of the 14 CBR bitrate indices, both channel modes,
 // and both padding values. Granules are coded on the all-zero spectrum (0
 // Huffman bits, well within any of this grid's budgets), isolating the
-// assertion to appendFrame's framing/stuffing arithmetic rather than the
+// assertion to assembleFrame's framing/stuffing arithmetic rather than the
 // rate loop.
-func TestAppendFrameLength(t *testing.T) {
+func TestAssembleFrameLength(t *testing.T) {
 	var xr [576]float64 // all-zero: codeGranule always lands at 0 bits
 
 	modes := []struct {
@@ -198,7 +200,7 @@ func TestAppendFrameLength(t *testing.T) {
 						}
 					}
 
-					got := appendFrame(nil, bitrateIndex, sr, padding, m.mode, &gr, m.nch)
+					got := assembleFrame(nil, bitrateIndex, sr, padding, m.mode, &gr, m.nch)
 					want := frameLength(bitrateIndex, sr, padding)
 					if len(got) != want {
 						t.Fatalf("sr=%d bitrateIndex=%d nch=%d padding=%d: len = %d, want %d",
@@ -208,4 +210,160 @@ func TestAppendFrameLength(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestFrameFIFOThreading(t *testing.T) {
+	// Three tiny synthetic frames, hand-checkable: frame lengths 20/20/20,
+	// base 8 (12 area bytes each). Place spans crossing slot boundaries
+	// and verify byte-exact landing positions.
+	var f frameFIFO
+	hdr := make([]byte, 8)
+	for i := range hdr {
+		hdr[i] = 0xAA
+	}
+	f.push(hdr, 20)
+	if f.unfilled() != 12 {
+		t.Fatalf("unfilled = %d, want 12", f.unfilled())
+	}
+	span1 := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10} // 10 bytes into slot 0
+	f.place(span1)
+	f.push(hdr, 20)
+	span2 := []byte{11, 12, 13, 14} // 2 into slot 0's tail, 2 into slot 1
+	f.place(span2)
+	// Slot 0 is now complete: area bytes 1..12 present.
+	out := f.flushInto(nil)
+	if len(out) != 20 {
+		t.Fatalf("flushed %d bytes, want one 20-byte frame", len(out))
+	}
+	for i := range 8 {
+		if out[i] != 0xAA {
+			t.Fatalf("header byte %d clobbered", i)
+		}
+	}
+	for i := range 12 {
+		if out[8+i] != byte(i+1) {
+			t.Fatalf("area byte %d = %d, want %d", i, out[8+i], i+1)
+		}
+	}
+	if f.count != 1 || f.unfilled() != 10 {
+		t.Fatalf("after flush: count %d unfilled %d, want 1/10", f.count, f.unfilled())
+	}
+	out = f.flushAll(out)
+	if len(out) != 40 {
+		t.Fatalf("flushAll total %d, want 40", len(out))
+	}
+	for i := 2; i < 12; i++ { // slot 1 area bytes 2..11 are drain stuffing (0..1 hold 13, 14)
+		if out[20+8+i] != 0 {
+			t.Fatalf("drain stuffing byte %d = %d, want 0", i, out[20+8+i])
+		}
+	}
+}
+
+func TestFrameFIFOOccupancyAgreement(t *testing.T) {
+	// Pseudo-random push/place sequence: unfilled() must equal the
+	// reservoir recurrence at every step. Integer-only LCG driving.
+	var f frameFIFO
+	var r reservoir
+	seed := uint64(77)
+	hdr := make([]byte, 36) // 4 + 32: stereo side info size
+	area := 381             // 128k/44.1 stereo
+	span := make([]byte, 512)
+	for range 60 {
+		f.push(hdr, 4+32+area)
+		seed = seed*6364136223846793005 + 1442695040888963407
+		spend := 200 + int(seed>>58) // 200..263 bytes, always < area: occ grows
+		lo, hi := r.spendBounds(area, 511, 2)
+		if spend < lo {
+			spend = lo
+		}
+		if spend > hi {
+			spend = hi
+		}
+		f.place(span[:spend])
+		r.commitFrame(area, spend)
+		_ = f.flushInto(nil)
+		if f.unfilled() != r.occ {
+			t.Fatalf("FIFO unfilled %d != reservoir occ %d", f.unfilled(), r.occ)
+		}
+	}
+}
+
+func TestZeroReservoirEquivalence(t *testing.T) {
+	// Bridge gate: with spend pinned to the full area every frame
+	// (occupancy stays 0, mdb stays 0), the FIFO path must produce the
+	// EXACT bytes of the Phase 3 single-frame layout: header, side info
+	// (mdb=0), main data, zero stuffing to frame length. The reference
+	// below is the frozen Phase 3 layout, kept test-local.
+	gcs := frameTestCodings(t) // helper: code two granules of LCG spectra via codeGranule
+	ref := legacyAppendFrame(nil, 9, 0, 0, 3, gcs, 1)
+
+	var f frameFIFO
+	hdr := make([]byte, 0, maxFrameBytes)
+	hdr, base := renderFrameInto(hdr, 9, 0, 0, 3, gcs, 1, 0) // mdb 0
+	n := frameLength(9, 0, 0)
+	f.push(hdr, n)
+	main := renderMainData(nil, gcs, 1, 0) // sum part23 bits, byte-padded
+	// Pin spend to the full area: append ancillary zeros.
+	for len(main) < n-base {
+		main = append(main, 0)
+	}
+	f.place(main)
+	got := f.flushInto(nil)
+	if !bytes.Equal(got, ref) {
+		t.Fatalf("FIFO zero-reservoir frame differs from the Phase 3 layout")
+	}
+}
+
+// legacyAppendFrame is the frozen Phase 3 whole-frame layout, kept here as
+// TestZeroReservoirEquivalence's reference: appendFrame's exact pre-Task-2
+// body (renamed to avoid colliding with the production identifiers this
+// task introduces), updated only for writeSideInfo's now-required
+// mainDataBegin parameter, passed 0 to reproduce the old hardcoded value.
+func legacyAppendFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2]granuleCoding, nch int) []byte {
+	frameStart := len(dst)
+	header := frameHeader(bitrateIndex, srIndex, padding, mode)
+	dst = append(dst, header[:]...)
+
+	sfb := &sfbWidthsLong[srIndex]
+	w := bits.NewWriter(dst)
+	writeSideInfo(&w, gr, nch, 0)
+	for g := range 2 {
+		for ch := range nch {
+			gc := &gr[g][ch]
+			part2 := writeScalefactors(&w, gc)
+			part3 := writeSpectrum(&w, &gc.ix, gc.part, gc.ri, sfb)
+			if part2 != gc.part2Bits || part3 != gc.ri.bits || part2+part3 != gc.part23Length {
+				panic("enc: legacyAppendFrame: part2+part3 bit count diverged from codeGranule's recorded part23Length")
+			}
+		}
+	}
+	dst = w.Flush()
+
+	want := frameStart + frameLength(bitrateIndex, srIndex, padding)
+	if len(dst) > want {
+		panic("enc: legacyAppendFrame: main data overflowed the frame's byte budget")
+	}
+	for len(dst) < want {
+		dst = append(dst, 0)
+	}
+	return dst
+}
+
+// frameTestCodings codes two granules of a mono frame (128kbps/44.1kHz)
+// through the production codeGranule, from fixed LCG spectra
+// (fullScaleSpectrum: integer/stored values only, golden-input
+// discipline), for TestZeroReservoirEquivalence's byte comparison. Channel
+// 1 is left at its zero value since nch=1 never reads it.
+func frameTestCodings(t *testing.T) *[2][2]granuleCoding {
+	t.Helper()
+	sfb := &sfbWidthsLong[0]
+	budget := granuleBudgetBits(9, 0, 0, 1)
+
+	var gr [2][2]granuleCoding
+	seed := uint64(2026)
+	for g := range 2 {
+		xr := fullScaleSpectrum(&seed, 12000)
+		codeGranule(&xr, budget, sfb, &gr[g][0])
+	}
+	return &gr
 }

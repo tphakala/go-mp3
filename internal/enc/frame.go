@@ -18,6 +18,16 @@ type granuleCoding struct {
 	part         spectrumPartition
 	ri           regionInfo
 	ix           [576]int32
+
+	// sfb is the sfb-width table this granule-channel was coded against
+	// (codeGranule's own sfbWidths parameter, cached here): renderMainData
+	// needs one per granule-channel to call writeSpectrum, since the
+	// render pair no longer threads srIndex through a single frame-level
+	// call the way the Phase 3 appendFrame did. Every granule-channel in
+	// one frame is coded against the same pointer in practice (srIndex is
+	// fixed for an Encoder's lifetime), so this is redundant within a
+	// frame but keeps renderMainData self-contained.
+	sfb *[22]int
 }
 
 // maxPart23Length is the largest value part_2_3_length's 12-bit side-info
@@ -51,6 +61,7 @@ func recode(xr *[576]float64, gg int, sfbWidths *[22]int, gc *granuleCoding) {
 // stuffing at the frame tail, same as any other unused main-data budget;
 // rolling it to another granule via a bit reservoir is deferred to Phase 4.
 func codeGranule(xr *[576]float64, budgetBits int, sfbWidths *[22]int, gc *granuleCoding) {
+	gc.sfb = sfbWidths
 	effBudget := min(budgetBits, maxPart23Length)
 
 	gg := minGlobalGain(xr, &gc.sf, sfbWidths)
@@ -177,60 +188,196 @@ func (p *paddingState) next(bitrateKbps, sampleRate int) (padding int) {
 	return 0
 }
 
-// appendFrame assembles one complete frame: header, side info (per the
-// exact MPEG-1 field layout l3ReadSideInfo consumes,
-// internal/dec/sideinfo.go:69), main data (per granule-channel, in
-// granule-major channel-minor order: scalefactors via writeScalefactors
-// then the Huffman spectrum via writeSpectrum), and zero stuffing to the
-// exact frame length. main_data_begin is 0.
-//
-// sfbWidths is derived once from srIndex, &sfbWidthsLong[srIndex], and that
-// same pointer is passed to every writeSpectrum call in the frame: the
-// production source of truth for which sfb-width row a frame was coded
-// against is always srIndex, never a value threaded separately. appendFrame
-// panics if a granule-channel's written part2 (writeScalefactors) or part3
-// (writeSpectrum) bit count disagrees with its own recorded part2Bits/
-// ri.bits, or their sum disagrees with part23Length: that can only happen
-// on an invariant violation in the caller (e.g. coding the granule against
-// a different sfbWidths row than srIndex names here, or setting
-// scfCompress/scfsi inconsistently with sf), not a recoverable runtime
-// condition (same rationale as bits.Writer's n-range panic).
-func appendFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2]granuleCoding, nch int) []byte {
+// maxFrameBytes is the largest CBR frame: 320kbps at 32kHz plus padding.
+// (144000*320/32000 + 1 = 1441.)
+const maxFrameBytes = 1441
+
+// fifoSlots bounds the pending ring: with resCap <= 7 areas (design
+// decision 2), a slot's area is complete after at most 8 later frames,
+// plus the current frame and margin.
+const fifoSlots = 12
+
+// frameSlot is one pending container frame: its full byte image and how
+// much of its main-data area has been placed so far.
+type frameSlot struct {
+	buf  [maxFrameBytes]byte
+	n    int // total frame length
+	base int // area start: 4 + side info bytes
+	fill int // area bytes placed so far; complete when base+fill == n
+}
+
+// frameFIFO is the preallocated pending-frame ring: the physical
+// realization of the bit reservoir, threading one continuous main-data
+// byte stream across however many container frames it takes to drain.
+type frameFIFO struct {
+	slots       [fifoSlots]frameSlot
+	head, count int
+}
+
+// push appends a new pending frame: header+side info already rendered in
+// hdr (length base), total frame length n. Panics if the ring is full
+// (structurally impossible under design decision 2; the panic guards the
+// invariant).
+func (f *frameFIFO) push(hdr []byte, n int) {
+	if f.count == fifoSlots {
+		panic("enc: frameFIFO: push into a full ring")
+	}
+	slot := &f.slots[(f.head+f.count)%fifoSlots]
+	copy(slot.buf[:], hdr)
+	slot.n = n
+	slot.base = len(hdr)
+	slot.fill = 0
+	f.count++
+}
+
+// place threads main-data bytes through the pending slots' unfilled area
+// bytes in order (the no-gap policy): the byte-stream threading itself.
+// Panics if b holds more bytes than the pending slots have room for
+// (structurally impossible under design decision 2: a caller always
+// clamps its spend to the slots' total available room first).
+func (f *frameFIFO) place(b []byte) {
+	for i := range f.count {
+		if len(b) == 0 {
+			break
+		}
+		slot := &f.slots[(f.head+i)%fifoSlots]
+		if take := min(len(b), slot.n-slot.base-slot.fill); take > 0 {
+			copy(slot.buf[slot.base+slot.fill:], b[:take])
+			slot.fill += take
+			b = b[take:]
+		}
+	}
+	if len(b) > 0 {
+		panic("enc: frameFIFO: place: bytes exceed the pending slots' total room")
+	}
+}
+
+// flushInto appends every COMPLETE leading slot to dst and pops it.
+func (f *frameFIFO) flushInto(dst []byte) []byte {
+	for f.count > 0 {
+		slot := &f.slots[f.head]
+		if slot.base+slot.fill != slot.n {
+			break
+		}
+		dst = append(dst, slot.buf[:slot.n]...)
+		f.head = (f.head + 1) % fifoSlots
+		f.count--
+	}
+	return dst
+}
+
+// flushAll zero-fills every remaining area byte (unaddressed stuffing)
+// and appends everything: the drain path.
+func (f *frameFIFO) flushAll(dst []byte) []byte {
+	for f.count > 0 {
+		slot := &f.slots[f.head]
+		for i := slot.base + slot.fill; i < slot.n; i++ {
+			slot.buf[i] = 0
+		}
+		dst = append(dst, slot.buf[:slot.n]...)
+		f.head = (f.head + 1) % fifoSlots
+		f.count--
+	}
+	return dst
+}
+
+// unfilled returns the total unfilled area bytes over pending slots: the
+// structural cross-check for reservoir.occ (they must always agree; the
+// Encoder asserts it in debug tests).
+func (f *frameFIFO) unfilled() int {
+	total := 0
+	for i := range f.count {
+		slot := &f.slots[(f.head+i)%fifoSlots]
+		total += slot.n - slot.base - slot.fill
+	}
+	return total
+}
+
+// renderFrameInto writes one frame's header and side info (per the exact
+// MPEG-1 field layout l3ReadSideInfo consumes, internal/dec/sideinfo.go:69)
+// into dst, and returns the extended slice along with base: the number of
+// bytes just written (4-byte header plus the side-info block), which is
+// where this frame's main-data area begins. mainDataBegin is written into
+// the side info's main_data_begin field verbatim; every caller in this
+// package today passes 0, matching Phase 3's hardcoded value (the
+// reservoir, once wired in Task 3, is what makes it nonzero).
+func renderFrameInto(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2]granuleCoding, nch, mainDataBegin int) (out []byte, base int) {
 	frameStart := len(dst)
 	header := frameHeader(bitrateIndex, srIndex, padding, mode)
 	dst = append(dst, header[:]...)
 
-	sfb := &sfbWidthsLong[srIndex]
 	w := bits.NewWriter(dst)
-	writeSideInfo(&w, gr, nch)
+	writeSideInfo(&w, gr, nch, mainDataBegin)
+	dst = w.Flush()
+
+	return dst, len(dst) - frameStart
+}
+
+// renderMainData writes every granule-channel's main data into dst, in
+// granule-major channel-minor order (scalefactors via writeScalefactors
+// then the Huffman spectrum via writeSpectrum, the same ordering the
+// Phase 3 appendFrame used), through one bits.Writer, flushes (byte-
+// padding the final partial byte), then appends zero ancillary bytes
+// until at least spendMin bytes have been added since dst's starting
+// length (the unused remainder of a pinned physical spend, same role as
+// appendFrame's old zero stuffing). Each granule-channel writes against
+// gc.sfb, the sfb-width table codeGranule cached at coding time, so this
+// function needs no srIndex of its own.
+//
+// Panics if a granule-channel's written part2 (writeScalefactors) or
+// part3 (writeSpectrum) bit count disagrees with its own recorded
+// part2Bits/ri.bits, or their sum disagrees with part23Length: that can
+// only happen on an invariant violation in the caller (e.g. coding the
+// granule against a different sfbWidths row than gc.sfb names here, or
+// setting scfCompress/scfsi inconsistently with sf), not a recoverable
+// runtime condition (same rationale as bits.Writer's n-range panic).
+func renderMainData(dst []byte, gr *[2][2]granuleCoding, nch, spendMin int) []byte {
+	start := len(dst)
+	w := bits.NewWriter(dst)
 	for g := range 2 {
 		for ch := range nch {
 			gc := &gr[g][ch]
 			part2 := writeScalefactors(&w, gc)
-			part3 := writeSpectrum(&w, &gc.ix, gc.part, gc.ri, sfb)
+			part3 := writeSpectrum(&w, &gc.ix, gc.part, gc.ri, gc.sfb)
 			if part2 != gc.part2Bits || part3 != gc.ri.bits || part2+part3 != gc.part23Length {
-				panic("enc: appendFrame: part2+part3 bit count diverged from codeGranule's recorded part23Length")
+				panic("enc: renderMainData: part2+part3 bit count diverged from codeGranule's recorded part23Length")
 			}
 		}
 	}
 	dst = w.Flush()
 
-	want := frameStart + frameLength(bitrateIndex, srIndex, padding)
-	if len(dst) > want {
-		panic("enc: appendFrame: main data overflowed the frame's byte budget")
-	}
-	for len(dst) < want {
+	for len(dst)-start < spendMin {
 		dst = append(dst, 0)
+	}
+	return dst
+}
+
+// assembleFrame renders one complete, self-contained frame: header and
+// side info with mainDataBegin=0, then main data padded with ancillary
+// zeros to the frame's exact byte length. This reproduces the Phase 3
+// whole-frame layout through the new render primitives, for the callers
+// in this package not yet wired to the reservoir (Task 3): AppendFramePin,
+// AppendFrameScfPin, and the Encoder's codeFrame.
+// TestZeroReservoirEquivalence proves the FIFO path this bypasses
+// produces the identical bytes.
+func assembleFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2]granuleCoding, nch int) []byte {
+	frameStart := len(dst)
+	dst, base := renderFrameInto(dst, bitrateIndex, srIndex, padding, mode, gr, nch, 0)
+	n := frameLength(bitrateIndex, srIndex, padding)
+	dst = renderMainData(dst, gr, nch, n-base)
+	if len(dst) != frameStart+n {
+		panic("enc: assembleFrame: main data overflowed the frame's byte budget")
 	}
 	return dst
 }
 
 // --- Test-only cross-package surface ---
 //
-// codeGranule and appendFrame stay unexported: internal encoder plumbing,
-// not this package's public surface (a later task defines that). internal/
-// dec's structural validator (encx_frame_test.go) is a white-box test living
-// in package dec, needed there because it drives the decoder's unexported
+// codeGranule, renderFrameInto, renderMainData, and assembleFrame stay
+// unexported: internal encoder plumbing, not this package's public
+// surface (a later task defines that). internal/dec's structural
+// validator (encx_frame_test.go) is a white-box test living in package
+// dec, needed there because it drives the decoder's unexported
 // hdrValid/l3ReadSideInfo/grInfo directly against a real emitted stream; Go
 // visibility rules mean it can only reach this package's EXPORTED names,
 // even though "internal/dec importing internal/enc in a _test.go file" is
@@ -241,7 +388,7 @@ func appendFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2
 
 // AppendFramePin codes xr[g][ch] through the production codeGranule (real
 // budget arithmetic, including the maxPart23Length cap) and assembles one
-// frame via the production appendFrame. Test-only.
+// frame via the production assembleFrame. Test-only.
 func AppendFramePin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr *[2][2][576]float64, nch int) []byte {
 	sfb := &sfbWidthsLong[srIndex]
 	budget := granuleBudgetBits(bitrateIndex, srIndex, padding, nch)
@@ -252,7 +399,7 @@ func AppendFramePin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr *[2
 			codeGranule(&xr[g][ch], budget, sfb, &gr[g][ch])
 		}
 	}
-	return appendFrame(dst, bitrateIndex, srIndex, padding, mode, &gr, nch)
+	return assembleFrame(dst, bitrateIndex, srIndex, padding, mode, &gr, nch)
 }
 
 // ScfPin is one granule-channel's pinned scalefactor state for
@@ -271,7 +418,7 @@ type ScfPin struct {
 // job), picks each granule-channel's cheapest covering scalefac_compress via
 // chooseScalefacCompress, optionally detects and applies scfsi across
 // granule 0/1 per channel, and assembles one frame via the production
-// appendFrame. Test-only, the AppendFramePin precedent.
+// assembleFrame. Test-only, the AppendFramePin precedent.
 //
 // scalefac_compress is chosen, and gc.part2Bits set, BEFORE codeGranule
 // runs: chooseScalefacCompress depends only on the pinned sf, not on the
@@ -312,5 +459,5 @@ func AppendFrameScfPin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr 
 		}
 	}
 
-	return appendFrame(dst, bitrateIndex, srIndex, padding, mode, &gr, nch)
+	return assembleFrame(dst, bitrateIndex, srIndex, padding, mode, &gr, nch)
 }

@@ -249,7 +249,7 @@ func clamp(x float64) float64 {
 // AliasReduce to get the spectrum, then outerLoop to pick scalefactors and
 // quantize against the psymodel's targets. After both granules, scfsi is
 // detected and applied per channel, then the frame is assembled with
-// appendFrame and Stats updated. samples == nil codes silence (the
+// assembleFrame and Stats updated. samples == nil codes silence (the
 // per-granule staging loop below writes zero into e.in/e.psyWin instead of
 // a real sample, which flushes the filterbank, MDCT, and psymodel history
 // through one real pass of the pipeline) for the drain frame.
@@ -312,7 +312,7 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 	}
 
 	before := len(dst)
-	dst = appendFrame(dst, e.bitrateIndex, e.srIndex, padding, e.mode, &e.gr, e.nch)
+	dst = assembleFrame(dst, e.bitrateIndex, e.srIndex, padding, e.mode, &e.gr, e.nch)
 
 	e.frames++
 	e.bytes += int64(len(dst) - before)

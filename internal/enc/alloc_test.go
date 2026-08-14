@@ -15,8 +15,8 @@ import "testing"
 // A nonzero result means the hot path grew a per-call allocation and must
 // be moved back into a reused Encoder field; go build -gcflags=-m
 // localizes the escape (see the addendum's note to watch &w escaping in
-// appendFrame, and by extension any local composite literal passed by
-// pointer into the pipeline).
+// renderFrameInto/renderMainData, and by extension any local composite
+// literal passed by pointer into the pipeline).
 func TestEncodeSteadyStateAllocs(t *testing.T) {
 	cfg := Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128}
 	e, err := New(cfg)

@@ -399,15 +399,21 @@ func TestEncoderEncodeAfterDrainPanics(t *testing.T) {
 // mismatch there means some runtime float op is not actually
 // FMA-fusion-blocked (or otherwise non-deterministic across arches), a
 // code bug to fix, never a reason to re-freeze the hex constants.
+//
+// Re-frozen in Phase 4 increment 4 Task 5 (wiring the psychoacoustic
+// model and outer loop into codeFrame): that change deliberately makes
+// scalefactors nonzero for the first time, so every one of these three
+// streams' bytes changed. Confirmed stable across two consecutive runs on
+// amd64 before freezing; the arm64 CI leg is the cross-arch confirmation.
 func TestEncodeGolden(t *testing.T) {
 	cases := []struct {
 		name                 string
 		sampleRate, ch, kbps int
 		wantHex              string
 	}{
-		{"44100_2ch_128kbps", 44100, 2, 128, "5dfeb5d9fd27efabc2f2c347a1cc7914fc80969009d81765234f1b0a77c0034d"},
-		{"48000_1ch_320kbps", 48000, 1, 320, "fb0c94827c8b3e99018be73e24cb7f56e3c9466b2cf23be370dbc52f8b56717b"},
-		{"32000_2ch_32kbps", 32000, 2, 32, "e399b2fc44b7f63047f7881535b1059cfc4dda9d5706c1bc9c22cea246e4d7ff"},
+		{"44100_2ch_128kbps", 44100, 2, 128, "ef8cc70243c650ee27b249e99a3626c562e20aa1de6458f47b0c5670d177e649"},
+		{"48000_1ch_320kbps", 48000, 1, 320, "897008b30da6dfc36a92fb265b4a70f243e5e861cae3c83df76428493544f888"},
+		{"32000_2ch_32kbps", 32000, 2, 32, "a1cb9b65d00d4ddcb17d36dabc30949d4cd551087bf6debce28a1a17956a6d17"},
 	}
 
 	for _, c := range cases {

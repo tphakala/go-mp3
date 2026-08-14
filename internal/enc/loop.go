@@ -148,7 +148,24 @@ func outerLoop(xr *[576]float64, xmin *[22]float64, budgetBits int, sfbWidths *[
 		if !ok || part2 >= budgetBits {
 			break // part2 alone starves the Huffman budget
 		}
-		codeGranule(xr, budgetBits-part2, sfbWidths, gc)
+		// codeGranule caps its OWN ri.bits at maxPart23Length on its own
+		// (frame.go's doc comment on that constant), a cap sized for
+		// Phase 3's part2Bits==0 callers, where ri.bits alone equals the
+		// granule's whole part_2_3_length. Once part2 is nonzero (Task 4
+		// onward), that cap alone is not enough: it bounds ri.bits, not
+		// part2+ri.bits, so a high-bitrate granule (budgetBits can land
+		// AT maxPart23Length, e.g. 320kbps/44.1kHz/mono measures
+		// 4092-4096) could still let part2+ri.bits overflow the 12-bit
+		// part_2_3_length side-info field by exactly part2 bits, which
+		// bits.Writer.WriteBits then silently truncates (a real bug this
+		// project's own TestEncoderStructuralGrid caught at that exact
+		// rate). Applying the maxPart23Length cap BEFORE subtracting
+		// part2, rather than after, budgets ri.bits at
+		// maxPart23Length-part2 instead, so codeGranule's redundant
+		// internal min(...,maxPart23Length) can never bind on its own and
+		// part2+ri.bits <= maxPart23Length always holds.
+		huffBudget := min(budgetBits, maxPart23Length) - part2
+		codeGranule(xr, huffBudget, sfbWidths, gc)
 		gc.scfCompress, gc.part2Bits = idx, part2
 		gc.part23Length = part2 + gc.ri.bits
 

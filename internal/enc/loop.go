@@ -4,9 +4,9 @@ package enc
 // wrapping codeGranule (the inner global_gain rate loop). See the phase 4
 // increment 4 plan's design decisions 2-7 for the full rationale.
 //
-// Not yet wired into the encoder: outerLoop is a pure function here, only
-// exercised by loop_test.go. Task 5 wires it into codeFrame and re-freezes
-// the golden.
+// Wired into the encoder: codeFrame (encoder.go) calls outerLoop once per
+// granule-channel with the psymodel's calibrated thresholds. loop_test.go
+// also exercises it directly as a pure function.
 
 // outerLoopMaxIters bounds the distortion-control loop (design decision
 // 6): single-worst-band amplification advances one band-step per
@@ -104,7 +104,7 @@ func betterPass(excess, ratio float64, over int, bestExcess, bestRatio float64, 
 // amplification attempt only sets unfixable, touching no scf).
 //
 // gc is caller-owned working state, overwritten every pass; best is
-// caller-owned scratch (the Encoder preallocates one per granule-channel)
+// caller-owned scratch (the Encoder preallocates a single reusable buffer)
 // that the loop never allocates into, only copies gc's value in and back
 // out of. The returned iteration count feeds tests and diagnostics.
 func outerLoop(xr *[576]float64, xmin *[22]float64, budgetBits int, sfbWidths *[22]int, gc, best *granuleCoding) (iters int) {

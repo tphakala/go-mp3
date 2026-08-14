@@ -583,6 +583,10 @@ func TestPsyXrCalibration(t *testing.T) {
 				allRatios = append(allRatios, r)
 			}
 			slices.Sort(ratios)
+			if len(ratios) == 0 {
+				t.Fatalf("sr=%d program=%s: no band survived the density floor (%v); nothing to calibrate against",
+					sr, prog.name, psyXrCalibrationDensityFloor)
+			}
 			med := ratios[len(ratios)/2]
 			t.Logf("sr=%d program=%s median ratio = %v (n=%d surviving bands)", sr, prog.name, med, len(ratios))
 			caseMedians = append(caseMedians, med)

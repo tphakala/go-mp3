@@ -20,18 +20,101 @@ import (
 // package dec test file cannot import the root mp3 package without an
 // import cycle, since mp3 itself imports internal/dec) and requires every
 // frame decodes cleanly. nFrames is the expected frame count.
-func validateFrames(t *testing.T, stream []byte, wantSampleRate, wantKbps, wantNch, nFrames int) {
+//
+// reservoirManaged distinguishes the two families of stream this validator
+// sees: AppendFramePin/AppendFrameScfPin assemble each frame independently
+// via assembleFrame with main_data_begin fixed at 0 (see assembleFrame's
+// doc comment; those callers are not wired to the reservoir), so a
+// multi-frame stream built from repeated AppendFramePin calls is not a
+// genuine reservoir-managed stream even though it has many frames. Only
+// streams produced by the real, stateful enc.Encoder actually carry
+// main-data occupancy across frames, so only those pass reservoirManaged
+// true and get the full reservoirReplay policy check; AppendFramePin-based
+// streams pass false and keep the simpler mdb-must-be-0 invariant that has
+// always held for them.
+func validateFrames(t *testing.T, stream []byte, wantSampleRate, wantKbps, wantNch, nFrames int, reservoirManaged bool) {
 	t.Helper()
-	validateFrameHeaders(t, stream, wantSampleRate, wantKbps, wantNch, nFrames)
+	validateFrameHeaders(t, stream, wantSampleRate, wantKbps, wantNch, nFrames, reservoirManaged)
 	validateFrameDecode(t, stream, nFrames)
+}
+
+// reservoirReplay independently re-derives the main-data geometry of the
+// whole stream and checks every decodability invariant, R1 byte alignment
+// included. Coordinates are bytes in the main-data stream (the
+// concatenation of every frame's area bytes in order). It proves both
+// NO-GAP placement and MINIMAL ancillary burn by recomputing the encoder's
+// anti-overflow floor INDEPENDENTLY (agy finding folded: a spent-vs-derived-
+// end comparison would be a tautology, since the only source for the
+// previous frame's end IS the current frame's begin; the policy
+// recomputation is what pins the placement).
+type reservoirReplay struct {
+	areaStart  int // current frame's area start in main-data coordinates
+	prevBegin  int // previous frame's main-data begin
+	prevPart23 int // previous frame's summed part2_3_length bits
+	prevMdb    int // previous frame's main_data_begin
+	prevArea   int // previous frame's area bytes
+	havePrev   bool
+	resCap     int // enc.ResCapBytesPin for this stream's rate/channels
+}
+
+// frame is called once per parsed frame. Frame n's spend is pinned by
+// frame n+1's begin, so each call finalizes the PREVIOUS frame: its spend
+// must equal EXACTLY max(byte-aligned need, anti-overflow floor), which
+// simultaneously proves no-gap placement (no unexplained bytes) and
+// minimal legally-required burn (every ancillary byte was forced by the
+// occupancy cap).
+func (rr *reservoirReplay) frame(t *testing.T, idx, mdb, part23SumBits, areaBytes int) {
+	t.Helper()
+	if mdb < 0 || mdb > 511 {
+		t.Fatalf("frame %d: main_data_begin %d outside [0, 511]", idx, mdb)
+	}
+	begin := rr.areaStart - mdb
+	if begin < 0 {
+		t.Fatalf("frame %d: main data begins %d bytes before the stream", idx, -begin)
+	}
+	if rr.havePrev {
+		spentPrev := begin - rr.prevBegin
+		needPrev := (rr.prevPart23 + 7) / 8
+		if spentPrev < needPrev {
+			t.Fatalf("frame %d-1: spent %d bytes < byte-aligned need %d (R1 violation)",
+				idx, spentPrev, needPrev)
+		}
+		// Independent policy replay: the previous frame's anti-overflow
+		// floor from ITS occupancy (= its mdb) and area.
+		loPrev := max(0, rr.prevMdb+rr.prevArea-rr.resCap)
+		expectedSpend := max(needPrev, loPrev)
+		if spentPrev != expectedSpend {
+			t.Fatalf("frame %d-1: spent %d bytes, policy replay expects %d (need %d, lo %d): gap or excess burn",
+				idx, spentPrev, expectedSpend, needPrev, loPrev)
+		}
+	}
+	rr.prevBegin, rr.prevPart23, rr.prevMdb, rr.prevArea = begin, part23SumBits, mdb, areaBytes
+	rr.havePrev = true
+	rr.areaStart += areaBytes
+}
+
+// finish checks the final frame, whose spend no successor pins: its
+// byte-aligned need must fit inside the stream's remaining area.
+func (rr *reservoirReplay) finish(t *testing.T) {
+	t.Helper()
+	if rr.havePrev && rr.prevBegin+(rr.prevPart23+7)/8 > rr.areaStart {
+		t.Fatalf("final frame: main data overruns the stream's area bytes")
+	}
 }
 
 // validateFrameHeaders walks stream frame by frame using only the decoder's
 // header and side-info parsers (no decode), checking every header field,
 // exact frame length, and every granule-channel's side-info invariants.
-func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps, wantNch, nFrames int) {
+// When reservoirManaged, it also runs reservoirReplay over the whole
+// stream's main-data placement and occupancy policy; otherwise it keeps the
+// simpler per-frame mdb-must-be-0 check (see validateFrames' doc comment).
+func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps, wantNch, nFrames int, reservoirManaged bool) {
 	t.Helper()
 
+	var rr reservoirReplay
+	if reservoirManaged {
+		rr = reservoirReplay{resCap: enc.ResCapBytesPin(wantKbps, wantSampleRate, wantNch)}
+	}
 	pos := 0
 	frames := 0
 	for pos < len(stream) {
@@ -54,16 +137,27 @@ func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps,
 
 		rd := bits.NewReader(frame[4:])
 		gr := make([]grInfo, 2*wantNch)
-		if mdb := l3ReadSideInfo(&rd, gr, frame[:4], len(frame)-4); mdb != 0 {
+		mdb := l3ReadSideInfo(&rd, gr, frame[:4], len(frame)-4)
+		if reservoirManaged {
+			part23Sum := 0
+			for i := range gr {
+				part23Sum += int(gr[i].part23Length)
+			}
+			areaBytes := frameBytes - 4 - sideInfoBitsFor(wantNch)/8
+			rr.frame(t, frames, mdb, part23Sum, areaBytes)
+		} else if mdb != 0 {
 			t.Fatalf("frame %d: l3ReadSideInfo = %d, want 0 (main_data_begin=0, no malformed signal)", frames, mdb)
 		}
 
 		frameMainBits := frameBytes*8 - 32 - sideInfoBitsFor(wantNch)
 		mainData := frame[4+sideInfoBitsFor(wantNch)/8:]
-		validateGranules(t, frames, frame[:4], gr, mainData, wantNch, frameMainBits)
+		validateGranules(t, frames, frame[:4], gr, mainData, wantNch, frameMainBits, reservoirManaged)
 
 		pos += frameBytes
 		frames++
+	}
+	if reservoirManaged {
+		rr.finish(t)
 	}
 	if pos != len(stream) {
 		t.Fatalf("stream not fully consumed by header walk: pos = %d, len(stream) = %d", pos, len(stream))
@@ -75,13 +169,28 @@ func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps,
 
 // validateGranules checks every granule-channel's side-info invariants
 // (long blocks only, valid codebook numbers, legal scalefac_compress/
-// preflag/scalefac_scale range, granule 0 never masks via scfsi), that
+// preflag/scalefac_scale range, granule 0 never masks via scfsi) and that
 // l3ReadScalefactors consumes EXACTLY the part2 bits expectedPart2Bits
 // predicts from scalefacCompress and the scfsi mask (walking the frame's
-// main data with a bits.Reader, the same technique readFrameScf uses), and
-// that the granule-channels' combined part2_3 length fits the frame's
-// main-data budget.
-func validateGranules(t *testing.T, frameIdx int, hdr []byte, gr []grInfo, mainData []byte, nch, frameMainBits int) {
+// main data with a bits.Reader, the same technique readFrameScf uses); both
+// are content-independent (derived from side-info fields, not from what
+// bytes mainData actually holds), so they stay meaningful regardless of
+// where the granule's real bytes physically live.
+//
+// When NOT reservoirManaged, it additionally requires the granule-channels'
+// combined part2_3 length to fit the frame's OWN main-data budget
+// (frameMainBits): true for AppendFramePin-assembled frames, which are
+// always self-contained (main_data_begin fixed at 0). For a
+// reservoir-managed stream that check does not apply and is skipped: a
+// frame's part23 sum can legitimately exceed its own physical mainBits,
+// because the reservoir lets a granule's Huffman data spill backward into
+// bytes physically owned by earlier frames (addressed via
+// main_data_begin). reservoirReplay (in validateFrameHeaders) already
+// proves the correct whole-stream byte accounting for that case, and
+// validateFrameDecode proves full content decodability via the production
+// decoder's reservoir-aware l3RestoreReservoir; this per-frame check would
+// only be redundant-and-wrong on top of those.
+func validateGranules(t *testing.T, frameIdx int, hdr []byte, gr []grInfo, mainData []byte, nch, frameMainBits int, reservoirManaged bool) {
 	t.Helper()
 
 	main := bits.NewReader(mainData)
@@ -139,7 +248,7 @@ func validateGranules(t *testing.T, frameIdx int, hdr []byte, gr []grInfo, mainD
 			sumPart23 += int(g.part23Length)
 		}
 	}
-	if sumPart23 > frameMainBits {
+	if !reservoirManaged && sumPart23 > frameMainBits {
 		t.Fatalf("frame %d: sum(part23Length) = %d, exceeds mainBits = %d", frameIdx, sumPart23, frameMainBits)
 	}
 }
@@ -257,7 +366,7 @@ func runStructuralGrid(t *testing.T, srIndex, bitrateIndex, wantKbps, mode, nch,
 		stream = enc.AppendFramePin(stream, bitrateIndex, srIndex, 0, mode, &xr, nch)
 	}
 
-	validateFrames(t, stream, int(hdrHz[srIndex]), wantKbps, nch, nFrames)
+	validateFrames(t, stream, int(hdrHz[srIndex]), wantKbps, nch, nFrames, false)
 }
 
 // kbpsToIndex maps every MPEG-1 Layer III CBR bitrate to its side-info
@@ -439,7 +548,7 @@ func runEncoderStructuralGrid(t *testing.T, sampleRate, kbps, nch, nFrames int) 
 		t.Fatalf("drain: EncodeFrame: %v", err)
 	}
 
-	validateFrames(t, stream, sampleRate, kbps, nch, nFrames+1)
+	validateFrames(t, stream, sampleRate, kbps, nch, nFrames+1, true)
 }
 
 // TestEncoderStructuralGrid reruns TestEncFrameStructuralGrid's grid (every

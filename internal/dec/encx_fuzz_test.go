@@ -41,6 +41,7 @@ import (
 	"testing"
 
 	"github.com/tphakala/go-mp3/internal/enc"
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // fuzzEncMaxFrames caps how many real (non-drain) frames FuzzEncodeValidate
@@ -123,6 +124,48 @@ func fuzzEncodeValidateSeeds() []fuzzEncSeed {
 		{fuzzSeedSamples(64, func(int) uint32 { // NaN-bearing
 			return math.Float32bits(float32(math.NaN()))
 		}), 0, 0, 8},
+
+		// Task 4 Step 2: adversarial seeds driving maximum bit-reservoir
+		// swing at 32kbps stereo (fuzzEncBitratesKbps[0], the tightest bit
+		// budget in the grid: resCapBytes's 7*area occupancy cap is
+		// smallest here, so reservoir swing is most stressed). All three
+		// build exactly fuzzEncMaxFrames (4) frames of content, since
+		// fuzzBuildFrames never builds more frames than that regardless of
+		// how much data a seed provides; the brief's literal frame counts
+		// (8 silent frames, quietThenBurstProgram's 8-quiet/8-burst cycle)
+		// are adapted down to fit that 4-frame budget while keeping each
+		// pattern's stress character.
+		{fuzzSeedSamples(4*2*1152, func(i int) uint32 { // full-scale square wave alternating with silence every frame
+			frameIdx := i / (2 * 1152)
+			if frameIdx%2 != 0 {
+				return 0
+			}
+			if i%2 == 0 {
+				return fuzzInt32Bits(math.MinInt32)
+			}
+			return fuzzInt32Bits(math.MaxInt32)
+		}), 0, 1, 0},
+		{fuzzSeedSamples(4*2*1152, func(i int) uint32 { // deep withdrawal: 3 quiet frames bank reservoir credit, then one full-scale frame spends it all at once
+			frameIdx := i / (2 * 1152)
+			if frameIdx < 3 {
+				return 0
+			}
+			if i%2 == 0 {
+				return fuzzInt32Bits(math.MinInt32)
+			}
+			return fuzzInt32Bits(math.MaxInt32)
+		}), 0, 1, 0},
+		{func() []byte { // quietThenBurst-style: internal/enc's quietThenBurstProgram (encoder_test.go) alternates 8 silent frames with 8 LCG-noise frames at amplitude 0.7, mono, 128kbps; that test helper is unexported and lives in a different, non-importable package, so this independently reproduces the same stored-LCG-noise construction (golden-input discipline: integer/stored construction, no libm), alternating every frame across the 4 reachable frames instead of every 8th.
+			seed := uint64(0xA5A5)
+			return fuzzSeedSamples(4*1152, func(i int) uint32 {
+				frameIdx := i / 1152
+				if frameIdx%2 == 0 {
+					return 0
+				}
+				v := testsignal.LCGSigned(&seed)
+				return fuzzInt32Bits(int32(v * 0.7 * (1 << 31)))
+			})
+		}(), 0, 0, 8},
 	}
 }
 
@@ -223,7 +266,7 @@ func fuzzEncodeValidateVariant1(t *testing.T, cfg enc.Config, data []byte, sr, k
 		t.Fatalf("Variant1 drain EncodeFrame: %v", err)
 	}
 
-	validateFrames(t, stream, sr, kbps, nch, len(frames)+1)
+	validateFrames(t, stream, sr, kbps, nch, len(frames)+1, true)
 }
 
 // fuzzEncodeValidateVariant2 runs the raw-float leg: a frame containing any
@@ -269,7 +312,7 @@ func fuzzEncodeValidateVariant2(t *testing.T, cfg enc.Config, data []byte, sr, k
 		t.Fatalf("Variant2 drain EncodeFrame: %v", err)
 	}
 
-	validateFrames(t, stream, sr, kbps, nch, submitted+1)
+	validateFrames(t, stream, sr, kbps, nch, submitted+1, true)
 }
 
 // fuzzFrameHasNaNOrInf reports whether any sample in samples is NaN or Inf.

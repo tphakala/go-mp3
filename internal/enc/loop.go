@@ -64,6 +64,31 @@ func betterPass(excess, ratio float64, over int, bestExcess, bestRatio float64, 
 	return over < bestOver
 }
 
+// maskingMetrics reduces a granule-channel's per-band noise (already
+// computed against xmin, e.g. via noiseGranule) to the same three
+// candidate-pass quantities outerLoop's own iteration loop computes
+// internally every pass and orders by betterPass: excess (total
+// noise-over-xmin energy summed across violating bands), ratio (the
+// worst single-band noise/xmin ratio), and over (the violating-band
+// count). Factored out (additively; outerLoop's own loop is untouched,
+// preserving its arm64-verified bytes) so codeFrame's masking-driven
+// budget escalation (Task 3 Step 3) can compare codings produced at
+// different budget grants with the exact ordering outerLoop already
+// trusts within one budget.
+func maskingMetrics(noise, xmin *[22]float64) (excess, ratio float64, over int) {
+	for sfb := range 22 {
+		if noise[sfb] <= xmin[sfb] {
+			continue
+		}
+		over++
+		excess += noise[sfb] - xmin[sfb]
+		if r := noise[sfb] / xmin[sfb]; r > ratio {
+			ratio = r
+		}
+	}
+	return excess, ratio, over
+}
+
 // outerLoop runs the ISO distortion-control loop for one granule-channel:
 // repeatedly it (a) picks scalefac_compress for the current scalefactor
 // state and runs the inner rate loop (codeGranule) within budget-part2,

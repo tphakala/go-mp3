@@ -13,6 +13,16 @@ type granuleCoding struct {
 	scfCompress int      // scalefac_compress side-info value (0 until Task 4/5)
 	scfsi       int      // scfsi bits, granule 1 only (0 until Task 4/5)
 
+	// peBits is this granule-channel's part23 bit demand estimate
+	// (granuleDemandBits applied to the psymodel's PE), set at analysis
+	// time (Task 3, codeFrame's pass 1) before the reservoir's planFrame
+	// has seen the frame's other granule-channels. It is not itself the
+	// budget the outer loop codes against (planFrame's budgets are), just
+	// the input planFrame splits: kept on granuleCoding rather than a
+	// separate Encoder-owned array so a caller inspecting one
+	// granule-channel's final coding can also see what it asked for.
+	peBits int
+
 	part23Length int // part2Bits + Huffman bits (part3); part2Bits is 0 in PR A
 	globalGain   int
 	part         spectrumPartition

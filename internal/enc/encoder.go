@@ -99,18 +99,38 @@ type Encoder struct {
 	fb   [2]Filterbank      // per-channel analysis filterbank
 	prev [2][18][32]float64 // per-channel MDCT overlap history
 	cur  [18][32]float64    // scratch: one channel's just-analyzed granule
-	xr   [576]float64       // scratch: one granule-channel's MDCT spectrum
+
+	// xr and xminXr hold every granule-channel's spectrum and calibrated
+	// threshold for the WHOLE frame (granule-major, channel-minor, the same
+	// shape as gr below), not just one scratch slot: codeFrame's analysis
+	// pass (Task 3) must finish every granule-channel before planFrame can
+	// see the frame's total demand, so the coding pass that follows needs
+	// every earlier granule-channel's xr/xminXr still around.
+	xr     [2][2][576]float64
+	xminXr [2][2][22]float64
 
 	in [2][576]float64 // per-granule staging: clamped, PCMScale-scaled samples
 
 	psy    [2]PsyModel      // per-channel psychoacoustic model 2 state
 	psyWin [2][1024]float64 // per-channel causal analysis window: clamped [-1,1] samples, BEFORE PCMScale
 	psyOut PsyOut           // scratch: one channel's just-analyzed psymodel output
-	xminXr [22]float64      // scratch: PsyOut.Xmin scaled into the xr noise domain (XminScale)
 
 	pad         paddingState
 	gr          [2][2]granuleCoding
 	bestScratch granuleCoding // outerLoop's caller-owned best-pass scratch
+	esc         escState      // codeFrame's masking-driven escalation scratch (Stage 2)
+
+	resv reservoir // bit reservoir accountant: tracks main-data occupancy across frames
+	fifo frameFIFO // pending-frame ring: the physical realization of the reservoir
+
+	// mainScratch is the reusable render buffer for both header+side-info
+	// and main-data bytes (renderFrameInto copies its output into the FIFO
+	// slot via push before mainScratch is reused for renderMainData, so the
+	// two renders never alias). Sized to the largest possible main-data
+	// spend (huffCap = 2*nch*maxPart23Length/8, planFrame's own Huffman
+	// field ceiling) plus mainScratchSlack headroom, preallocated once in
+	// Reset so codeFrame never grows it.
+	mainScratch []byte
 
 	poisoned bool
 	drained  bool
@@ -125,6 +145,51 @@ type Encoder struct {
 	diagHook func(g, ch int, diag DiagGranule) // test-only, nil in every production path; see SetDiagHookPin
 }
 
+// maskEscalationMaxCalls bounds codeFrame's Stage 2 masking-driven budget
+// escalation (design decision 9, third revision): a pure COST ceiling on
+// outerLoop invocations, not a correctness requirement. Termination is
+// proven without it (see escalateForMasking's doc comment): the main
+// loop's Phi measure (count of unsatisfied-unparked granule-channels,
+// then their summed over-count, lexicographic) strictly decreases every
+// non-breaking iteration and is bounded by nGC + 22*nGC (about 92 for
+// stereo); the fixpoint sweep terminates because an attempt requires a
+// granule-channel's offer pair to have changed since its last attempt,
+// which only happens after a betterPass acceptance, and acceptances are
+// strictly improving over a finite set of reachable outcomes per
+// granule-channel. The cap only truncates pathological slow-converging
+// cases (each outerLoop call itself capped at outerLoopMaxIters); on
+// truncation the frame is not at fixpoint and TestEncoderMaskingContract
+// may legitimately fire, which is the cost tripwire working as intended,
+// not a false positive.
+const maskEscalationMaxCalls = 128
+
+// escState is codeFrame's per-frame Stage 2 scratch, preallocated in the
+// Encoder value and re-seeded at the start of every masking-driven
+// escalation (design decision 9, third revision): the cross-budget
+// best-pass cache (best[i] plus its cached bestExcess/bestRatio/bestOver
+// metrics, ordered by loop.go's betterPass) that guarantees escalation is
+// monotone non-worsening per granule-channel and doubles as the kept
+// coding's current over-count (bestOver[i] == 0 means satisfied, since
+// gr[i] always equals best[i]); parked marks a granule-channel the main
+// loop gave up on (its full-capacity shot did not reduce its over-count);
+// triedHi/triedLo record the exact budget pair of the granule-channel's
+// most recent attempt, which the fixpoint sweep compares against a fresh
+// offer to decide whether a re-attempt is needed, and which
+// TestEncoderMaskingContract's end-of-frame re-code replays exactly once
+// the sweep reaches its fixpoint (escalation-gate agreement by
+// construction); calls counts outerLoop invocations against
+// maskEscalationMaxCalls. Sized to the maximum nGC (4, stereo); mono
+// codeFrame calls use only the first two entries, indexed g*nch+ch same
+// as gr.
+type escState struct {
+	best                  [4]granuleCoding
+	bestExcess, bestRatio [4]float64
+	bestOver              [4]int
+	parked                [4]bool
+	triedHi, triedLo      [4]int
+	calls                 int
+}
+
 // New returns a new Encoder for cfg, or an error if cfg is not a legal
 // MPEG-1 Layer III CBR configuration.
 func New(cfg Config) (*Encoder, error) {
@@ -135,9 +200,18 @@ func New(cfg Config) (*Encoder, error) {
 	return e, nil
 }
 
+// mainScratchSlack is headroom added on top of mainScratch's theoretical
+// worst-case content size (huffCap = 2*nch*maxPart23Length/8, planFrame's
+// own Huffman field ceiling: see reservoir.go's planFrame doc comment)
+// to preallocate: floor-division rounding in that formula and
+// bits.Writer.Flush's final partial-byte pad can each cost up to a byte
+// per granule-channel, well inside this margin.
+const mainScratchSlack = 8
+
 // Reset clears all stream state (filterbank history, MDCT overlap, padding
-// accumulator, poison, drain, and Stats) and revalidates cfg, as at the
-// start of a fresh stream. It is the only way to clear a poisoned Encoder.
+// accumulator, bit reservoir, pending FIFO, poison, drain, and Stats) and
+// revalidates cfg, as at the start of a fresh stream. It is the only way to
+// clear a poisoned Encoder.
 func (e *Encoder) Reset(cfg Config) error {
 	if err := cfg.validate(); err != nil {
 		return err
@@ -156,6 +230,7 @@ func (e *Encoder) Reset(cfg Config) error {
 		e.fb[ch].Reset()
 		e.psy[ch].Reset(e.srIndex)
 	}
+	e.mainScratch = make([]byte, 0, 2*e.nch*maxPart23Length/8+mainScratchSlack)
 	return nil
 }
 
@@ -164,15 +239,21 @@ func (e *Encoder) Reset(cfg Config) error {
 func (e *Encoder) Drained() bool { return e.drained }
 
 // EncodeFrame consumes exactly 1152 samples per channel of planar float32
-// PCM in [-1, 1] and appends exactly one MP3 frame to dst.
+// PCM in [-1, 1] and appends zero or more complete MP3 frames to dst: the
+// bit reservoir (Task 3) holds a coded frame in the internal FIFO until its
+// main-data area is fully threaded through by later frames' spend, so one
+// call may append nothing, one frame, or several frames that only just
+// became complete.
 //
 // Validation order: while the encoder is poisoned (a prior call saw a NaN
 // or Inf), every call, including a nil drain call, returns dst unchanged
 // with ErrInvalidAudio; only Reset clears that state. Otherwise, samples ==
 // nil drains: it encodes one final frame of silence that flushes the
 // filterbank and MDCT history (ChainDelay < 1152 guarantees that one frame
-// suffices), marks the encoder drained, and is counted in Stats; further
-// nil calls after that append nothing and return a nil error.
+// suffices), then force-flushes every frame still held in the FIFO
+// (zero-filling any unfilled area bytes), marks the encoder drained, and is
+// counted in Stats; further nil calls after that append nothing and return
+// a nil error.
 //
 // Drain is terminal: once drained, any subsequent non-nil call panics
 // (a caller-bug class, matching the length-mismatch panics below), rather
@@ -198,7 +279,11 @@ func (e *Encoder) EncodeFrame(dst []byte, samples [][]float32) ([]byte, error) {
 			return dst, nil
 		}
 		e.drained = true
-		return e.codeFrame(dst, nil), nil
+		dst = e.codeFrame(dst, nil)
+		before := len(dst)
+		dst = e.fifo.flushAll(dst)
+		e.bytes += int64(len(dst) - before)
+		return dst, nil
 	}
 
 	if e.drained {
@@ -241,22 +326,62 @@ func clamp(x float64) float64 {
 	return x
 }
 
-// codeFrame runs the full per-frame pipeline: pick this frame's padding
-// bit and main-data budget, then for each granule and channel slide the
-// psymodel's causal window, run AnalyzeGranule to get this granule's
-// masking thresholds, scale them into the xr noise domain, run
-// AnalyzeGranule -> FlipOddSubbands -> MDCTGranule -> save prev ->
-// AliasReduce to get the spectrum, then outerLoop to pick scalefactors and
-// quantize against the psymodel's targets. After both granules, scfsi is
-// detected and applied per channel, then the frame is assembled with
-// assembleFrame and Stats updated. samples == nil codes silence (the
-// per-granule staging loop below writes zero into e.in/e.psyWin instead of
-// a real sample, which flushes the filterbank, MDCT, and psymodel history
-// through one real pass of the pipeline) for the drain frame.
+// codeFrame runs the full per-frame pipeline in two passes over the frame's
+// granule-channels, plus the reservoir/FIFO handoff:
+//
+// Pass 1 (analysis): for each granule and channel, slide the psymodel's
+// causal window, run AnalyzeGranule to get this granule's masking
+// thresholds and perceptual entropy (PE), scale the thresholds into the xr
+// noise domain, then run AnalyzeGranule -> FlipOddSubbands -> MDCTGranule
+// -> save prev -> AliasReduce to get the spectrum. Every granule-channel's
+// spectrum and threshold are kept (e.xr/e.xminXr, granule-major
+// channel-minor) rather than a single scratch slot, and each one's PE
+// becomes its part23 demand estimate (gc.peBits), because the reservoir
+// needs the WHOLE frame's demand before it can split the frame's main-data
+// budget: coding cannot start until every granule-channel has been
+// analyzed.
+//
+// Between the passes: e.resv.planFrame turns the four (or two, mono)
+// demands into per-granule-channel Huffman budgets that together never
+// exceed the demand-driven huffTarget. When the reservoir's occupancy
+// forces this frame to physically spend more than that (occupancy sitting
+// at the cap with sustained low-demand content has nowhere else to put the
+// difference), codeFrame tops every budget back up to use the WHOLE forced
+// spend instead of letting the gap fall through to ancillary padding: see
+// the topping-up step's own comment below for the measured regression that
+// makes this necessary, not optional.
+//
+// Pass 2 (coding): for each granule-channel, outerLoop picks scalefactors
+// and quantizes against its planned budget. After both granules, scfsi is
+// detected and applied per channel (its savings shrink the part23 sum: an
+// automatic reservoir deposit, no different from a granule-channel that
+// simply needed fewer bits than planned).
+//
+// Reservoir handoff: this frame's main_data_begin is the reservoir's
+// occupancy BEFORE this frame's own spend (mdb), since that many
+// previously-buffered bytes are what this frame's decoder must be able to
+// reach back into. The header+side info render into mainScratch and get
+// pushed into the FIFO as a new pending slot; the main data renders into
+// the same (now-reused) mainScratch, floored at the reservoir's own
+// physical spend lower bound (spendMin, never the coded huffTarget, so a
+// granule-channel that coded more cheaply than its PE demand predicted
+// banks the difference as a real reservoir deposit instead of burning it as
+// ancillary padding), and threads through the FIFO's pending slots via
+// place. commitFrame then advances occupancy by this frame's actual spend,
+// and flushInto appends every slot that is now complete.
+//
+// samples == nil codes silence (the per-granule staging loop below writes
+// zero into e.in/e.psyWin instead of a real sample, which flushes the
+// filterbank, MDCT, and psymodel history through one real pass of the
+// pipeline) for the drain frame; EncodeFrame's drain branch force-flushes
+// whatever the FIFO still holds after this call returns.
 func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 	padding := e.pad.next(e.cfg.BitrateKbps, e.cfg.SampleRate)
 	sfb := &sfbWidthsLong[e.srIndex]
-	budget := granuleBudgetBits(e.bitrateIndex, e.srIndex, padding, e.nch)
+	nGC := 2 * e.nch
+	area := mainAreaBytes(e.bitrateIndex, e.srIndex, padding, e.nch)
+	capBytes := resCapBytes(e.bitrateIndex, e.srIndex, e.nch)
+	meanGB := area * 8 / nGC
 
 	for g := range 2 {
 		for ch := range e.nch {
@@ -277,33 +402,69 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 
 			e.psy[ch].AnalyzeGranule(e.psyWin[ch][:], &e.psyOut)
 			for s := range 22 {
-				e.xminXr[s] = float64(e.psyOut.Xmin[s] * XminScale)
+				e.xminXr[g][ch][s] = float64(e.psyOut.Xmin[s] * XminScale)
 			}
 
 			e.fb[ch].AnalyzeGranule(e.in[ch][:], &e.cur)
 			FlipOddSubbands(&e.cur)
-			MDCTGranule(&e.prev[ch], &e.cur, &e.xr)
+			MDCTGranule(&e.prev[ch], &e.cur, &e.xr[g][ch])
 			e.prev[ch] = e.cur
-			AliasReduce(&e.xr)
+			AliasReduce(&e.xr[g][ch])
 
-			_ = outerLoop(&e.xr, &e.xminXr, budget, sfb, &e.gr[g][ch], &e.bestScratch)
-
-			if e.diagHook != nil {
-				gc := &e.gr[g][ch]
-				var noise [22]float64
-				noiseGranule(&e.xr, &gc.ix, gc.globalGain, &gc.sf, sfb, &noise)
-				atCap := diagAtCap(&gc.sf)
-				var exempt [22]bool
-				for s := range 22 {
-					exempt[s] = diagFloorBound(&e.xr, sfb, budget, gc, s, atCap[s])
-				}
-				e.diagHook(g, ch, DiagGranule{Noise: noise, XminXr: e.xminXr, Exempt: exempt})
-			}
-
-			e.sumGlobalGain += int64(e.gr[g][ch].globalGain)
-			e.countGranules++
+			e.gr[g][ch].peBits = granuleDemandBits(e.psyOut.PE, meanGB)
 		}
 	}
+
+	var demands [4]int
+	for g := range 2 {
+		for ch := range e.nch {
+			demands[g*e.nch+ch] = e.gr[g][ch].peBits
+		}
+	}
+	spend, huffTarget, budgets := e.resv.planFrame(&demands, nGC, area, capBytes)
+
+	// planFrame's budgets sum to only huffTarget*8 bits, the psychoacoustic
+	// DEMAND-driven coded target. But the physical spend the reservoir will
+	// force this frame to (spend, clamped no higher when occupancy is not
+	// saturated) can run ahead of that target: once occupancy sits at cap
+	// with sustained low-PE content (nothing to draw the reservoir back
+	// down for), spend pins at area every frame while huffTarget stays at
+	// the demand floor, and the gap between them was, before this step,
+	// wasted as ancillary zero bytes. Regressed TestEncoderRoundTripSNR
+	// stereo cases down by tens of dB confirmed this in practice: at
+	// 44.1kHz/128kbps/stereo, budgets floored to ~382 bits/granule-channel
+	// (half the pre-reservoir flat rate, 762) while the forced spend had
+	// room for the full 764 (spend/nGC), and outerLoop's resulting coarser
+	// quantization tanked raw waveform SNR even though it stayed inside
+	// every band's masking threshold. Topping budgets up to use the WHOLE
+	// forced spend (not just the demand estimate) turns that would-be
+	// ancillary waste back into real precision: it can only add bits
+	// relative to planFrame's own budgets, so every existing invariant
+	// (sum(budgets) <= spend*8 <= hi*8, each budget <= maxPart23Length)
+	// still holds, and a granule-channel that does not need the extra
+	// simply leaves it as ancillary padding exactly as before, matching
+	// this increment's headline expectation that the reservoir can only
+	// help, never hurt, over the old flat-budget scheme.
+	if extraBits := (spend - huffTarget) * 8; extraBits > 0 {
+		share := extraBits / nGC
+		rem := extraBits - share*nGC
+		for i := range nGC {
+			add := share
+			if i == nGC-1 {
+				add += rem
+			}
+			budgets[i] = min(budgets[i]+add, maxPart23Length)
+		}
+	}
+
+	for g := range 2 {
+		for ch := range e.nch {
+			budget := budgets[g*e.nch+ch]
+			_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, sfb, &e.gr[g][ch], &e.bestScratch)
+		}
+	}
+
+	e.escalateForMasking(nGC, sfb, padding, area, capBytes)
 
 	for ch := range e.nch {
 		mask := detectScfsi(&e.gr[0][ch], &e.gr[1][ch])
@@ -311,8 +472,19 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 		e.scfsiSaved += int64(applyScfsi(&e.gr[1][ch], mask))
 	}
 
+	mdb := e.resv.occ
+	hdr, _ := renderFrameInto(e.mainScratch[:0], e.bitrateIndex, e.srIndex, padding, e.mode, &e.gr, e.nch, mdb)
+	n := frameLength(e.bitrateIndex, e.srIndex, padding)
+	e.fifo.push(hdr, n)
+
+	lo, _ := e.resv.spendBounds(area, capBytes, e.nch)
+	spendMin := max(lo, 0)
+	mainData := renderMainData(e.mainScratch[:0], &e.gr, e.nch, spendMin)
+	e.fifo.place(mainData)
+	e.resv.commitFrame(area, len(mainData))
+
 	before := len(dst)
-	dst = assembleFrame(dst, e.bitrateIndex, e.srIndex, padding, e.mode, &e.gr, e.nch)
+	dst = e.fifo.flushInto(dst)
 
 	e.frames++
 	e.bytes += int64(len(dst) - before)
@@ -320,6 +492,281 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 		e.paddedFrames++
 	}
 	return dst
+}
+
+// escFreeCap returns the frame's current free capacity in bits: the
+// identity hi*8 minus the sum of every granule-channel's kept coding
+// (part23Length). Reclaim is implicit in this identity (design decision
+// 9, third revision): a granule-channel that improved to fewer bits, or
+// was never granted more, automatically contributes less to the sum and
+// more to the free capacity, with no separate budget-bookkeeping array to
+// keep in sync.
+func (e *Encoder) escFreeCap(nGC, hi int) int {
+	total := 0
+	for i := range nGC {
+		g, ch := i/e.nch, i%e.nch
+		total += e.gr[g][ch].part23Length
+	}
+	return hi*8 - total
+}
+
+// escOffer returns granule-channel i's full-capacity budget right now:
+// its kept coding's part23Length plus every bit of the frame's current
+// free capacity, capped at the field limit.
+func (e *Encoder) escOffer(i, nGC, hi int) int {
+	g, ch := i/e.nch, i%e.nch
+	return min(maxPart23Length, e.gr[g][ch].part23Length+e.escFreeCap(nGC, hi))
+}
+
+// escNeediest returns the unsatisfied (bestOver != 0), unparked
+// granule-channel with the largest kept over-count, tie-broken by the
+// largest kept noise/xmin ratio (bit-portable float, the same class
+// betterPass and loop.go's worstViolator already compare), tie-broken by
+// lowest index via ascending scan with strict-greater-only replacement.
+// Returns -1 if none is eligible.
+func (e *Encoder) escNeediest(nGC int) int {
+	best := -1
+	for i := range nGC {
+		if e.esc.parked[i] || e.esc.bestOver[i] == 0 {
+			continue
+		}
+		if best < 0 || e.esc.bestOver[i] > e.esc.bestOver[best] ||
+			(e.esc.bestOver[i] == e.esc.bestOver[best] && e.esc.bestRatio[i] > e.esc.bestRatio[best]) {
+			best = i
+		}
+	}
+	return best
+}
+
+// escTryBudget re-codes granule-channel i at budget, then keeps the
+// result in the cross-budget best-pass cache (e.esc.best[i]) only if
+// betterPass finds it a strict improvement over the cached metrics;
+// otherwise gr[i] rolls back to the cached best. Counts one call against
+// maskEscalationMaxCalls. Never itself decides satisfied/parked; callers
+// (the main loop, the fixpoint sweep) do that from the resulting
+// over-count (e.esc.bestOver[i] after the call).
+func (e *Encoder) escTryBudget(i int, sfb *[22]int, budget int) {
+	e.esc.calls++
+	g, ch := i/e.nch, i%e.nch
+	gc := &e.gr[g][ch]
+	_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, sfb, gc, &e.bestScratch)
+
+	var noise [22]float64
+	noiseGranule(&e.xr[g][ch], &gc.ix, gc.globalGain, &gc.sf, sfb, &noise)
+	excess, ratio, over := maskingMetrics(&noise, &e.xminXr[g][ch])
+	if betterPass(excess, ratio, over, e.esc.bestExcess[i], e.esc.bestRatio[i], e.esc.bestOver[i]) {
+		e.esc.best[i] = *gc
+		e.esc.bestExcess[i], e.esc.bestRatio[i], e.esc.bestOver[i] = excess, ratio, over
+	} else {
+		*gc = e.esc.best[i] // roll back: this budget did not improve masking
+	}
+}
+
+// escAttempt codes granule-channel i at the budget pair (hiB, loB) via
+// escTryBudget, recording the pair as its most recently tried so the
+// fixpoint sweep can detect when a fresh offer differs from it; loB (the
+// flat-budget probe, the no-regression anchor against the pre-reservoir
+// Inc4 coding) is attempted only when it differs from hiB. hiB is always
+// attempted first: a fixed, deterministic order matters because
+// betterPass ties break earliest-wins.
+func (e *Encoder) escAttempt(i int, sfb *[22]int, hiB, loB int) {
+	e.esc.triedHi[i] = hiB
+	e.esc.triedLo[i] = loB
+	e.escTryBudget(i, sfb, hiB)
+	if loB != hiB {
+		e.escTryBudget(i, sfb, loB)
+	}
+}
+
+// escalateForMasking runs codeFrame's Stage 2 masking-driven budget
+// escalation (design decision 9, third revision) after Stage 1's initial
+// coding pass: PE-derived budgets are estimates and can under-allocate
+// below the masking threshold on frames the old flat pre-reservoir budget
+// satisfied. nGC, sfb, padding, area, capBytes mirror codeFrame's own
+// locals. Also captures the (now final) per-granule-channel diagnostic via
+// SetDiagHookPin and updates the running global-gain stats, both moved
+// here (from the single Stage 1 coding pass) so they observe the frame's
+// FINAL coding rather than the pre-escalation one.
+//
+// GREEDY NEEDIEST-FIRST MAIN LOOP: free capacity is the identity hi*8
+// minus the sum of every granule-channel's kept part23Length (escFreeCap;
+// reclaim is implicit, so no granule-channel's unused headroom can stay
+// trapped). Each iteration picks the neediest unsatisfied, unparked
+// granule-channel (escNeediest: max kept over-count, tie max kept
+// noise/xmin ratio, tie lowest index) and offers it its ENTIRE free
+// capacity (escOffer), with the flat-budget probe min(flatShare, offer)
+// riding along on every attempt (escAttempt). Progress is judged by
+// INTEGER masking progress, the granule-channel's over-count, NEVER bit
+// counts: a granule-channel whose over-count did not strictly reduce at
+// its FULL offered capacity is parked (out of the main loop for good; the
+// fixpoint sweep below still revisits it), one that reaches over==0
+// leaves the working set satisfied, and one whose over-count did
+// strictly reduce stays eligible for another, later, possibly larger or
+// smaller offer.
+//
+// DROP-RULE DEFECT this replaces (measured 48000/32kbps stereo frame 0,
+// granule 0 channel 1, sfb 12): the previous revision dropped a
+// granule-channel when its kept part23Length failed to GROW after a
+// grant. That bit-count proxy is broken by outerLoop's own
+// non-monotonicity: a bigger budget can find a strictly-better-masking
+// coding that uses FEWER bits (189 -> 195 bits offered, outerLoop
+// returned a strictly better pass at only 183, betterPass accepted it,
+// and the bit-count rule then falsely dropped a granule-channel that had
+// just genuinely improved, stranding real capacity). Judging progress by
+// over-count instead of bit count makes that impossible: an accepted
+// improvement always reduces (or satisfies) over-count regardless of how
+// many bits it used.
+//
+// FIXPOINT SWEEP: later acceptances move free capacity in both
+// directions (an accepted coding that shrank frees bits for others; one
+// that grew consumes them), so a parked or still-unsatisfied
+// granule-channel can face a different full-capacity offer than the one
+// it was last tried at. The sweep re-attempts every unsatisfied
+// granule-channel (parked or not) whose current offer pair
+// (escOffer(i), min(flatShare, escOffer(i))) differs from its last tried
+// pair (triedHi[i], triedLo[i]), ascending index order, until a full pass
+// makes zero attempts. At that fixpoint, every unsatisfied
+// granule-channel has been attempted at EXACTLY its end-of-frame
+// full-capacity offer and probe pair: TestEncoderMaskingContract's
+// end-of-frame re-code (maxGrant = BudgetBits + CapacityLeftBits, and
+// min(flatShare, maxGrant)) replays those exact already-attempted pure
+// outerLoop calls and returns the identical verdict, so a correctly
+// escalated frame can never trip the gate: escalation-gate agreement by
+// construction, not by hope.
+//
+// Termination (proven without maskEscalationMaxCalls, itself only a cost
+// ceiling on outerLoop invocations): the main loop's measure Phi = (count
+// of unsatisfied-unparked granule-channels, their summed over-count),
+// compared lexicographically, strictly decreases every non-breaking
+// iteration (satisfying or parking a granule-channel strictly drops the
+// first component; reducing its over-count while it stays eligible
+// strictly drops the second, and the switch below admits no other
+// outcome), and both components are non-negative integers bounded above
+// by nGC and 22*nGC, so the main loop terminates within nGC + 22*nGC
+// iterations regardless of the cost cap. The sweep terminates because an
+// attempt requires a granule-channel's offer pair to have changed since
+// its last attempt, which only happens after a betterPass acceptance
+// somewhere in the frame, and acceptances are strictly improving over a
+// finite set of reachable (excess, ratio, over) outcomes per
+// granule-channel (outerLoop is a pure deterministic function of its
+// inputs), so the frame admits finitely many acceptances total and a
+// pass that makes no attempt therefore ends the sweep for good.
+//
+// No-regression, three tiers (weakest premise last): HARD, the
+// cross-budget best-pass cache makes every granule-channel's kept coding
+// the betterPass-best over every budget attempted this frame, so
+// escalation can never leave a granule-channel's masking worse than
+// Stage 1's initial pass. ANCHORED, the flat-budget probe rides along on
+// every attempt whose hiB differs from it, so every unsatisfied
+// granule-channel has been coded at min(flatShare, its final
+// full-capacity offer); outerLoop is a pure function of its inputs, so
+// whenever flatShare fits the offer that attempt IS the pre-reservoir
+// Inc4 coding, bit for bit, and the cache keeps it whenever it is the
+// best seen. ENFORCED, TestEncoderMaskingContract is an independent
+// tripwire (it recomputes everything from the captured spectrum and the
+// free-capacity identity, sharing no state with this method): the
+// escalation-gate agreement argument above means it can only fire when a
+// frame was NOT escalated to fixpoint, e.g. a maskEscalationMaxCalls
+// truncation, which is the cost tripwire doing its job, not a false
+// positive.
+func (e *Encoder) escalateForMasking(nGC int, sfb *[22]int, padding, area, capBytes int) {
+	_, hi := e.resv.spendBounds(area, capBytes, e.nch)
+	flatShare := granuleBudgetBits(e.bitrateIndex, e.srIndex, padding, e.nch)
+
+	// Seed the cross-budget best-pass cache from Stage 1's initial pass.
+	// triedHi/triedLo start at -1 (an offer can never legally be
+	// negative), an unreachable sentinel that forces the fixpoint sweep
+	// to attempt any granule-channel the main loop never got to.
+	e.esc.calls = 0
+	for i := range nGC {
+		g, ch := i/e.nch, i%e.nch
+		e.esc.best[i] = e.gr[g][ch]
+		var noise [22]float64
+		noiseGranule(&e.xr[g][ch], &e.gr[g][ch].ix, e.gr[g][ch].globalGain, &e.gr[g][ch].sf, sfb, &noise)
+		e.esc.bestExcess[i], e.esc.bestRatio[i], e.esc.bestOver[i] = maskingMetrics(&noise, &e.xminXr[g][ch])
+		e.esc.parked[i] = false
+		e.esc.triedHi[i] = -1
+		e.esc.triedLo[i] = -1
+	}
+
+	// MAIN LOOP: greedy neediest-first, judged by integer over-count
+	// progress alone (never bit counts; see the doc comment above).
+	for e.esc.calls < maskEscalationMaxCalls {
+		g := e.escNeediest(nGC)
+		if g < 0 || e.escFreeCap(nGC, hi) <= 0 {
+			break
+		}
+		gg, gch := g/e.nch, g%e.nch
+		prevOver := e.esc.bestOver[g]
+		hiB := e.escOffer(g, nGC, hi)
+		if hiB <= e.gr[gg][gch].part23Length {
+			e.esc.parked[g] = true // field cap reached, nothing to offer
+			continue
+		}
+		e.escAttempt(g, sfb, hiB, min(flatShare, hiB))
+		switch {
+		case e.esc.bestOver[g] == 0:
+			// Satisfied: escNeediest excludes it for good from here on.
+		case e.esc.bestOver[g] >= prevOver:
+			e.esc.parked[g] = true // no over-count progress at full capacity
+		default:
+			// over strictly reduced: stays eligible for another offer.
+		}
+	}
+
+	// FIXPOINT SWEEP: re-attempt every unsatisfied granule-channel
+	// (parked or not) whose current offer pair differs from its last
+	// tried pair, ascending, until a full pass makes zero attempts.
+	for changed := true; changed && e.esc.calls < maskEscalationMaxCalls; {
+		changed = false
+		for i := range nGC {
+			if e.esc.bestOver[i] == 0 {
+				continue
+			}
+			hiB := e.escOffer(i, nGC, hi)
+			loB := min(flatShare, hiB)
+			if hiB != e.esc.triedHi[i] || loB != e.esc.triedLo[i] {
+				e.escAttempt(i, sfb, hiB, loB)
+				changed = true
+				if e.esc.calls >= maskEscalationMaxCalls {
+					break
+				}
+			}
+		}
+	}
+
+	// At the fixpoint gr[i] == e.esc.best[i] for every i (every attempt
+	// either accepts into the cache or rolls back to it), and
+	// capacityLeftBits is the same free-capacity identity the gate uses
+	// to reproduce maxGrant, captured once here so every granule-channel
+	// diagnosed this frame sees the identical end-of-frame value.
+	capacityLeftBits := e.escFreeCap(nGC, hi)
+
+	for i := range nGC {
+		g, ch := i/e.nch, i%e.nch
+		gc := &e.gr[g][ch]
+
+		if e.diagHook != nil {
+			var noise [22]float64
+			noiseGranule(&e.xr[g][ch], &gc.ix, gc.globalGain, &gc.sf, sfb, &noise)
+			atCap := diagAtCap(&gc.sf)
+			var exempt [22]bool
+			for s := range 22 {
+				exempt[s] = diagFloorBound(&e.xr[g][ch], sfb, gc.part23Length, gc, s, atCap[s])
+			}
+			e.diagHook(g, ch, DiagGranule{
+				Noise:            noise,
+				XminXr:           e.xminXr[g][ch],
+				Exempt:           exempt,
+				BudgetBits:       gc.part23Length,
+				CapacityLeftBits: capacityLeftBits,
+				Xr:               e.xr[g][ch],
+			})
+		}
+
+		e.sumGlobalGain += int64(gc.globalGain)
+		e.countGranules++
+	}
 }
 
 // Stats counts what the encoder emitted since New/Reset.
@@ -376,18 +823,31 @@ const ChainDelay = 1057
 // without duplicating codeFrame's logic or exposing scfState across the
 // package boundary.
 
-// DiagGranule is one granule-channel's outer-loop diagnostic snapshot:
-// the per-sfb quantization noise the final coding produced (recomputed via
+// DiagGranule is one granule-channel's post-escalation diagnostic
+// snapshot (captured AFTER Stage 2's masking-driven budget escalation, so
+// every field reflects the frame's FINAL coding, design decision 9): the
+// per-sfb quantization noise the final coding produced (recomputed via
 // noiseGranule against that granule-channel's own gc.ix/globalGain/sf),
 // the calibrated xminXr threshold the outer loop targeted, and which bands
 // are beyond the loop's reach (diagFloorBound: structurally capped, or
 // empirically proven futile to amplify further), where a residual xmin
-// violation is expected, not a defect. Test-only, filled by
-// SetDiagHookPin.
+// violation is expected, not a defect. BudgetBits is the ceiling this
+// granule-channel was last coded against (post-escalation reclaim, so it
+// equals its kept part23Length); CapacityLeftBits is the frame-level
+// headroom beyond every granule-channel's current BudgetBits (hi*8 minus
+// their sum), the same value for every granule-channel diagnosed in one
+// frame. Xr is a copy of this granule-channel's MDCT spectrum, so a gate
+// can re-run outerLoop against the captured spectrum at a larger budget to
+// check whether a residual violation is genuinely capacity-bound or
+// under-allocation with room to spare (TestEncoderMaskingContract's
+// distinguisher). Test-only, filled by SetDiagHookPin.
 type DiagGranule struct {
-	Noise  [22]float64
-	XminXr [22]float64
-	Exempt [22]bool
+	Noise            [22]float64
+	XminXr           [22]float64
+	Exempt           [22]bool
+	BudgetBits       int
+	CapacityLeftBits int
+	Xr               [576]float64
 }
 
 // SetDiagHookPin installs a test-only hook that codeFrame invokes once per

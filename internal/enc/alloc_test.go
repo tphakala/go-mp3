@@ -10,7 +10,11 @@ import "testing"
 // allocate nothing beyond growing the caller-provided dst on the first
 // call. Two warmup frames prime dst's backing array (so later calls append
 // within capacity, not grow it) and any first-call-only lazy state; the
-// measured 50 runs reuse the same pre-grown dst and sample buffers.
+// measured 5 runs reuse the same pre-grown dst and sample buffers. Alloc
+// count is deterministic per call (not a statistical measurement), so a
+// small run count is enough to catch a regression while keeping this test
+// affordable: each run pays the masking-driven escalation's outer-loop cost
+// at 128k stereo broadband content.
 //
 // A nonzero result means the hot path grew a per-call allocation and must
 // be moved back into a reused Encoder field; go build -gcflags=-m
@@ -35,7 +39,7 @@ func TestEncodeSteadyStateAllocs(t *testing.T) {
 		}
 	}
 
-	avg := testing.AllocsPerRun(50, func() {
+	avg := testing.AllocsPerRun(5, func() {
 		var encErr error
 		dst, encErr = e.EncodeFrame(dst[:0], samples)
 		if encErr != nil {

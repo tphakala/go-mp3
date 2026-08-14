@@ -133,9 +133,25 @@ func (r *reservoir) planFrame(demands *[4]int, nGC, area, capBytes int) (spendBy
 
 // ResCapBytesPin exposes the occupancy cap to the internal/dec
 // occupancy-replay validator (test-only entry, the AppendFramePin
-// precedent), keyed by the header-derived kbps and sample rate.
+// precedent), keyed by the header-derived kbps and sample rate. Guards both
+// map lookups (carry-forward from Task 1's review: an unknown kbps or
+// sampleRateHz would otherwise silently fall through to index 0 and compute
+// a wrong, possibly negative cap) with a panic instead, since a caller
+// passing an illegal combination is a test-harness bug this pin should
+// surface immediately rather than let ripple into a confusing replay
+// failure. Defense in depth only: real callers derive kbps/sampleRateHz
+// from a decoder-validated header, which already rejects illegal bitrate
+// and sample-rate indices at sync.
 func ResCapBytesPin(kbps, sampleRateHz, nch int) int {
-	return resCapBytes(bitrateIndexForKbps[kbps], srIndexForRate[sampleRateHz], nch)
+	bitrateIndex, ok := bitrateIndexForKbps[kbps]
+	if !ok {
+		panic("enc: ResCapBytesPin: unknown bitrate")
+	}
+	srIndex, ok := srIndexForRate[sampleRateHz]
+	if !ok {
+		panic("enc: ResCapBytesPin: unknown sample rate")
+	}
+	return resCapBytes(bitrateIndex, srIndex, nch)
 }
 
 // commitFrame records a coded frame: occupancy gains the unspent bytes.

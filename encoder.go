@@ -320,11 +320,24 @@ func (e *Encoder) Delay() int { return EncoderDelay }
 
 // Stats returns the encoder's cumulative counters since NewEncoder or the
 // last Reset. It returns a zero Stats on a zero-value Encoder.
+//
+// Field by field, not a bare struct conversion: internal/enc.Stats gained
+// a ScfsiBitsSaved field (Phase 4 increment 4) that is internal accounting
+// only, not part of this public API, so a straight Stats(e.enc.Stats())
+// conversion would no longer compile once the two structs' field sets
+// diverged; this stays correct regardless of which fields internal/enc.Stats
+// adds in the future.
 func (e *Encoder) Stats() Stats {
 	if e.enc == nil {
 		return Stats{}
 	}
-	return Stats(e.enc.Stats())
+	s := e.enc.Stats()
+	return Stats{
+		Frames:         s.Frames,
+		Bytes:          s.Bytes,
+		PaddedFrames:   s.PaddedFrames,
+		MeanGlobalGain: s.MeanGlobalGain,
+	}
 }
 
 // Stats counts what an Encoder emitted since NewEncoder or the last Reset.

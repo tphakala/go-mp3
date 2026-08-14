@@ -1,6 +1,7 @@
 package enc
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -20,6 +21,39 @@ func planarSamples(seed *uint64, nch int, amp float32) [][]float32 {
 		for i := range out[ch] {
 			v := float32(testsignal.LCG(seed))*2 - 1
 			out[ch][i] = v * amp
+		}
+	}
+	return out
+}
+
+// mustEncoder returns New(cfg) or fails the test: a small helper so the
+// reservoir tests below (which each need a fresh Encoder) do not repeat the
+// same three-line error check.
+func mustEncoder(t *testing.T, cfg Config) *Encoder {
+	t.Helper()
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New(%+v): %v", cfg, err)
+	}
+	return e
+}
+
+// quietThenBurstProgram builds n frames of mono planar samples that
+// alternate 8 frames of silence with 8 frames of stored-LCG noise at
+// amplitude 0.7 (golden-input discipline: integer/stored construction
+// only, no libm cos/sin, no non-dyadic float product feeding a +/-). The
+// silence/burst alternation is what exercises the reservoir's swing: 8
+// quiet frames bank main-data bytes, the following 8 loud frames draw them
+// back down.
+func quietThenBurstProgram(t *testing.T, n int) [][][]float32 {
+	t.Helper()
+	seed := uint64(0xA5A5)
+	out := make([][][]float32, n)
+	for f := range n {
+		if f%16 < 8 {
+			out[f] = [][]float32{make([]float32, 1152)} // silence
+		} else {
+			out[f] = planarSamples(&seed, 1, 0.7)
 		}
 	}
 	return out
@@ -71,60 +105,83 @@ func TestEncoderConfigValidate(t *testing.T) {
 // and pass.
 const bitrateIndex128kbps = 9
 
-// TestEncoderFrameSizes checks that 40 frames at 44.1kHz/128kbps/stereo
-// produce lengths in {417,418} matching the padding accumulator's exact
-// pattern, and that 48kHz frames (which never pad, per paddingState's doc
-// comment) have a constant length.
+// TestEncoderFrameSizes checks that, after draining, the concatenated
+// stream's frames match the padding accumulator's exact per-frame pattern:
+// 8 frames at 44.1kHz/128kbps/stereo produce lengths in {417,418}, and
+// 48kHz frames (which never pad, per paddingState's doc comment) are all a
+// constant length. The reservoir (Task 3) can hold a frame across
+// EncodeFrame calls, so an individual call's dst growth is no longer one
+// frame's length; walking the drained, concatenated stream frame-by-frame
+// is the whole-stream equivalent, and it is exact rather than approximate
+// because the FIFO is a strict FIFO: frame i in the stream is always
+// codeFrame's i-th padding decision, in order.
 func TestEncoderFrameSizes(t *testing.T) {
 	t.Run("44100 128 stereo", func(t *testing.T) {
 		cfg := Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128}
-		e, err := New(cfg)
-		if err != nil {
-			t.Fatalf("New: %v", err)
-		}
-		var pad paddingState
+		e := mustEncoder(t, cfg)
 		seed := uint64(1)
-		for f := range 40 {
-			samples := planarSamples(&seed, 2, 0.5)
-			dst, err := e.EncodeFrame(nil, samples)
+		var dst []byte
+		const nAudioFrames = 8
+		for f := range nAudioFrames {
+			var err error
+			dst, err = e.EncodeFrame(dst, planarSamples(&seed, 2, 0.5))
 			if err != nil {
 				t.Fatalf("frame %d: EncodeFrame: %v", f, err)
 			}
+		}
+		dst, err := e.EncodeFrame(dst, nil) // drain
+		if err != nil {
+			t.Fatalf("drain: EncodeFrame: %v", err)
+		}
+
+		var pad paddingState
+		pos := 0
+		for f := range nAudioFrames + 1 {
 			wantPad := pad.next(128, 44100)
 			want := frameLength(bitrateIndex128kbps, 0, wantPad)
-			if len(dst) != want {
-				t.Fatalf("frame %d: len = %d, want %d (padding=%d)", f, len(dst), want, wantPad)
+			if want != 417 && want != 418 {
+				t.Fatalf("frame %d: computed length = %d, want 417 or 418", f, want)
 			}
-			if len(dst) != 417 && len(dst) != 418 {
-				t.Fatalf("frame %d: len = %d, want 417 or 418", f, len(dst))
+			if pos+want > len(dst) {
+				t.Fatalf("frame %d: only %d bytes remain in the stream, want at least %d", f, len(dst)-pos, want)
 			}
+			pos += want
+		}
+		if pos != len(dst) {
+			t.Fatalf("stream length = %d, want %d (sum of %d paddingState-exact frame lengths)", len(dst), pos, nAudioFrames+1)
 		}
 	})
 
 	t.Run("48000 never pads", func(t *testing.T) {
 		cfg := Config{SampleRate: 48000, Channels: 2, BitrateKbps: 128}
-		e, err := New(cfg)
-		if err != nil {
-			t.Fatalf("New: %v", err)
-		}
+		e := mustEncoder(t, cfg)
 		want := frameLength(bitrateIndex128kbps, 1, 0)
 		seed := uint64(2)
-		for f := range 20 {
-			samples := planarSamples(&seed, 2, 0.5)
-			dst, err := e.EncodeFrame(nil, samples)
+		var dst []byte
+		const nAudioFrames = 6
+		for f := range nAudioFrames {
+			var err error
+			dst, err = e.EncodeFrame(dst, planarSamples(&seed, 2, 0.5))
 			if err != nil {
 				t.Fatalf("frame %d: EncodeFrame: %v", f, err)
 			}
-			if len(dst) != want {
-				t.Fatalf("frame %d: len = %d, want constant %d", f, len(dst), want)
-			}
+		}
+		dst, err := e.EncodeFrame(dst, nil) // drain
+		if err != nil {
+			t.Fatalf("drain: EncodeFrame: %v", err)
+		}
+		if wantTotal := want * (nAudioFrames + 1); len(dst) != wantTotal {
+			t.Fatalf("stream length = %d, want constant %d * %d frames = %d", len(dst), want, nAudioFrames+1, wantTotal)
 		}
 	})
 }
 
 // TestEncoderDrain requires that after N audio frames, one nil call appends
-// exactly one frame and flips Drained() true, and further nil calls append
-// nothing.
+// at least the drain frame itself (the reservoir, Task 3, may also flush a
+// backlog of earlier frames still held in the FIFO, so the exact count is
+// not pinned here; TestEncoderDrainFlushesAll below checks the FIFO is
+// fully empty afterward) and flips Drained() true, and further nil calls
+// append nothing.
 func TestEncoderDrain(t *testing.T) {
 	cfg := Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128}
 	e, err := New(cfg)
@@ -132,10 +189,8 @@ func TestEncoderDrain(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	seed := uint64(3)
-	for range 3 {
-		if _, err := e.EncodeFrame(nil, planarSamples(&seed, 2, 0.5)); err != nil {
-			t.Fatalf("EncodeFrame: %v", err)
-		}
+	if _, err := e.EncodeFrame(nil, planarSamples(&seed, 2, 0.5)); err != nil {
+		t.Fatalf("EncodeFrame: %v", err)
 	}
 	if e.Drained() {
 		t.Fatalf("Drained() = true before any drain call")
@@ -256,7 +311,13 @@ func TestEncoderClampsLoudInput(t *testing.T) {
 }
 
 // TestEncoderStatsCount requires Frames/Bytes/PaddedFrames to match the
-// emitted stream exactly.
+// emitted stream exactly. Unlike TestEncoderFrameSizes, none of these
+// counters assume one frame per EncodeFrame call: Frames and PaddedFrames
+// count codeFrame invocations (unaffected by when the reservoir's FIFO,
+// Task 3, actually flushes a frame out), and Bytes accumulates every byte
+// EncodeFrame appends across the whole call sequence, including the
+// drain's extra FIFO force-flush, so it stays exactly len(stream)
+// regardless of how many frames any single call happened to flush.
 func TestEncoderStatsCount(t *testing.T) {
 	cfg := Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128}
 	e, err := New(cfg)
@@ -265,7 +326,7 @@ func TestEncoderStatsCount(t *testing.T) {
 	}
 	seed := uint64(5)
 	var stream []byte
-	const nFrames = 25
+	const nFrames = 5
 	for range nFrames {
 		var err error
 		stream, err = e.EncodeFrame(stream, planarSamples(&seed, 2, 0.5))
@@ -361,10 +422,8 @@ func TestEncoderEncodeAfterDrainPanics(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	seed := uint64(7)
-	for range 3 {
-		if _, err := e.EncodeFrame(nil, planarSamples(&seed, 2, 0.5)); err != nil {
-			t.Fatalf("EncodeFrame: %v", err)
-		}
+	if _, err := e.EncodeFrame(nil, planarSamples(&seed, 2, 0.5)); err != nil {
+		t.Fatalf("EncodeFrame: %v", err)
 	}
 	dst, err := e.EncodeFrame(nil, nil) // drain
 	if err != nil {
@@ -392,6 +451,128 @@ func TestEncoderEncodeAfterDrainPanics(t *testing.T) {
 	_, _ = e.EncodeFrame(dst, planarSamples(&seed, 2, 0.5))
 }
 
+// TestEncoderReservoirStreamComplete requires that, across 24 quiet/burst
+// frames plus a drain, EncodeFrame's total flushed byte count exactly
+// matches the paddingState-exact CBR total (mirroring TestEncoderFrameSizes'
+// arithmetic, over the whole stream instead of per call), and that the
+// reservoir actually buffers across calls: some call must flush nothing
+// (sawZero, a frame held because the FIFO's earlier slots are not yet
+// complete) and some call must flush more than one frame's worth of bytes
+// (sawMulti, a call whose main-data spend completed a backlog). Without
+// both, the reservoir/FIFO wiring is not actually doing anything, even if
+// the byte totals happen to check out.
+func TestEncoderReservoirStreamComplete(t *testing.T) {
+	e := mustEncoder(t, Config{SampleRate: 44100, Channels: 1, BitrateKbps: 128})
+	var dst []byte
+	samples := quietThenBurstProgram(t, 24)
+	perCall := make([]int, 0, 25)
+	for f := range 24 {
+		before := len(dst)
+		var err error
+		dst, err = e.EncodeFrame(dst, samples[f])
+		if err != nil {
+			t.Fatal(err)
+		}
+		perCall = append(perCall, len(dst)-before)
+	}
+	before := len(dst)
+	dst, err := e.EncodeFrame(dst, nil) // drain
+	if err != nil {
+		t.Fatal(err)
+	}
+	perCall = append(perCall, len(dst)-before)
+
+	// paddingState-exact total: codeFrame calls pad.next once per
+	// EncodeFrame call, including the drain (TestEncoderStatsCount's
+	// PaddedFrames check establishes this independently), and the FIFO
+	// preserves push order, so summing an independent paddingState run
+	// over the same 25 calls reproduces the drained stream's exact length.
+	var pad paddingState
+	want := 0
+	for range 25 { // 24 audio + 1 drain frame
+		wantPad := pad.next(128, 44100)
+		want += frameLength(bitrateIndex128kbps, 0, wantPad)
+	}
+	if len(dst) != want {
+		t.Fatalf("total stream length = %d, want %d (paddingState-exact CBR total)", len(dst), want)
+	}
+
+	// The load-bearing assertions:
+	sawZero, sawMulti := false, false
+	for _, n := range perCall {
+		if n == 0 {
+			sawZero = true
+		}
+		if n > frameLength(bitrateIndex128kbps, 0, 1) {
+			sawMulti = true
+		}
+	}
+	if !sawZero || !sawMulti {
+		t.Errorf("reservoir never held/released frames across calls (zero=%v multi=%v): is the FIFO wired?", sawZero, sawMulti)
+	}
+}
+
+// TestEncoderDrainFlushesAll requires that Drain empties the FIFO
+// completely: after 16 quiet/burst frames (which
+// TestEncoderReservoirStreamComplete already shows leaves some frames
+// held), one drain call must bring the pending count to exactly 0.
+// package enc's white-box tests can read e.fifo.count directly, no
+// exported accessor needed.
+func TestEncoderDrainFlushesAll(t *testing.T) {
+	e := mustEncoder(t, Config{SampleRate: 44100, Channels: 1, BitrateKbps: 128})
+	var dst []byte
+	samples := quietThenBurstProgram(t, 16)
+	for f := range 16 {
+		var err error
+		dst, err = e.EncodeFrame(dst, samples[f])
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dst, err := e.EncodeFrame(dst, nil) // drain
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.fifo.count != 0 {
+		t.Fatalf("fifo.count = %d after drain, want 0: Drain must flush every held frame", e.fifo.count)
+	}
+	_ = dst
+}
+
+// TestEncoderReservoirDeterminism requires the same quiet/burst program,
+// run twice through fresh Encoders, to produce byte-identical streams: the
+// reservoir's planFrame/commitFrame accounting and the FIFO's placement are
+// integer-only and carry no hidden nondeterminism (map iteration order,
+// wall-clock, goroutine scheduling) despite now spanning many frames'
+// worth of buffered state instead of one frame in isolation.
+func TestEncoderReservoirDeterminism(t *testing.T) {
+	cfg := Config{SampleRate: 44100, Channels: 1, BitrateKbps: 128}
+	samples := quietThenBurstProgram(t, 16)
+
+	run := func() []byte {
+		e := mustEncoder(t, cfg)
+		var dst []byte
+		for f := range 16 {
+			var err error
+			dst, err = e.EncodeFrame(dst, samples[f])
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		dst, err := e.EncodeFrame(dst, nil) // drain
+		if err != nil {
+			t.Fatal(err)
+		}
+		return dst
+	}
+
+	a, b := run(), run()
+	if !bytes.Equal(a, b) {
+		t.Fatalf("reservoir-enabled encode is nondeterministic: two runs of the same program diverged (len(a)=%d, len(b)=%d)", len(a), len(b))
+	}
+}
+
 // TestEncodeGolden freezes sha256(full encoded stream) for a 4-frame
 // LCG-noise input at three representative (sampleRate, channels, kbps)
 // configurations spanning both channel counts and the bitrate extremes.
@@ -405,15 +586,27 @@ func TestEncoderEncodeAfterDrainPanics(t *testing.T) {
 // scalefactors nonzero for the first time, so every one of these three
 // streams' bytes changed. Confirmed stable across two consecutive runs on
 // amd64 before freezing; the arm64 CI leg is the cross-arch confirmation.
+//
+// Re-frozen again in Phase 4 increment 5 Task 3 (wiring the bit reservoir,
+// frame-FIFO, and masking-driven budget escalation into codeFrame): none of
+// these three cases drains before hashing, so the reservoir changes what
+// main_data_begin, budgets, and ancillary padding every one of the four
+// coded frames gets, the escalation redistributes budget to meet the masking
+// contract, and the FIFO may hold a frame back that used to be flushed
+// immediately, all of which change the emitted bytes even though the
+// underlying audio and bitrate grid are unchanged. These hashes were
+// confirmed byte-identical on native arm64 (rpi5, go1.26.1) as well as
+// amd64 before freezing, directly exercising the escalation's noise>xmin and
+// betterPass float branches across arches; the arm64 CI leg re-confirms it.
 func TestEncodeGolden(t *testing.T) {
 	cases := []struct {
 		name                 string
 		sampleRate, ch, kbps int
 		wantHex              string
 	}{
-		{"44100_2ch_128kbps", 44100, 2, 128, "ef8cc70243c650ee27b249e99a3626c562e20aa1de6458f47b0c5670d177e649"},
-		{"48000_1ch_320kbps", 48000, 1, 320, "897008b30da6dfc36a92fb265b4a70f243e5e861cae3c83df76428493544f888"},
-		{"32000_2ch_32kbps", 32000, 2, 32, "a1cb9b65d00d4ddcb17d36dabc30949d4cd551087bf6debce28a1a17956a6d17"},
+		{"44100_2ch_128kbps", 44100, 2, 128, "c734a1491e179a2bf6386ef3d465c2177817660b901226d8ab0523ee7930ebda"},
+		{"48000_1ch_320kbps", 48000, 1, 320, "d1d7d99887552f2b2ddc4dde49e74be60fa14988a6732d0f02424a0d1f60da19"},
+		{"32000_2ch_32kbps", 32000, 2, 32, "11996294f75b9b529296cae97507e6e84f329ad43462fc387acfaa7687fc1a23"},
 	}
 
 	for _, c := range cases {

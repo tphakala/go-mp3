@@ -159,14 +159,15 @@ func TestEncoderShortFinalFrame(t *testing.T) {
 		}
 	}
 
+	// The short final frame zero-pads and finalizes, but with the bit
+	// reservoir a frame may be held in the FIFO rather than flushed on its
+	// own EncodeFrame call, so this call can legitimately append nothing; the
+	// nil drain below is what force-flushes the held backlog and the final
+	// history-flushing frame.
 	short := planarNoise(&seed, 2, 799, 0.5)
-	before := len(stream)
 	stream, err = e.EncodeFrame(stream, short)
 	if err != nil {
 		t.Fatalf("EncodeFrame with short final frame: %v", err)
-	}
-	if len(stream) == before {
-		t.Fatalf("short final frame appended nothing")
 	}
 
 	if _, err := e.EncodeFrame(stream, full); !errors.Is(err, mp3.ErrEncoderFinalized) {
@@ -209,6 +210,13 @@ func TestEncoderDefaultBitrate(t *testing.T) {
 	stream, err := e.EncodeFrame(nil, samples)
 	if err != nil {
 		t.Fatalf("EncodeFrame: %v", err)
+	}
+	// The bit reservoir may hold the first frame in the FIFO rather than
+	// flush it on its own call, so drain to force the stream out before
+	// decoding.
+	stream, err = e.EncodeFrame(stream, nil)
+	if err != nil {
+		t.Fatalf("drain EncodeFrame: %v", err)
 	}
 
 	d := mp3.NewDecoder()

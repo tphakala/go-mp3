@@ -157,6 +157,53 @@ func compatEncodeStereoStream(t *testing.T, sampleRate, kbps int, left, right []
 	return stream, e.Stats()
 }
 
+// mpegBitrateKbps and mpegSampleRateHz are the ISO/IEC 11172-3 MPEG-1 Layer
+// III header field tables (Table B.1 and the sampling_frequency field),
+// reproduced here so countMSFrames can walk a stream's frame headers
+// standalone: package mp3_test cannot reach internal/enc's own copies of
+// these tables (frame.go's bitrateKbpsTable, sampleRateHzTable), and this
+// package has no exported frame-header-parsing API of its own.
+var (
+	mpegBitrateKbps  = [15]int{0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320}
+	mpegSampleRateHz = [3]int{44100, 48000, 32000}
+)
+
+// countMSFrames walks stream as consecutive MPEG-1 Layer III frames and
+// returns how many carry mode==1 (joint stereo) and mode_extension==2 (M/S
+// on, intensity stereo off): the exact header bits encoder.go's codeFrame
+// writes when msDecide selects M/S for a frame (internal/enc/encoder.go's
+// mode, modeExt assignment). Used to confirm the "identical" M/S compat
+// program actually produced M/S-coded frames rather than the base L/R grid
+// this package's encoder always falls back to.
+func countMSFrames(t *testing.T, stream []byte) int {
+	t.Helper()
+
+	count := 0
+	for off := 0; off+4 <= len(stream); {
+		h := stream[off : off+4]
+		if h[0] != 0xFF || h[1]&0xE0 != 0xE0 {
+			t.Fatalf("countMSFrames: bad frame sync at offset %d: % x", off, h[:2])
+		}
+
+		bitrateIndex := int(h[2] >> 4)
+		srIndex := int(h[2] >> 2 & 3)
+		padding := int(h[2] >> 1 & 1)
+		mode := int(h[3] >> 6 & 3)
+		modeExt := int(h[3] >> 4 & 3)
+
+		if bitrateIndex < 1 || bitrateIndex > 14 || srIndex > 2 {
+			t.Fatalf("countMSFrames: unsupported bitrate/sample-rate index at offset %d: br=%d sr=%d", off, bitrateIndex, srIndex)
+		}
+
+		if mode == 1 && modeExt == 2 {
+			count++
+		}
+
+		off += 144000*mpegBitrateKbps[bitrateIndex]/mpegSampleRateHz[srIndex] + padding
+	}
+	return count
+}
+
 // requireCompatBinary resolves name on PATH, or skips (or, under
 // MP3_REQUIRE_COMPAT=1, fails) the test: the same convention
 // MP3_REQUIRE_DUMPS uses (internal/dec/dumps_test.go), so a missing local
@@ -312,6 +359,21 @@ func TestCompatFfmpegMpg123MS(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
 					stream, stats := compatEncodeStereoStream(t, sr, kbps, p.left, p.right)
+
+					// The "identical" program is constructed so the side
+					// channel goes near-silent every frame
+					// (compatIdenticalNoise's doc comment), which forces
+					// msDecide to select M/S every frame. If msDecide
+					// regressed to always returning false, this test
+					// would otherwise stay green while exercising nothing
+					// beyond the base L/R grid. "decorrelated" gets no
+					// such requirement: it may legitimately stay mostly
+					// L/R.
+					if p.name == "identical" {
+						if n := countMSFrames(t, stream); n == 0 {
+							t.Fatalf("%s: no M/S-coded frames found, want at least one", name)
+						}
+					}
 
 					path := filepath.Join(dir, name+".mp3")
 					if err := os.WriteFile(path, stream, 0o644); err != nil {

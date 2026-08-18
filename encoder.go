@@ -81,8 +81,10 @@ type EncoderConfig struct {
 	// SampleRate is the input sample rate in Hz: 32000, 44100, or 48000.
 	// Required.
 	SampleRate int
-	// Channels is the number of audio channels: 1 (mono) or 2 (L/R
-	// stereo). Required.
+	// Channels is the number of audio channels: 1 (mono) or 2 (stereo).
+	// For stereo, the encoder automatically selects L/R or M/S joint
+	// stereo per frame based on the signal; both decode to 2 channels.
+	// Required.
 	Channels int
 	// Bitrate is the CBR target for the whole stream, in bits per second:
 	// one of 32000, 40000, 48000, 56000, 64000, 80000, 96000, 112000,

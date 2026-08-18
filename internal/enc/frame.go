@@ -309,9 +309,9 @@ func (f *frameFIFO) unfilled() int {
 // into dst, and returns the extended slice along with base: the number of
 // bytes just written (4-byte header plus the side-info block), which is
 // where this frame's main-data area begins. mainDataBegin is written into
-// the side info's main_data_begin field verbatim; every caller in this
-// package today passes 0, matching Phase 3's hardcoded value (the
-// reservoir, once wired in Task 3, is what makes it nonzero).
+// the side info's main_data_begin field verbatim; codeFrame passes the
+// reservoir's live occupancy (e.resv.occ), while only the test-only legacy
+// pin helpers (the assembleFrame path) pass 0.
 func renderFrameInto(dst []byte, bitrateIndex, srIndex, padding, mode, modeExt int, gr *[2][2]granuleCoding, nch, mainDataBegin int) (out []byte, base int) {
 	frameStart := len(dst)
 	header := frameHeader(bitrateIndex, srIndex, padding, mode, modeExt)

@@ -195,7 +195,7 @@ func f64(x []float32) []float64 {
 // masking-driven bit escalation to exploit), so this floor is set
 // independently rather than reusing that grid's tonal numbers, and 3dB below
 // the measured minimum across the three gates (measured: 16.45dB noise,
-// 78.84dB tone; see each test's t.Logf output and task-3-report.md).
+// 78.84dB tone; see each test's t.Logf output).
 const msNoiseFloorDB = 13.0
 
 // TestMsSqrt2Calibration is the silent-factor tripwire (the

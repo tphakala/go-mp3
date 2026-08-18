@@ -66,11 +66,12 @@ jobs:
       # ffmpeg and mpg123 are black-box decode references only (see
       # PROVENANCE.md); their source is never consulted.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg mpg123
-      # Longer than the 10m per-binary default: the joint-stereo compat
-      # streams are compute-heavy on low-bitrate broadband content (a known
-      # Phase 5 throughput follow-up, same root cause as the test job's
-      # timeout above), so the default timeout is too tight on shared CI
-      # runners.
+      # Longer than the 10m per-binary default: this job's total runtime is
+      # the base compat grid across all sample rates plus the new
+      # joint-stereo matrix, both run through ffmpeg and mpg123, made
+      # compute-heavy by the encoder's masking-driven budget escalation (a
+      # known Phase 5 throughput follow-up), so the default timeout is too
+      # tight on shared CI runners.
       - run: go test ./ -run Compat -v -timeout 25m
         env:
           MP3_REQUIRE_COMPAT: '1'

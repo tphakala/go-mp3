@@ -581,14 +581,14 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 // exclusively through this helper so a cross-representation wiring mistake
 // (budgeting an M/S frame from an L/R PE, say) is a compile-visible oddity
 // rather than a silent bug.
-func (e *Encoder) chosenRep(c int) int {
+func (e *Encoder) chosenRep(ch int) int {
 	if e.msFrame {
-		if c == 0 {
+		if ch == 0 {
 			return repM
 		}
 		return repS
 	}
-	if c == 0 {
+	if ch == 0 {
 		return repL
 	}
 	return repR

@@ -129,6 +129,25 @@ func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps,
 			t.Fatalf("frame %d: hdrSampleRateHz = %d, want %d", frames, got, wantSampleRate)
 		}
 
+		mode := (h[3] >> 6) & 3
+		modeExt := (h[3] >> 4) & 3
+		switch {
+		case wantNch == 1:
+			if mode != 3 {
+				t.Fatalf("frame %d: mode = %d, want 3 (mono)", frames, mode)
+			}
+		case mode == 1:
+			if modeExt != 2 {
+				t.Fatalf("frame %d: mode 1 (joint stereo), mode_extension = %d, want 2 (M/S on, intensity off: this encoder never emits intensity)", frames, modeExt)
+			}
+		case mode == 0:
+			if modeExt != 0 {
+				t.Fatalf("frame %d: mode 0 (L/R stereo), mode_extension = %d, want 0", frames, modeExt)
+			}
+		default:
+			t.Fatalf("frame %d: mode = %d, want 0 or 1 for a stereo stream", frames, mode)
+		}
+
 		frameBytes := hdrFrameBytes(h, 0) + hdrPadding(h)
 		if pos+frameBytes > len(stream) {
 			t.Fatalf("frame %d: frame length %d overruns the remaining %d stream bytes", frames, frameBytes, len(stream)-pos)

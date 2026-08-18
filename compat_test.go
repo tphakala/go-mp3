@@ -91,6 +91,72 @@ func compatEncodeStream(t *testing.T, sampleRate, nch, kbps int) ([]byte, mp3.St
 	return stream, e.Stats()
 }
 
+// compatIdenticalNoise returns nSamples of low-level LCG noise intended to
+// be duplicated on both channels: identical L/R forces M/S every frame
+// (the side channel goes near-silent before quantization), matching
+// TestMsIdenticalChannels' construction (internal/dec/encx_mstereo_test.go),
+// reproduced here since that file's helper lives in a different,
+// non-importable package.
+func compatIdenticalNoise(nSamples int) []float32 {
+	seed := uint64(0xC0FFEE)
+	x := make([]float32, nSamples)
+	for i := range x {
+		x[i] = float32(testsignal.LCGSigned(&seed) * 0.3)
+	}
+	return x
+}
+
+// compatDecorrelatedNoise returns two independent LCG noise channels with
+// no shared structure at all, matching TestMsChannelSeparation's
+// construction (internal/dec/encx_mstereo_test.go), reproduced here for the
+// same reason compatIdenticalNoise is.
+func compatDecorrelatedNoise(nSamples int) (x, y []float32) {
+	seedX, seedY := uint64(0x5EED1), uint64(0x5EED2)
+	x = make([]float32, nSamples)
+	y = make([]float32, nSamples)
+	for i := range x {
+		x[i] = float32(testsignal.LCGSigned(&seedX) * 0.5)
+		y[i] = float32(testsignal.LCGSigned(&seedY) * 0.5)
+	}
+	return x, y
+}
+
+// compatEncodeStereoStream encodes one second of precomputed stereo input
+// (left, right, each exactly compatFramesForOneSecond(sampleRate)*
+// mp3.FrameSize samples) through the public mp3.Encoder at kbps, drains it,
+// and returns the resulting stream plus the encoder's cumulative Stats.
+// Shared by the identical-channels and decorrelated-noise M/S compat
+// programs below, which need explicit per-channel content rather than
+// compatMultiTone's phase-offset tones.
+func compatEncodeStereoStream(t *testing.T, sampleRate, kbps int, left, right []float32) ([]byte, mp3.Stats) {
+	t.Helper()
+
+	e, err := mp3.NewEncoder(mp3.EncoderConfig{SampleRate: sampleRate, Channels: 2, Bitrate: kbps * 1000})
+	if err != nil {
+		t.Fatalf("NewEncoder(sr=%d kbps=%d): %v", sampleRate, kbps, err)
+	}
+
+	nFrames := compatFramesForOneSecond(sampleRate)
+
+	var stream []byte
+	for f := range nFrames {
+		samples := [][]float32{
+			left[f*mp3.FrameSize : (f+1)*mp3.FrameSize],
+			right[f*mp3.FrameSize : (f+1)*mp3.FrameSize],
+		}
+		stream, err = e.EncodeFrame(stream, samples)
+		if err != nil {
+			t.Fatalf("EncodeFrame at frame %d: %v", f, err)
+		}
+	}
+	stream, err = e.EncodeFrame(stream, nil) // drain
+	if err != nil {
+		t.Fatalf("drain EncodeFrame: %v", err)
+	}
+
+	return stream, e.Stats()
+}
+
 // requireCompatBinary resolves name on PATH, or skips (or, under
 // MP3_REQUIRE_COMPAT=1, fails) the test: the same convention
 // MP3_REQUIRE_DUMPS uses (internal/dec/dumps_test.go), so a missing local
@@ -192,6 +258,60 @@ func TestCompatFfmpegMpg123(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
 					stream, stats := compatEncodeStream(t, sr, nch, kbps)
+
+					path := filepath.Join(dir, name+".mp3")
+					if err := os.WriteFile(path, stream, 0o644); err != nil {
+						t.Fatalf("WriteFile: %v", err)
+					}
+
+					compatCheckFfmpeg(t, ffmpeg, path)
+					compatCheckMpg123(t, mpg123, path)
+					compatCheckDuration(t, ffprobe, path, sr, stats)
+				})
+			}
+		}
+	}
+}
+
+// TestCompatFfmpegMpg123MS extends the compat gate with two M/S-forcing
+// stereo programs the base grid's phase-offset multitone never reaches:
+// identical channels (near-silent side channel, M/S selected every frame)
+// and fully decorrelated noise (independent per-channel content, the
+// channel-separation gate's construction). Both must decode cleanly under
+// ffmpeg and mpg123 across every sample rate, at 128 and 320 kbps: the
+// bitrates where M/S's bit-reservoir interplay is most exercised (32kbps
+// M/S coverage already exists via the base grid's stereo case, whose two
+// channels are already phase-decorrelated).
+func TestCompatFfmpegMpg123MS(t *testing.T) {
+	ffmpeg := requireCompatBinary(t, "ffmpeg")
+	mpg123 := requireCompatBinary(t, "mpg123")
+	ffprobe := requireCompatBinary(t, "ffprobe")
+
+	sampleRates := []int{44100, 48000, 32000}
+	kbpsList := []int{128, 320}
+
+	dir := t.TempDir()
+
+	for _, sr := range sampleRates {
+		nSamples := compatFramesForOneSecond(sr) * mp3.FrameSize
+
+		identical := compatIdenticalNoise(nSamples)
+		decX, decY := compatDecorrelatedNoise(nSamples)
+
+		programs := []struct {
+			name        string
+			left, right []float32
+		}{
+			{"identical", identical, identical},
+			{"decorrelated", decX, decY},
+		}
+
+		for _, kbps := range kbpsList {
+			for _, p := range programs {
+				name := "sr" + strconv.Itoa(sr) + "_kbps" + strconv.Itoa(kbps) + "_" + p.name
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					stream, stats := compatEncodeStereoStream(t, sr, kbps, p.left, p.right)
 
 					path := filepath.Join(dir, name+".mp3")
 					if err := os.WriteFile(path, stream, 0o644); err != nil {

@@ -166,6 +166,98 @@ func fuzzEncodeValidateSeeds() []fuzzEncSeed {
 				return fuzzInt32Bits(int32(v * 0.7 * (1 << 31)))
 			})
 		}(), 0, 0, 8},
+
+		// Task 4 Step 2: M/S joint-stereo correlation seeds. Each builds
+		// exactly fuzzEncMaxFrames (4) stereo frames (chSel=1 forces
+		// nch=2), channel-major per fuzzBuildFrames' consumption order
+		// (frame f's channel 0's 1152 samples, then its channel 1's), so
+		// every generator below indexes by frameIdx = i/(2*1152), a
+		// within-block offset in [0, 2*1152) that tells which channel half
+		// it is in, and sampleIdx = the offset mod 1152.
+		{func() []byte { // identical channels: L==R every frame (noise), the cheapest M/S case (TestMsIdenticalChannels)
+			seed := uint64(0xC0FFEE)
+			noise := make([]int32, 1152)
+			for i := range noise {
+				noise[i] = int32(testsignal.LCGSigned(&seed) * 0.3 * (1 << 31))
+			}
+			return fuzzSeedSamples(4*2*1152, func(i int) uint32 {
+				sampleIdx := (i % (2 * 1152)) % 1152
+				return fuzzInt32Bits(noise[sampleIdx])
+			})
+		}(), 0, 1, 8},
+		{func() []byte { // inverted channels: R = -L every frame, mid silent and side fully loaded (TestMsAntiCorrelated)
+			seed := uint64(0xC0FFEE)
+			noise := make([]int32, 1152)
+			for i := range noise {
+				noise[i] = int32(testsignal.LCGSigned(&seed) * 0.3 * (1 << 31))
+			}
+			return fuzzSeedSamples(4*2*1152, func(i int) uint32 {
+				within := i % (2 * 1152)
+				v := noise[within%1152]
+				if within >= 1152 { // channel 1 (R): negate
+					v = -v
+				}
+				return fuzzInt32Bits(v)
+			})
+		}(), 0, 1, 8},
+		{func() []byte { // hard pan alternating sides every frame: frame 0 loud on L, frame 1 loud on R, ... (TestMsHardPanSelectsLR, made to flap frame by frame)
+			seed := uint64(0xBEEF)
+			tone := make([]int32, 1152)
+			for i := range tone {
+				tone[i] = int32(testsignal.LCGSigned(&seed) * 0.7 * (1 << 31))
+			}
+			return fuzzSeedSamples(4*2*1152, func(i int) uint32 {
+				frameIdx := i / (2 * 1152)
+				within := i % (2 * 1152)
+				ch := within / 1152
+				if ch != frameIdx%2 {
+					return 0
+				}
+				return fuzzInt32Bits(tone[within%1152])
+			})
+		}(), 0, 1, 8},
+		{func() []byte { // fully decorrelated noise, independent per channel (TestMsChannelSeparation)
+			seedX, seedY := uint64(0x5EED1), uint64(0x5EED2)
+			x := make([]int32, 1152)
+			y := make([]int32, 1152)
+			for i := range x {
+				x[i] = int32(testsignal.LCGSigned(&seedX) * 0.5 * (1 << 31))
+				y[i] = int32(testsignal.LCGSigned(&seedY) * 0.5 * (1 << 31))
+			}
+			return fuzzSeedSamples(4*2*1152, func(i int) uint32 {
+				within := i % (2 * 1152)
+				if within < 1152 {
+					return fuzzInt32Bits(x[within])
+				}
+				return fuzzInt32Bits(y[within-1152])
+			})
+		}(), 0, 1, 8},
+		{func() []byte { // maximum decision flapping: identical channels and decorrelated noise alternate every frame
+			seed := uint64(0xC0FFEE)
+			noise := make([]int32, 1152)
+			for i := range noise {
+				noise[i] = int32(testsignal.LCGSigned(&seed) * 0.3 * (1 << 31))
+			}
+			seedX, seedY := uint64(0x5EED1), uint64(0x5EED2)
+			x := make([]int32, 1152)
+			y := make([]int32, 1152)
+			for i := range x {
+				x[i] = int32(testsignal.LCGSigned(&seedX) * 0.5 * (1 << 31))
+				y[i] = int32(testsignal.LCGSigned(&seedY) * 0.5 * (1 << 31))
+			}
+			return fuzzSeedSamples(4*2*1152, func(i int) uint32 {
+				frameIdx := i / (2 * 1152)
+				within := i % (2 * 1152)
+				sampleIdx := within % 1152
+				if frameIdx%2 == 0 { // identical channels this frame
+					return fuzzInt32Bits(noise[sampleIdx])
+				}
+				if within < 1152 { // decorrelated this frame
+					return fuzzInt32Bits(x[sampleIdx])
+				}
+				return fuzzInt32Bits(y[sampleIdx])
+			})
+		}(), 0, 1, 8},
 	}
 }
 

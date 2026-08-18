@@ -156,11 +156,13 @@ type Encoder struct {
 
 // maskEscalationMaxCalls bounds codeFrame's Stage 2 masking-driven budget
 // escalation (design decision 9, third revision): a pure COST ceiling on
-// outerLoop invocations, not a correctness requirement. Each escalation
-// attempt (escAttempt) issues up to two outerLoop calls (the full-capacity
-// budget and the flat-budget probe when they differ) and the cap is checked
-// per attempt, so the effective bound is up to 2*maskEscalationMaxCalls
-// invocations; the loose factor is immaterial for a cost ceiling. Termination is
+// escTryBudget calls (each a distinct outerLoop invocation, or a memo hit
+// once escTryBudget caches per (granule-channel, budget)), not a correctness
+// requirement. Each escalation attempt (escAttempt) issues up to two
+// escTryBudget calls (the full-capacity budget and the flat-budget probe when
+// they differ) and the cap is checked per attempt, so the effective bound is
+// up to 2*maskEscalationMaxCalls calls; the loose factor is immaterial for a
+// cost ceiling. Termination is
 // proven without it (see escalateForMasking's doc comment): the main
 // loop's Phi measure (count of unsatisfied-unparked granule-channels,
 // then their summed over-count, lexicographic) strictly decreases every
@@ -190,10 +192,10 @@ const maskEscalationMaxCalls = 128
 // offer to decide whether a re-attempt is needed, and which
 // TestEncoderMaskingContract's end-of-frame re-code replays exactly once
 // the sweep reaches its fixpoint (escalation-gate agreement by
-// construction); calls counts outerLoop invocations against
-// maskEscalationMaxCalls. Sized to the maximum nGC (4, stereo); mono
-// codeFrame calls use only the first two entries, indexed g*nch+ch same
-// as gr.
+// construction); calls counts escTryBudget calls (outerLoop invocations plus
+// memo hits) against maskEscalationMaxCalls. Sized to the maximum nGC (4,
+// stereo); mono codeFrame calls use only the first two entries, indexed
+// g*nch+ch same as gr.
 type escState struct {
 	best                  [4]granuleCoding
 	bestExcess, bestRatio [4]float64
@@ -201,6 +203,55 @@ type escState struct {
 	parked                [4]bool
 	triedHi, triedLo      [4]int
 	calls                 int
+
+	// memo caches each distinct outerLoop result within one frame's
+	// escalation, keyed by (granule-channel index i, budget). outerLoop is a
+	// pure function of (xr[i], xmin[i], budget, sfb); those inputs are frozen
+	// for the whole escalation (codeFrame writes them in its CODE phase,
+	// strictly before escalateForMasking, which never rewrites them), so
+	// (i, budget) is an exact key. memoN is the live length, reset to 0 each
+	// frame; the backing array is preallocated once in Reset. See
+	// escMemoEntry and escTryBudget.
+	memo  []escMemoEntry
+	memoN int
+}
+
+// escMemoEntry is one cached outerLoop-plus-measure result for a distinct
+// (i, budget) pair within a single frame's escalation. gc is the raw
+// outerLoop result (the coded granule-channel BEFORE any accept/rollback);
+// excess/ratio/over are its masking metrics (noiseGranule+maskingMetrics),
+// stored so a cache hit reproduces betterPass's operands bit-for-bit without
+// recomputing them. granuleCoding is a fixed-size value type with no slices
+// (its only pointer, sfb, addresses a frame-constant shared table), so a
+// by-value copy into the preallocated store never heap-allocates.
+type escMemoEntry struct {
+	i, budget int
+	over      int
+	excess    float64
+	ratio     float64
+	gc        granuleCoding
+}
+
+// escMemoCap bounds the per-frame memo store. Only cache MISSES insert an
+// entry, and the number of misses is at most the number of escTryBudget
+// calls, which escalateForMasking caps at maskEscalationMaxCalls+1 (the last
+// escAttempt can fire the second of its two probes just after the count
+// reaches the cap). maskEscalationMaxCalls+2 is therefore a provable hard
+// bound: the store never overflows, so insertion is unconditionally
+// zero-allocation. Defining it in terms of maskEscalationMaxCalls keeps it
+// correct if that cap ever changes.
+const escMemoCap = maskEscalationMaxCalls + 2
+
+// memoGet returns the cached (i, budget) result seen earlier this frame, or
+// (nil, false). Linear scan over memo[:memoN]: memoN is at most ~129, so the
+// worst-case scan cost is trivial next to even one 150-iteration outerLoop.
+func (s *escState) memoGet(i, budget int) (*escMemoEntry, bool) {
+	for k := range s.memoN {
+		if s.memo[k].i == i && s.memo[k].budget == budget {
+			return &s.memo[k], true
+		}
+	}
+	return nil, false
 }
 
 // New returns a new Encoder for cfg, or an error if cfg is not a legal
@@ -256,6 +307,10 @@ func (e *Encoder) Reset(cfg Config) error {
 	huffCapBytes := (2*e.nch*maxPart23Length + 7) / 8
 	maxAreaBytes := mainAreaBytes(e.bitrateIndex, e.srIndex, 1, e.nch)
 	e.mainScratch = make([]byte, 0, max(huffCapBytes, maxAreaBytes)+mainScratchSlack)
+	// Preallocate the escalation memo store once (like mainScratch above): its
+	// length is reset to 0 per frame in escalateForMasking, never regrown, so
+	// the memoized outer loop stays zero-allocation in steady state.
+	e.esc.memo = make([]escMemoEntry, escMemoCap)
 	return nil
 }
 
@@ -646,14 +701,35 @@ func (e *Encoder) escNeediest(nGC int) int {
 // (the main loop, the fixpoint sweep) do that from the resulting
 // over-count (e.esc.bestOver[i] after the call).
 func (e *Encoder) escTryBudget(i int, sfb *[22]int, budget int) {
+	// Count every attempt (hit or miss). The memo changes cost, not control
+	// flow: the budgets tried, their order, and where maskEscalationMaxCalls
+	// binds all stay byte-identical to the pre-memo escalation.
 	e.esc.calls++
 	g, ch := i/e.nch, i%e.nch
 	gc := &e.gr[g][ch]
-	_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, sfb, gc, &e.bestScratch)
 
-	var noise [22]float64
-	noiseGranule(&e.xr[g][ch], &gc.ix, gc.globalGain, &gc.sf, sfb, &noise)
-	excess, ratio, over := maskingMetrics(&noise, &e.xminXr[g][ch])
+	var excess, ratio float64
+	var over int
+	if rec, ok := e.esc.memoGet(i, budget); ok {
+		// outerLoop(i, budget) is pure within a frame, so its cached result and
+		// the metrics derived from it are exactly what a recompute would yield.
+		*gc = rec.gc
+		excess, ratio, over = rec.excess, rec.ratio, rec.over
+	} else {
+		_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, sfb, gc, &e.bestScratch)
+		var noise [22]float64
+		noiseGranule(&e.xr[g][ch], &gc.ix, gc.globalGain, &gc.sf, sfb, &noise)
+		excess, ratio, over = maskingMetrics(&noise, &e.xminXr[g][ch])
+		// Store the RAW outerLoop result, captured before the accept/rollback
+		// below mutates *gc or best[i]. The memoN < len guard is provably
+		// always true (see escMemoCap); it only backstops a future change to
+		// the call accounting that could break that bound.
+		if e.esc.memoN < len(e.esc.memo) {
+			e.esc.memo[e.esc.memoN] = escMemoEntry{i: i, budget: budget, over: over, excess: excess, ratio: ratio, gc: *gc}
+			e.esc.memoN++
+		}
+	}
+
 	if betterPass(excess, ratio, over, e.esc.bestExcess[i], e.esc.bestRatio[i], e.esc.bestOver[i]) {
 		e.esc.best[i] = *gc
 		e.esc.bestExcess[i], e.esc.bestRatio[i], e.esc.bestOver[i] = excess, ratio, over
@@ -735,7 +811,7 @@ func (e *Encoder) escAttempt(i int, sfb *[22]int, hiB, loB int) {
 // construction, not by hope.
 //
 // Termination (proven without maskEscalationMaxCalls, itself only a cost
-// ceiling on outerLoop invocations): the main loop's measure Phi = (count
+// ceiling on escTryBudget calls): the main loop's measure Phi = (count
 // of unsatisfied-unparked granule-channels, their summed over-count),
 // compared lexicographically, strictly decreases every non-breaking
 // iteration (satisfying or parking a granule-channel strictly drops the
@@ -778,6 +854,10 @@ func (e *Encoder) escalateForMasking(nGC int, sfb *[22]int, padding, area, capBy
 	// negative), an unreachable sentinel that forces the fixpoint sweep
 	// to attempt any granule-channel the main loop never got to.
 	e.esc.calls = 0
+	// Drop the previous frame's memo: (i, budget) results are only valid for
+	// this frame's frozen xr/xmin. O(1); lookups scan only memo[:memoN], so
+	// stale entries below the old length are overwritten before they are read.
+	e.esc.memoN = 0
 	for i := range nGC {
 		g, ch := i/e.nch, i%e.nch
 		e.esc.best[i] = e.gr[g][ch]

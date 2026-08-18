@@ -746,7 +746,10 @@ func TestEncoderMsSelection(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		dst, _ = e.EncodeFrame(dst, nil)
+		dst, err := e.EncodeFrame(dst, nil)
+		if err != nil {
+			t.Fatalf("drain EncodeFrame: %v", err)
+		}
 		ms, lr := countModes(t, dst)
 		if tc.wantMS && ms < 10 {
 			t.Errorf("%s: only %d M/S frames of %d+", tc.kind, ms, ms+lr)
@@ -763,10 +766,20 @@ func TestEncoderMsDeterminism(t *testing.T) {
 	run := func() []byte {
 		e := mustEncoder(t, Config{SampleRate: 44100, Channels: 2, BitrateKbps: 192})
 		var dst []byte
+		var err error
 		for _, fr := range stereoProgram(20, "decorrelated") {
-			dst, _ = e.EncodeFrame(dst, fr[:])
+			dst, err = e.EncodeFrame(dst, fr[:])
+			if err != nil {
+				t.Fatalf("EncodeFrame: %v", err)
+			}
 		}
-		dst, _ = e.EncodeFrame(dst, nil)
+		dst, err = e.EncodeFrame(dst, nil)
+		if err != nil {
+			t.Fatalf("drain EncodeFrame: %v", err)
+		}
+		if len(dst) == 0 {
+			t.Fatal("encoded stream is empty")
+		}
 		return dst
 	}
 	if !bytes.Equal(run(), run()) {

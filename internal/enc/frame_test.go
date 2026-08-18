@@ -312,7 +312,7 @@ func TestZeroReservoirEquivalence(t *testing.T) {
 
 	var f frameFIFO
 	hdr := make([]byte, 0, maxFrameBytes)
-	hdr, base := renderFrameInto(hdr, 9, 0, 0, 3, gcs, 1, 0) // mdb 0
+	hdr, base := renderFrameInto(hdr, 9, 0, 0, 3, 0, gcs, 1, 0) // mode 3, modeExt 0, mdb 0
 	n := frameLength(9, 0, 0)
 	f.push(hdr, n)
 	main := renderMainData(nil, gcs, 1, 0) // sum part23 bits, byte-padded

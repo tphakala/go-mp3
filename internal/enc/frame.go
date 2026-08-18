@@ -312,9 +312,9 @@ func (f *frameFIFO) unfilled() int {
 // the side info's main_data_begin field verbatim; every caller in this
 // package today passes 0, matching Phase 3's hardcoded value (the
 // reservoir, once wired in Task 3, is what makes it nonzero).
-func renderFrameInto(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2]granuleCoding, nch, mainDataBegin int) (out []byte, base int) {
+func renderFrameInto(dst []byte, bitrateIndex, srIndex, padding, mode, modeExt int, gr *[2][2]granuleCoding, nch, mainDataBegin int) (out []byte, base int) {
 	frameStart := len(dst)
-	header := frameHeader(bitrateIndex, srIndex, padding, mode, 0)
+	header := frameHeader(bitrateIndex, srIndex, padding, mode, modeExt)
 	dst = append(dst, header[:]...)
 
 	w := bits.NewWriter(dst)
@@ -373,7 +373,7 @@ func renderMainData(dst []byte, gr *[2][2]granuleCoding, nch, spendMin int) []by
 // produces the identical bytes.
 func assembleFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2]granuleCoding, nch int) []byte {
 	frameStart := len(dst)
-	dst, base := renderFrameInto(dst, bitrateIndex, srIndex, padding, mode, gr, nch, 0)
+	dst, base := renderFrameInto(dst, bitrateIndex, srIndex, padding, mode, 0, gr, nch, 0)
 	n := frameLength(bitrateIndex, srIndex, padding)
 	dst = renderMainData(dst, gr, nch, n-base)
 	if len(dst) != frameStart+n {

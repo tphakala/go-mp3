@@ -111,9 +111,17 @@ type Encoder struct {
 
 	in [2][576]float64 // per-granule staging: clamped, PCMScale-scaled samples
 
-	psy    [2]PsyModel      // per-channel psychoacoustic model 2 state
-	psyWin [2][1024]float64 // per-channel causal analysis window: clamped [-1,1] samples, BEFORE PCMScale
-	psyOut PsyOut           // scratch: one channel's just-analyzed psymodel output
+	// Four-way psychoacoustic model bank: repL/repR analyze the two
+	// physical channels' windows, repM/repS the butterflied M/S windows.
+	// Mono uses repL only. psyOuts holds every representation's per-granule
+	// output (representation-major, granule-minor) so the M/S decision can
+	// compare all four before the coding path commits to one.
+	psy      [4]PsyModel      // psychoacoustic model 2 state, one per representation
+	psyWin   [2][1024]float64 // per-channel causal analysis window: clamped [-1,1] samples, BEFORE PCMScale
+	psyWinMS [2][1024]float64 // M (index 0) and S (index 1) windows: butterflied from psyWin
+	psyOuts  [4][2]PsyOut     // [representation][granule] psymodel output
+	xrM, xrS [576]float64     // coding-path M/S butterfly scratch (written back into e.xr for an M/S frame)
+	msFrame  bool             // this frame codes M/S joint stereo (mode 01, mode_extension 10)
 
 	pad         paddingState
 	gr          [2][2]granuleCoding
@@ -232,7 +240,11 @@ func (e *Encoder) Reset(cfg Config) error {
 	}
 	for ch := range e.fb {
 		e.fb[ch].Reset()
-		e.psy[ch].Reset(e.srIndex)
+	}
+	// Reset every representation's psymodel (repL/repR for the physical
+	// channels, repM/repS for the M/S windows); mono only ever drives repL.
+	for rep := range e.psy {
+		e.psy[rep].Reset(e.srIndex)
 	}
 	// renderMainData reuses this buffer for two renders: the coded Huffman
 	// bytes (bounded by the part_2_3_length ceiling) and the ancillary pad
@@ -396,6 +408,13 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 	capBytes := resCapBytes(e.bitrateIndex, e.srIndex, e.nch)
 	meanGB := area * 8 / nGC
 
+	// ANALYZE: run the per-physical-channel DSP chain and the four-way
+	// psychoacoustic analysis for the WHOLE frame, holding every result
+	// until the M/S decision below. e.xr[g][ch] receives physical channel
+	// ch's MDCT spectrum (the coding pass may overwrite it in place with
+	// the M/S spectrum). e.xminXr and e.gr.peBits are NOT written here:
+	// they are wired from the chosen representation in the CODE phase,
+	// strictly after DECIDE, so an L/R PE can never budget an M/S frame.
 	for g := range 2 {
 		for ch := range e.nch {
 			// Slide the psymodel's causal 1024-sample window forward by
@@ -413,18 +432,60 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 				e.in[ch][i] = float64(v * PCMScale)
 			}
 
-			e.psy[ch].AnalyzeGranule(e.psyWin[ch][:], &e.psyOut)
-			for s := range 22 {
-				e.xminXr[g][ch][s] = float64(e.psyOut.Xmin[s] * XminScale)
-			}
-
 			e.fb[ch].AnalyzeGranule(e.in[ch][:], &e.cur)
 			FlipOddSubbands(&e.cur)
 			MDCTGranule(&e.prev[ch], &e.cur, &e.xr[g][ch])
 			e.prev[ch] = e.cur
 			AliasReduce(&e.xr[g][ch])
+		}
 
-			e.gr[g][ch].peBits = granuleDemandBits(e.psyOut.PE, meanGB)
+		// Four-way psychoacoustic analysis. Mono drives repL alone; stereo
+		// also butterflies the two windows into M/S and analyzes all four
+		// representations. Each psymodel's history advances once per granule
+		// exactly as before, so repL/repR see the identical window sequence
+		// the pre-M/S encoder fed them.
+		e.psy[repL].AnalyzeGranule(e.psyWin[0][:], &e.psyOuts[repL][g])
+		if e.nch == 2 {
+			e.psy[repR].AnalyzeGranule(e.psyWin[1][:], &e.psyOuts[repR][g])
+			butterflyWindows(&e.psyWin[0], &e.psyWin[1], &e.psyWinMS[0], &e.psyWinMS[1])
+			e.psy[repM].AnalyzeGranule(e.psyWinMS[0][:], &e.psyOuts[repM][g])
+			e.psy[repS].AnalyzeGranule(e.psyWinMS[1][:], &e.psyOuts[repS][g])
+		}
+	}
+
+	// DECIDE: choose L/R or M/S from the four PEs, each summed over both
+	// granules. Mono is always L/R. Inc7 seam (design decision 8): the
+	// block-switch increment adds a veto here for frames whose channels
+	// disagree on block type.
+	e.msFrame = false
+	if e.nch == 2 {
+		peL := e.psyOuts[repL][0].PE + e.psyOuts[repL][1].PE
+		peR := e.psyOuts[repR][0].PE + e.psyOuts[repR][1].PE
+		peM := e.psyOuts[repM][0].PE + e.psyOuts[repM][1].PE
+		peS := e.psyOuts[repS][0].PE + e.psyOuts[repS][1].PE
+		e.msFrame = msDecide(peL, peR, peM, peS)
+	}
+
+	// CODE: strictly after DECIDE. For an M/S frame, butterfly each
+	// granule's L/R spectra into M/S in place, so e.xr now holds exactly
+	// what the outer loop, escalation, and render read. Each coded channel
+	// takes its threshold (Xmin) and demand (PE) ONLY from its chosen
+	// representation (chosenRep: repL/repR for L/R, repM/repS for M/S); the
+	// phase indexes psyOuts exclusively through chosenRep so a
+	// cross-representation wiring mistake is compile-visible, not a silent
+	// budget leak.
+	for g := range 2 {
+		if e.msFrame {
+			butterflyXr(&e.xr[g][0], &e.xr[g][1], &e.xrM, &e.xrS)
+			e.xr[g][0] = e.xrM
+			e.xr[g][1] = e.xrS
+		}
+		for ch := range e.nch {
+			rep := e.chosenRep(ch)
+			for s := range 22 {
+				e.xminXr[g][ch][s] = float64(e.psyOuts[rep][g].Xmin[s] * XminScale)
+			}
+			e.gr[g][ch].peBits = granuleDemandBits(e.psyOuts[rep][g].PE, meanGB)
 		}
 	}
 
@@ -485,8 +546,15 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 		e.scfsiSaved += int64(applyScfsi(&e.gr[1][ch], mask))
 	}
 
+	// Emit mode/mode_extension: L/R keeps e.mode (0 stereo, 3 mono) with
+	// mode_extension 0; an M/S frame emits joint-stereo mode 01 with
+	// mode_extension 10 (M/S on, intensity stereo off).
+	mode, modeExt := e.mode, 0
+	if e.msFrame {
+		mode, modeExt = 1, 2
+	}
 	mdb := e.resv.occ
-	hdr, _ := renderFrameInto(e.mainScratch[:0], e.bitrateIndex, e.srIndex, padding, e.mode, &e.gr, e.nch, mdb)
+	hdr, _ := renderFrameInto(e.mainScratch[:0], e.bitrateIndex, e.srIndex, padding, mode, modeExt, &e.gr, e.nch, mdb)
 	n := frameLength(e.bitrateIndex, e.srIndex, padding)
 	e.fifo.push(hdr, n)
 
@@ -505,6 +573,25 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 		e.paddedFrames++
 	}
 	return dst
+}
+
+// chosenRep maps a coded channel index (0 or 1) to the psymodel
+// representation codeFrame's CODE phase reads for it: repL/repR for an L/R
+// frame, repM/repS for an M/S frame. The CODE phase indexes psyOuts
+// exclusively through this helper so a cross-representation wiring mistake
+// (budgeting an M/S frame from an L/R PE, say) is a compile-visible oddity
+// rather than a silent bug.
+func (e *Encoder) chosenRep(ch int) int {
+	if e.msFrame {
+		if ch == 0 {
+			return repM
+		}
+		return repS
+	}
+	if ch == 0 {
+		return repL
+	}
+	return repR
 }
 
 // escFreeCap returns the frame's current free capacity in bits: the

@@ -91,6 +91,119 @@ func compatEncodeStream(t *testing.T, sampleRate, nch, kbps int) ([]byte, mp3.St
 	return stream, e.Stats()
 }
 
+// compatIdenticalNoise returns nSamples of low-level LCG noise intended to
+// be duplicated on both channels: identical L/R forces M/S every frame
+// (the side channel goes near-silent before quantization), matching
+// TestMsIdenticalChannels' construction (internal/dec/encx_mstereo_test.go),
+// reproduced here since that file's helper lives in a different,
+// non-importable package.
+func compatIdenticalNoise(nSamples int) []float32 {
+	seed := uint64(0xC0FFEE)
+	x := make([]float32, nSamples)
+	for i := range x {
+		x[i] = float32(testsignal.LCGSigned(&seed) * 0.3)
+	}
+	return x
+}
+
+// compatDecorrelatedNoise returns two independent LCG noise channels with
+// no shared structure at all, matching TestMsChannelSeparation's
+// construction (internal/dec/encx_mstereo_test.go), reproduced here for the
+// same reason compatIdenticalNoise is.
+func compatDecorrelatedNoise(nSamples int) (x, y []float32) {
+	seedX, seedY := uint64(0x5EED1), uint64(0x5EED2)
+	x = make([]float32, nSamples)
+	y = make([]float32, nSamples)
+	for i := range x {
+		x[i] = float32(testsignal.LCGSigned(&seedX) * 0.5)
+		y[i] = float32(testsignal.LCGSigned(&seedY) * 0.5)
+	}
+	return x, y
+}
+
+// compatEncodeStereoStream encodes one second of precomputed stereo input
+// (left, right, each exactly compatFramesForOneSecond(sampleRate)*
+// mp3.FrameSize samples) through the public mp3.Encoder at kbps, drains it,
+// and returns the resulting stream plus the encoder's cumulative Stats.
+// Shared by the identical-channels and decorrelated-noise M/S compat
+// programs below, which need explicit per-channel content rather than
+// compatMultiTone's phase-offset tones.
+func compatEncodeStereoStream(t *testing.T, sampleRate, kbps int, left, right []float32) ([]byte, mp3.Stats) {
+	t.Helper()
+
+	e, err := mp3.NewEncoder(mp3.EncoderConfig{SampleRate: sampleRate, Channels: 2, Bitrate: kbps * 1000})
+	if err != nil {
+		t.Fatalf("NewEncoder(sr=%d kbps=%d): %v", sampleRate, kbps, err)
+	}
+
+	nFrames := compatFramesForOneSecond(sampleRate)
+
+	var stream []byte
+	for f := range nFrames {
+		samples := [][]float32{
+			left[f*mp3.FrameSize : (f+1)*mp3.FrameSize],
+			right[f*mp3.FrameSize : (f+1)*mp3.FrameSize],
+		}
+		stream, err = e.EncodeFrame(stream, samples)
+		if err != nil {
+			t.Fatalf("EncodeFrame at frame %d: %v", f, err)
+		}
+	}
+	stream, err = e.EncodeFrame(stream, nil) // drain
+	if err != nil {
+		t.Fatalf("drain EncodeFrame: %v", err)
+	}
+
+	return stream, e.Stats()
+}
+
+// mpegBitrateKbps and mpegSampleRateHz are the ISO/IEC 11172-3 MPEG-1 Layer
+// III header field tables (Table B.1 and the sampling_frequency field),
+// reproduced here so countMSFrames can walk a stream's frame headers
+// standalone: package mp3_test cannot reach internal/enc's own copies of
+// these tables (frame.go's bitrateKbpsTable, sampleRateHzTable), and this
+// package has no exported frame-header-parsing API of its own.
+var (
+	mpegBitrateKbps  = [15]int{0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320}
+	mpegSampleRateHz = [3]int{44100, 48000, 32000}
+)
+
+// countMSFrames walks stream as consecutive MPEG-1 Layer III frames and
+// returns how many carry mode==1 (joint stereo) and mode_extension==2 (M/S
+// on, intensity stereo off): the exact header bits encoder.go's codeFrame
+// writes when msDecide selects M/S for a frame (internal/enc/encoder.go's
+// mode, modeExt assignment). Used to confirm the "identical" M/S compat
+// program actually produced M/S-coded frames rather than the base L/R grid
+// this package's encoder always falls back to.
+func countMSFrames(t *testing.T, stream []byte) int {
+	t.Helper()
+
+	count := 0
+	for off := 0; off+4 <= len(stream); {
+		h := stream[off : off+4]
+		if h[0] != 0xFF || h[1]&0xE0 != 0xE0 {
+			t.Fatalf("countMSFrames: bad frame sync at offset %d: % x", off, h[:2])
+		}
+
+		bitrateIndex := int(h[2] >> 4)
+		srIndex := int(h[2] >> 2 & 3)
+		padding := int(h[2] >> 1 & 1)
+		mode := int(h[3] >> 6 & 3)
+		modeExt := int(h[3] >> 4 & 3)
+
+		if bitrateIndex < 1 || bitrateIndex > 14 || srIndex > 2 {
+			t.Fatalf("countMSFrames: unsupported bitrate/sample-rate index at offset %d: br=%d sr=%d", off, bitrateIndex, srIndex)
+		}
+
+		if mode == 1 && modeExt == 2 {
+			count++
+		}
+
+		off += 144000*mpegBitrateKbps[bitrateIndex]/mpegSampleRateHz[srIndex] + padding
+	}
+	return count
+}
+
 // requireCompatBinary resolves name on PATH, or skips (or, under
 // MP3_REQUIRE_COMPAT=1, fails) the test: the same convention
 // MP3_REQUIRE_DUMPS uses (internal/dec/dumps_test.go), so a missing local
@@ -192,6 +305,75 @@ func TestCompatFfmpegMpg123(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
 					stream, stats := compatEncodeStream(t, sr, nch, kbps)
+
+					path := filepath.Join(dir, name+".mp3")
+					if err := os.WriteFile(path, stream, 0o644); err != nil {
+						t.Fatalf("WriteFile: %v", err)
+					}
+
+					compatCheckFfmpeg(t, ffmpeg, path)
+					compatCheckMpg123(t, mpg123, path)
+					compatCheckDuration(t, ffprobe, path, sr, stats)
+				})
+			}
+		}
+	}
+}
+
+// TestCompatFfmpegMpg123MS extends the compat gate with two M/S-forcing
+// stereo programs the base grid's phase-offset multitone never reaches:
+// identical channels (near-silent side channel, M/S selected every frame)
+// and fully decorrelated noise (independent per-channel content, the
+// channel-separation gate's construction). Both must decode cleanly under
+// ffmpeg and mpg123 across every sample rate, at 128 and 320 kbps: the
+// bitrates where M/S's bit-reservoir interplay is most exercised (32kbps
+// M/S coverage already exists via the base grid's stereo case, whose two
+// channels are already phase-decorrelated).
+func TestCompatFfmpegMpg123MS(t *testing.T) {
+	ffmpeg := requireCompatBinary(t, "ffmpeg")
+	mpg123 := requireCompatBinary(t, "mpg123")
+	ffprobe := requireCompatBinary(t, "ffprobe")
+
+	sampleRates := []int{44100, 48000, 32000}
+	kbpsList := []int{128, 320}
+
+	dir := t.TempDir()
+
+	for _, sr := range sampleRates {
+		nSamples := compatFramesForOneSecond(sr) * mp3.FrameSize
+
+		identical := compatIdenticalNoise(nSamples)
+		decX, decY := compatDecorrelatedNoise(nSamples)
+
+		programs := []struct {
+			name        string
+			left, right []float32
+		}{
+			{"identical", identical, identical},
+			{"decorrelated", decX, decY},
+		}
+
+		for _, kbps := range kbpsList {
+			for _, p := range programs {
+				name := "sr" + strconv.Itoa(sr) + "_kbps" + strconv.Itoa(kbps) + "_" + p.name
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					stream, stats := compatEncodeStereoStream(t, sr, kbps, p.left, p.right)
+
+					// The "identical" program is constructed so the side
+					// channel goes near-silent every frame
+					// (compatIdenticalNoise's doc comment), which forces
+					// msDecide to select M/S every frame. If msDecide
+					// regressed to always returning false, this test
+					// would otherwise stay green while exercising nothing
+					// beyond the base L/R grid. "decorrelated" gets no
+					// such requirement: it may legitimately stay mostly
+					// L/R.
+					if p.name == "identical" {
+						if n := countMSFrames(t, stream); n == 0 {
+							t.Fatalf("%s: no M/S-coded frames found, want at least one", name)
+						}
+					}
 
 					path := filepath.Join(dir, name+".mp3")
 					if err := os.WriteFile(path, stream, 0o644); err != nil {

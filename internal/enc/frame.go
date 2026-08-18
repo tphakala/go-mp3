@@ -165,19 +165,20 @@ func granuleBudgetBits(bitrateIndex, srIndex, padding, nch int) int {
 // frameHeader packs the 32-bit MPEG-1 Layer III header: sync(11)=0x7FF,
 // ID(2)=3 (MPEG-1), layer(2)=1 (Layer III), protection_bit(1)=1 (no CRC),
 // bitrate_index(4), sampling_frequency(2), padding_bit(1), private_bit(1)=0,
-// mode(2), mode_extension(2)=0, copyright(1)=0, original(1)=1,
+// mode(2), mode_extension(2), copyright(1)=0, original(1)=1,
 // emphasis(2)=0. Byte 1 (sync tail + ID + layer + protection) is therefore
 // always 0xFB for this scope, regardless of the arguments.
 //
 // bitrateIndex: 1..14 for {32,40,48,56,64,80,96,112,128,160,192,224,256,320}
 // kbps. srIndex: 0=44100, 1=48000, 2=32000. mode: 0 (stereo) or 3
-// (single_channel).
-func frameHeader(bitrateIndex, srIndex, padding, mode int) [4]byte {
+// (single_channel). modeExt: mode_extension, 0 unless mode is joint stereo
+// (1); 2 selects M/S with intensity stereo off.
+func frameHeader(bitrateIndex, srIndex, padding, mode, modeExt int) [4]byte {
 	return [4]byte{
 		0xFF,
 		0xFB,
 		byte(bitrateIndex<<4 | srIndex<<2 | padding<<1),
-		byte(mode<<6 | 1<<2), // mode_extension=0, copyright=0, original=1, emphasis=0
+		byte(mode<<6 | modeExt<<4 | 1<<2), // copyright=0, original=1, emphasis=0
 	}
 }
 
@@ -308,12 +309,12 @@ func (f *frameFIFO) unfilled() int {
 // into dst, and returns the extended slice along with base: the number of
 // bytes just written (4-byte header plus the side-info block), which is
 // where this frame's main-data area begins. mainDataBegin is written into
-// the side info's main_data_begin field verbatim; every caller in this
-// package today passes 0, matching Phase 3's hardcoded value (the
-// reservoir, once wired in Task 3, is what makes it nonzero).
-func renderFrameInto(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2]granuleCoding, nch, mainDataBegin int) (out []byte, base int) {
+// the side info's main_data_begin field verbatim; codeFrame passes the
+// reservoir's live occupancy (e.resv.occ), while only the test-only legacy
+// pin helpers (the assembleFrame path) pass 0.
+func renderFrameInto(dst []byte, bitrateIndex, srIndex, padding, mode, modeExt int, gr *[2][2]granuleCoding, nch, mainDataBegin int) (out []byte, base int) {
 	frameStart := len(dst)
-	header := frameHeader(bitrateIndex, srIndex, padding, mode)
+	header := frameHeader(bitrateIndex, srIndex, padding, mode, modeExt)
 	dst = append(dst, header[:]...)
 
 	w := bits.NewWriter(dst)
@@ -372,7 +373,7 @@ func renderMainData(dst []byte, gr *[2][2]granuleCoding, nch, spendMin int) []by
 // produces the identical bytes.
 func assembleFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2]granuleCoding, nch int) []byte {
 	frameStart := len(dst)
-	dst, base := renderFrameInto(dst, bitrateIndex, srIndex, padding, mode, gr, nch, 0)
+	dst, base := renderFrameInto(dst, bitrateIndex, srIndex, padding, mode, 0, gr, nch, 0)
 	n := frameLength(bitrateIndex, srIndex, padding)
 	dst = renderMainData(dst, gr, nch, n-base)
 	if len(dst) != frameStart+n {

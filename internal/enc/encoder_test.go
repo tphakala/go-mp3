@@ -598,15 +598,37 @@ func TestEncoderReservoirDeterminism(t *testing.T) {
 // confirmed byte-identical on native arm64 (rpi5, go1.26.1) as well as
 // amd64 before freezing, directly exercising the escalation's noise>xmin and
 // betterPass float branches across arches; the arm64 CI leg re-confirms it.
+//
+// Re-frozen again in Phase 4 increment 6 Task 2 (per-frame M/S joint
+// stereo). The two amp-1.0 decorrelated stereo cases (44100_2ch_128kbps and
+// 32000_2ch_32kbps) are L/R-dominant but not pure L/R: at full-scale
+// broadband noise each carries exactly ONE frame whose four-way PE
+// comparison legitimately selects M/S (headers: mode 01, mode_extension
+// 10), so both stereo hashes changed. This is a deliberate perceptual
+// re-freeze, NOT a coding-path leak: forcing e.msFrame=false in codeFrame's
+// DECIDE phase reverts all three hashes to the exact pre-M/S values
+// (44100_2ch_128kbps c734a1491e179a2bf6386ef3d465c2177817660b901226d8ab0523ee7930ebda,
+// 48000_1ch_320kbps mono d1d7d99887552f2b2ddc4dde49e74be60fa14988a6732d0f02424a0d1f60da19,
+// 32000_2ch_32kbps 11996294f75b9b529296cae97507e6e84f329ad43462fc387acfaa7687fc1a23),
+// which proves the L/R coding path and mono are byte-identical to the
+// pre-M/S encoder and the delta reflects only the M/S decision. The mono
+// case (same granule coding path) is unchanged and stays an L/R-coding
+// regression anchor. The new correlated case (identical channels, L==R)
+// selects M/S on every frame (mode_extension 10 throughout), giving the
+// M/S emission path its own cross-arch golden coverage. Confirmed stable
+// across two consecutive amd64 runs before freezing; the arm64 CI leg is
+// the cross-arch confirmation.
 func TestEncodeGolden(t *testing.T) {
 	cases := []struct {
 		name                 string
 		sampleRate, ch, kbps int
+		correlated           bool // identical channels (L==R): forces M/S on every frame
 		wantHex              string
 	}{
-		{"44100_2ch_128kbps", 44100, 2, 128, "c734a1491e179a2bf6386ef3d465c2177817660b901226d8ab0523ee7930ebda"},
-		{"48000_1ch_320kbps", 48000, 1, 320, "d1d7d99887552f2b2ddc4dde49e74be60fa14988a6732d0f02424a0d1f60da19"},
-		{"32000_2ch_32kbps", 32000, 2, 32, "11996294f75b9b529296cae97507e6e84f329ad43462fc387acfaa7687fc1a23"},
+		{"44100_2ch_128kbps", 44100, 2, 128, false, "06cafa9ef50877ff3a491a6ea6d2b38290477c1a2f693c672112f007e40f0e37"},
+		{"48000_1ch_320kbps", 48000, 1, 320, false, "d1d7d99887552f2b2ddc4dde49e74be60fa14988a6732d0f02424a0d1f60da19"},
+		{"32000_2ch_32kbps", 32000, 2, 32, false, "483ab51937594eafc9eddd9e7a557570b62ae2c4e6847fa393c19e2804b03c26"},
+		{"44100_2ch_128kbps_ms", 44100, 2, 128, true, "039a46f436cf711bdb724bf4371b8f3c2fd64aac9d75f5f212f4c64f4033438e"},
 	}
 
 	for _, c := range cases {
@@ -621,6 +643,12 @@ func TestEncodeGolden(t *testing.T) {
 			var stream []byte
 			for f := range 4 {
 				samples := planarSamples(&seed, c.ch, 1.0)
+				if c.correlated {
+					// L == R: the S window is all zeros, so the four-way PE
+					// comparison picks M/S every frame, covering the M/S
+					// emission path across the amd64/arm64 CI matrix.
+					copy(samples[1], samples[0])
+				}
 				stream, err = e.EncodeFrame(stream, samples)
 				if err != nil {
 					t.Fatalf("frame %d: EncodeFrame: %v", f, err)
@@ -633,5 +661,128 @@ func TestEncodeGolden(t *testing.T) {
 				t.Fatalf("sha256 = %s, want %s", got, c.wantHex)
 			}
 		})
+	}
+}
+
+// stereoProgram builds n frames of correlated or panned stereo from
+// stored LCG values (bit-portable: no libm, no product-into-sum in the
+// generation itself), per the golden-input discipline. The 0.625 scale is
+// 5/8, exactly representable in binary (defense-in-depth per the agy
+// review: a single multiply by any constant is correctly rounded and
+// deterministic, but a dyadic scale removes even the doubt; LCGSigned's
+// own construction is dyadic-exact already).
+func stereoProgram(n int, kind string) [][2][]float32 {
+	seed := uint64(101)
+	frames := make([][2][]float32, n)
+	for f := range frames {
+		l := make([]float32, 1152)
+		r := make([]float32, 1152)
+		for i := range l {
+			v := float32(testsignal.LCGSigned(&seed)) * 0.625
+			switch kind {
+			case "identical":
+				l[i], r[i] = v, v
+			case "panned":
+				l[i], r[i] = v, 0
+			case "inverted":
+				l[i], r[i] = v, -v
+			case "decorrelated":
+				l[i] = v
+				r[i] = float32(testsignal.LCGSigned(&seed)) * 0.625
+			}
+		}
+		frames[f] = [2][]float32{l, r}
+	}
+	return frames
+}
+
+// countModes walks the encoded stream frame by frame using the internal
+// header helpers: it reads each frame's length from the header (byte 2's
+// bitrate_index/sampling_frequency/padding) and counts mode/mode_extension
+// (byte 3). M/S frames are mode 01 with mode_extension 10; L/R frames are
+// mode 00.
+func countModes(t *testing.T, dst []byte) (ms, lr int) {
+	t.Helper()
+	for i := 0; i+4 <= len(dst); {
+		if dst[i] != 0xFF || dst[i+1] != 0xFB {
+			t.Fatalf("countModes: bad frame sync at offset %d: %02x %02x", i, dst[i], dst[i+1])
+		}
+		b2, b3 := dst[i+2], dst[i+3]
+		bitrateIndex := int(b2>>4) & 0x0F
+		srIndex := int(b2>>2) & 0x03
+		padding := int(b2>>1) & 0x01
+		mode := int(b3>>6) & 0x03
+		modeExt := int(b3>>4) & 0x03
+		switch {
+		case mode == 1 && modeExt == 2:
+			ms++
+		case mode == 0:
+			lr++
+		}
+		n := frameLength(bitrateIndex, srIndex, padding)
+		if n <= 0 {
+			t.Fatalf("countModes: bad frame length %d at offset %d", n, i)
+		}
+		i += n
+	}
+	return ms, lr
+}
+
+func TestEncoderMsSelection(t *testing.T) {
+	// Identical channels: every audio frame must be M/S (parse the
+	// headers: mode 01, mode_extension 10). Hard-panned: every frame L/R
+	// (mode 00). Mono config: byte-identical to the pre-M/S encoder is
+	// covered by the unchanged mono goldens.
+	for _, tc := range []struct {
+		kind   string
+		wantMS bool
+	}{{"identical", true}, {"panned", false}} {
+		e := mustEncoder(t, Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128})
+		var dst []byte
+		for _, fr := range stereoProgram(12, tc.kind) {
+			var err error
+			dst, err = e.EncodeFrame(dst, fr[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		dst, err := e.EncodeFrame(dst, nil)
+		if err != nil {
+			t.Fatalf("drain EncodeFrame: %v", err)
+		}
+		ms, lr := countModes(t, dst)
+		if tc.wantMS && ms < 10 {
+			t.Errorf("%s: only %d M/S frames of %d+", tc.kind, ms, ms+lr)
+		}
+		if !tc.wantMS && ms != 0 {
+			t.Errorf("%s: %d unexpected M/S frames", tc.kind, ms)
+		}
+	}
+}
+
+func TestEncoderMsDeterminism(t *testing.T) {
+	// The same decorrelated program twice through fresh Encoders yields
+	// byte-identical streams (decision flips would show instantly).
+	run := func() []byte {
+		e := mustEncoder(t, Config{SampleRate: 44100, Channels: 2, BitrateKbps: 192})
+		var dst []byte
+		var err error
+		for _, fr := range stereoProgram(20, "decorrelated") {
+			dst, err = e.EncodeFrame(dst, fr[:])
+			if err != nil {
+				t.Fatalf("EncodeFrame: %v", err)
+			}
+		}
+		dst, err = e.EncodeFrame(dst, nil)
+		if err != nil {
+			t.Fatalf("drain EncodeFrame: %v", err)
+		}
+		if len(dst) == 0 {
+			t.Fatal("encoded stream is empty")
+		}
+		return dst
+	}
+	if !bytes.Equal(run(), run()) {
+		t.Fatal("M/S encoder not deterministic")
 	}
 }

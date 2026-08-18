@@ -41,12 +41,25 @@ func TestFrameHeaderKnownBytes(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := frameHeader(c.bitrateIndex, c.srIndex, c.padding, c.m)
+			got := frameHeader(c.bitrateIndex, c.srIndex, c.padding, c.m, 0)
 			if got != c.want {
-				t.Fatalf("frameHeader(%d,%d,%d,%d) = % X, want % X",
+				t.Fatalf("frameHeader(%d,%d,%d,%d,0) = % X, want % X",
 					c.bitrateIndex, c.srIndex, c.padding, c.m, got, c.want)
 			}
 		})
+	}
+}
+
+func TestFrameHeaderModeExtension(t *testing.T) {
+	// 128kbps 44.1kHz, M/S frame: mode 01, mode_extension 10 (M/S on,
+	// intensity off): byte 3 = 0110_0100 = 0x64. The L/R stereo header
+	// stays byte-identical to Phase 3 (0x04).
+	h := frameHeader(9, 0, 0, 1, 2)
+	if h != [4]byte{0xFF, 0xFB, 0x90, 0x64} {
+		t.Fatalf("MS header = % X, want FF FB 90 64", h)
+	}
+	if h := frameHeader(9, 0, 0, 0, 0); h != [4]byte{0xFF, 0xFB, 0x90, 0x04} {
+		t.Fatalf("LR header = % X, want FF FB 90 04 (unchanged)", h)
 	}
 }
 
@@ -321,7 +334,7 @@ func TestZeroReservoirEquivalence(t *testing.T) {
 // mainDataBegin parameter, passed 0 to reproduce the old hardcoded value.
 func legacyAppendFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2][2]granuleCoding, nch int) []byte {
 	frameStart := len(dst)
-	header := frameHeader(bitrateIndex, srIndex, padding, mode)
+	header := frameHeader(bitrateIndex, srIndex, padding, mode, 0)
 	dst = append(dst, header[:]...)
 
 	sfb := &sfbWidthsLong[srIndex]

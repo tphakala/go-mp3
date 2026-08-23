@@ -51,7 +51,7 @@ var tstSampleRates = [3]int{44100, 48000, 32000}
 // re-deriving the boundary walk, so a 1-ulp libm difference on another
 // architecture cannot flip a boundary comparison and fail the test; the
 // frozen checksums are the bit authority.
-func TestPsyPartitionStructure(t *testing.T) {
+func TestPsyPartitionStructure(t *testing.T) { //nolint:dupl // structurally identical to TestPsyShortPartitionStructure by design (same construction discipline, decision 8); the long table's dimensions (513 lines, psyRateTables, tstFLine) differ from the short one's, so this is not the same test
 	for sri, sr := range tstSampleRates {
 		tab := &psyRateTables[sri]
 		if tab.nParts < 1 || tab.nParts > psyMaxParts {
@@ -116,10 +116,7 @@ func TestPsyMdctLineMap(t *testing.T) {
 		tab := &psyRateTables[sri]
 		counts := make([]float64, tab.nParts)
 		for k := range 576 {
-			idx := int((float64(k)+0.5)*1024/1152 + 0.5)
-			if idx > 512 {
-				idx = 512
-			}
+			idx := min(int((float64(k)+0.5)*1024/1152+0.5), 512)
 			if tab.partOfMdctLine[k] != tab.partOfLine[idx] {
 				t.Fatalf("sri=%d: partOfMdctLine[%d] = %d, want %d",
 					sri, k, tab.partOfMdctLine[k], tab.partOfLine[idx])
@@ -241,6 +238,194 @@ func TestPsyTablesChecksum(t *testing.T) {
 	}
 	if gotU != psyLineMapsSHA {
 		t.Fatalf("psy line maps changed: %s, frozen %s", gotU, psyLineMapsSHA)
+	}
+}
+
+// tstFLineShort is tstFLine's short-path sibling: FFT line i of the
+// 256-point transform maps to frequency i*sr/256 (half of tstFLine's
+// i*sr/1024, since the short window is a quarter of the long one's length
+// but still spans the full 0..sr/2 Nyquist range in 129 bins instead of
+// 513), with the same half-bin floor at DC.
+func tstFLineShort(i, sr int) float64 {
+	x := float64(i)
+	if i == 0 {
+		x = 0.5
+	}
+	return x * float64(sr) / 256
+}
+
+// TestPsyShortPartitionStructure is TestPsyPartitionStructure's short-path
+// sibling: same structural checks (contiguity, coverage, the 1/3-Bark
+// rule, strictly increasing bval) over psyShortTables' 129-line domain
+// instead of psyRateTables' 513-line one.
+func TestPsyShortPartitionStructure(t *testing.T) { //nolint:dupl // structurally identical to TestPsyPartitionStructure by design (same construction discipline, decision 8); the short table's dimensions (129 lines, psyShortTables, tstFLineShort) differ from the long one's, so this is not the same test
+	for sri, sr := range tstSampleRates {
+		tab := &psyShortTables[sri]
+		if tab.nParts < 1 || tab.nParts > psyMaxPartsS {
+			t.Fatalf("sr=%d: nParts = %d out of range", sr, tab.nParts)
+		}
+		if tab.partOfLine[0] != 0 || int(tab.partOfLine[128]) != tab.nParts-1 {
+			t.Fatalf("sr=%d: partOfLine endpoints %d..%d", sr, tab.partOfLine[0], tab.partOfLine[128])
+		}
+		counts := make([]int, tab.nParts)
+		for i := range 129 {
+			if i > 0 {
+				d := int(tab.partOfLine[i]) - int(tab.partOfLine[i-1])
+				if d < 0 || d > 1 {
+					t.Fatalf("sr=%d: partOfLine jump %d at line %d", sr, d, i)
+				}
+			}
+			counts[tab.partOfLine[i]]++
+		}
+		for b := range tab.nParts {
+			if counts[b] < 1 || float64(counts[b]) != tab.lines[b] {
+				t.Fatalf("sr=%d part %d: %d lines, table says %v", sr, b, counts[b], tab.lines[b])
+			}
+			lo, hi := -1, -1
+			for i := range 129 {
+				if int(tab.partOfLine[i]) == b {
+					if lo < 0 {
+						lo = i
+					}
+					hi = i
+				}
+			}
+			if span := tstBark(tstFLineShort(hi, sr)) - tstBark(tstFLineShort(lo, sr)); span > 1.0/3.0+1e-9 {
+				t.Fatalf("sr=%d part %d: bark span %.4f > 1/3", sr, b, span)
+			}
+			if bv := tab.bval[b]; bv < tstBark(tstFLineShort(lo, sr))-1e-9 || bv > tstBark(tstFLineShort(hi, sr))+1e-9 {
+				t.Fatalf("sr=%d part %d: bval %.4f outside [%f, %f]", sr, b,
+					bv, tstBark(tstFLineShort(lo, sr)), tstBark(tstFLineShort(hi, sr)))
+			}
+		}
+		for b := 1; b < tab.nParts; b++ {
+			if tab.bval[b] <= tab.bval[b-1] {
+				t.Fatalf("sr=%d: bval not increasing at %d", sr, b)
+			}
+		}
+	}
+}
+
+// TestPsyShortMdctLineMap recomputes partOfBand exactly: short-window
+// coding-order line k maps to the FFT line nearest (k+0.5)*256/384 (this
+// task's derivation of the long path's (k+0.5)*1024/1152 ratio, psytables.go's
+// psyShortTable doc comment); the same numerator/denominator parity that
+// rules out rounding ties on the long grid rules them out here, so the
+// recomputation is platform-exact. Also confirms mlines is never zero: the
+// short path's invMlines-style division (analyzeShort) would panic on a
+// zero-count partition.
+func TestPsyShortMdctLineMap(t *testing.T) {
+	for sri := range tstSampleRates {
+		tab := &psyShortTables[sri]
+		counts := make([]float64, tab.nParts)
+		for k := range 192 {
+			idx := min(int((float64(k)+0.5)*256/384+0.5), 128)
+			if tab.partOfBand[k] != tab.partOfLine[idx] {
+				t.Fatalf("sri=%d: partOfBand[%d] = %d, want %d",
+					sri, k, tab.partOfBand[k], tab.partOfLine[idx])
+			}
+			counts[tab.partOfBand[k]]++
+		}
+		for b := range tab.nParts {
+			if tab.mlines[b] != counts[b] {
+				t.Fatalf("sri=%d part %d: mlines %v, want %v", sri, b, tab.mlines[b], counts[b])
+			}
+			if tab.mlines[b] == 0 {
+				t.Fatalf("sri=%d part %d: mlines is zero, invMlines-style division would divide by zero", sri, b)
+			}
+		}
+	}
+}
+
+// TestPsyShortTableValues is TestPsyTableValues's short-path sibling:
+// recomputes qthr, norm, and sprd from the same defining formulas, using
+// the 256-point Hann window's own full-scale-sine anchor energy instead of
+// the 1024-point window's.
+func TestPsyShortTableValues(t *testing.T) {
+	const relTol = 1e-9
+	relOK := func(got, want float64) bool {
+		if want == 0 {
+			return got == 0
+		}
+		return math.Abs((got-want)/want) <= relTol
+	}
+	norm := math.Sqrt(8.0 / 3.0)
+	var wsum float64
+	for i := range 256 {
+		wsum += norm * 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/256))
+	}
+	fullBin := (wsum / 2) * (wsum / 2)
+
+	for sri, sr := range tstSampleRates {
+		tab := &psyShortTables[sri]
+		for b := range tab.nParts {
+			var q float64
+			for i := range 129 {
+				if int(tab.partOfLine[i]) == b {
+					q += fullBin * math.Pow(10, (tstAthDB(tstFLineShort(i, sr))-tstAnchorDB)/10)
+				}
+			}
+			if !relOK(tab.qthr[b], q) {
+				t.Errorf("sri=%d qthr[%d] = %g, recompute %g", sri, b, tab.qthr[b], q)
+			}
+			var rowSum float64
+			for bb := range tab.nParts {
+				want := 0.0
+				if d := tstSprdDB(tab.bval[b] - tab.bval[bb]); d > tstSpreadCut {
+					want = math.Pow(10, d/10)
+				}
+				if !relOK(tab.sprd[b][bb], want) {
+					t.Errorf("sri=%d sprd[%d][%d] = %g, recompute %g", sri, b, bb, tab.sprd[b][bb], want)
+				}
+				rowSum += tab.sprd[b][bb]
+			}
+			if !relOK(tab.norm[b], 1/rowSum) {
+				t.Errorf("sri=%d norm[%d] = %g, recompute %g", sri, b, tab.norm[b], 1/rowSum)
+			}
+			if tab.qthr[b] <= 0 {
+				t.Errorf("sri=%d qthr[%d] = %g, want > 0", sri, b, tab.qthr[b])
+			}
+		}
+	}
+}
+
+// psyShortTablesSHA / psyShortLineMapsSHA freeze psyShortTables, the same
+// procedure as psyTablesSHA / psyLineMapsSHA above.
+const (
+	psyShortTablesSHA   = "4dc56f329bac85c1b055b5816eca465b7b9f53b98024d191a5651f209f47d29a"
+	psyShortLineMapsSHA = "95a2546db6a749059103ddc7cc5a4f2dca4e139eebbe9e2d92b188e057a2ec2a"
+)
+
+func TestPsyShortTablesChecksum(t *testing.T) {
+	var vs []float64
+	var us []uint16
+	for sri := range psyShortTables {
+		tab := &psyShortTables[sri]
+		vs = append(vs, float64(tab.nParts))
+		vs = append(vs, tab.lines[:]...)
+		vs = append(vs, tab.bval[:]...)
+		vs = append(vs, tab.qthr[:]...)
+		vs = append(vs, tab.norm[:]...)
+		vs = append(vs, tab.mlines[:]...)
+		for b := range tab.sprd { //nolint:gocritic // false positive: tab.sprd[b][:] depends on the loop variable b, this flattens a 2D matrix, not a repeated value
+			vs = append(vs, tab.sprd[b][:]...)
+		}
+		for _, v := range tab.partOfLine {
+			us = append(us, uint16(v))
+		}
+		for _, v := range tab.partOfBand {
+			us = append(us, uint16(v))
+		}
+	}
+	gotF, gotU := sha256Float64s(vs...), sha256U16(us...)
+	if psyShortTablesSHA == "" || psyShortLineMapsSHA == "" {
+		t.Fatalf("FREEZE ME:\nconst psyShortTablesSHA = %q\nconst psyShortLineMapsSHA = %q", gotF, gotU)
+	}
+	if gotF != psyShortTablesSHA {
+		t.Fatalf("psy short float tables changed: %s, frozen %s", gotF, psyShortTablesSHA)
+	}
+	if gotU != psyShortLineMapsSHA {
+		t.Fatalf("psy short line maps changed: %s, frozen %s", gotU, psyShortLineMapsSHA)
 	}
 }
 
@@ -720,6 +905,220 @@ func TestPsyModelGolden(t *testing.T) {
 	}
 	if got != psyModelGoldenSHA {
 		t.Fatalf("PsyModel output changed: %s, frozen %s", got, psyModelGoldenSHA)
+	}
+}
+
+// shortWindowCenters are the three 256-sample analysis window centers
+// (decision 8: gStart + 192w - 32) within the causal 1024-sample buffer
+// AnalyzeGranule receives, where gStart = 1024-576 = 448 is the granule's
+// first sample inside that buffer. Test-only convenience shared by every
+// short-path test below that drives analyzeShortWindow/computeShortThresholds
+// directly instead of through AnalyzeGranule.
+var shortWindowCenters = [3]int{1024 - 576 - 32, 1024 - 576 + 160, 1024 - 576 + 352}
+
+// TestPsyShortSpreadingEffect is TestPsySpreadingEffect's short-path
+// sibling: a steady tone must raise thresholds in NEIGHBOR partitions
+// above their quiet floor, decaying with distance, checked independently
+// at each of the three window centers (the short path shares no state
+// across windows, decision 8).
+func TestPsyShortSpreadingEffect(t *testing.T) {
+	const shortBin = 40 // 40*44100/256 ~ 6891 Hz; the matching 1024-domain bin is 4x
+	tab := &psyShortTables[0]
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	sineGen(4*shortBin, 0.5)(0, pcm)
+	for w, center := range shortWindowCenters {
+		p.analyzeShortWindow(pcm, center)
+		p.computeShortThresholds(tab)
+		b := int(tab.partOfLine[shortBin])
+		if b < 2 || b > tab.nParts-3 {
+			t.Fatalf("bin %d partition %d too close to an edge for this test", shortBin, b)
+		}
+		if p.nbS[b+1] <= tab.qthr[b+1] || p.nbS[b-1] <= tab.qthr[b-1] {
+			t.Fatalf("window %d: neighbors of tone partition %d not elevated above qthr", w, b)
+		}
+		if !(p.nbS[b] > p.nbS[b+2] && p.nbS[b+2] > p.nbS[b+4]) {
+			t.Errorf("window %d: upward spreading not decaying: nbS[b]=%g nbS[b+2]=%g nbS[b+4]=%g",
+				w, p.nbS[b], p.nbS[b+2], p.nbS[b+4])
+		}
+	}
+}
+
+// TestPsyShortNoiseFloor confirms the short path's required SNR is the
+// fixed, NMT-dominated constant decision 8 and resolve-at-impl item 7
+// settle on (psyNmtDB, no per-partition tonality estimate). Measured once
+// (deterministic across arches, so the ceiling below is not a source of
+// cross-arch flakiness): white noise's mean e/nb ratio over interior
+// partitions (away from edges where qthr dominates) is 3.60 dB, below the
+// flat psyNmtDB=5.5 constant itself because the spreading normalization
+// pulls each partition's threshold from a weighted average of its
+// neighbors (the same dilution TestPsyTonalityContrast's noiseDB=4.53
+// measurement shows on the long path's own NMT floor). The ceiling gates
+// against ever drifting toward the long path's 15.5 dB tonal (TMN) level,
+// which would mean a stray tonality estimate crept into this path.
+func TestPsyShortNoiseFloor(t *testing.T) {
+	tab := &psyShortTables[0]
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	seed := uint64(211)
+	for i := range pcm {
+		pcm[i] = testsignal.LCGSigned(&seed) * 0.5
+	}
+	p.analyzeShortWindow(pcm, shortWindowCenters[0])
+	p.computeShortThresholds(tab)
+	var sumDB float64
+	cnt := 0
+	for b := 5; b < tab.nParts-5; b++ {
+		if p.eS[b] > 0 && p.nbS[b] > tab.qthr[b] {
+			sumDB += 10 * math.Log10(p.eS[b]/p.nbS[b])
+			cnt++
+		}
+	}
+	if cnt == 0 {
+		t.Fatal("noise floor: no partition exceeded qthr, nothing measured")
+	}
+	meanDB := sumDB / float64(cnt)
+	const noiseCeil = 10.0 // well below psyTmnDB=15.5, comfortably above the measured 3.60
+	if meanDB > noiseCeil {
+		t.Errorf("white noise: mean e/nb = %.2f dB, want <= %.1f dB (NMT-dominated, not tonal)", meanDB, noiseCeil)
+	}
+}
+
+// TestPsyShortThresholdFloor is TestPsyThresholdFloor's short-path
+// sibling: nbS must never undercut qthr, for tonal, noise, and silent
+// content, at every one of the three window centers.
+func TestPsyShortThresholdFloor(t *testing.T) {
+	tab := &psyShortTables[0]
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	seed := uint64(221)
+	programs := []func([]float64){
+		func(buf []float64) { sineGen(160, 0.5)(0, buf) },
+		func(buf []float64) {
+			for i := range buf {
+				buf[i] = testsignal.LCGSigned(&seed) * 0.5
+			}
+		},
+		func(buf []float64) { clear(buf) },
+	}
+	for _, gen := range programs {
+		gen(pcm)
+		for _, center := range shortWindowCenters {
+			p.analyzeShortWindow(pcm, center)
+			p.computeShortThresholds(tab)
+			for b := range tab.nParts {
+				if p.nbS[b] < tab.qthr[b] {
+					t.Fatalf("part %d: nbS = %g below qthr = %g", b, p.nbS[b], tab.qthr[b])
+				}
+			}
+		}
+	}
+}
+
+// TestPsyShortPerWindowResolution is the reason short blocks exist: a
+// burst confined to window 2's own span must raise window 2's XminS bands
+// relative to window 0's, which sees none of it. The burst sits in
+// pcm[850:928), inside window 2's [672,927] span but outside window 0's
+// [288,543] and window 1's [480,735]. Measured once (deterministic across
+// arches): sum0 = 980.69, sum2 = 1779.40 (ratio 1.81x). The floor below is
+// tightened to that measurement with margin (1.5x, comfortably below the
+// measured 1.81x).
+func TestPsyShortPerWindowResolution(t *testing.T) {
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	clear(pcm)
+	for i := 850; i < 928; i++ {
+		pcm[i] = 0.9
+	}
+	var out PsyOut
+	p.AnalyzeGranule(pcm, &out)
+	var sum0, sum2 float64
+	for s := range 13 {
+		sum0 += out.XminS[3*s+0]
+		sum2 += out.XminS[3*s+2]
+	}
+	if sum2 <= sum0*1.5 {
+		t.Errorf("window 2 (containing the burst) XminS sum = %g, want clearly above window 0's %g", sum2, sum0)
+	}
+}
+
+// TestPsyShortPESSpike is TestPsyModelSilenceAndTransientPE's short-path
+// sibling. Measured once (deterministic across arches, so the margin below
+// is not a source of cross-arch flakiness): silence PES = 0 exactly;
+// transient PES (the same burst as TestPsyShortPerWindowResolution) =
+// 148.9386440049125. The floor is tightened to that measurement with
+// margin: >= 100 (about 33% below measured).
+func TestPsyShortPESSpike(t *testing.T) {
+	var p PsyModel
+	p.Reset(0)
+	pcm := make([]float64, 1024)
+	var out PsyOut
+	for range 4 {
+		clear(pcm)
+		p.AnalyzeGranule(pcm, &out)
+	}
+	if out.PES > 0.01 {
+		t.Errorf("silence PES = %v, want near 0", out.PES)
+	}
+	clear(pcm)
+	for i := 850; i < 928; i++ {
+		pcm[i] = 0.9
+	}
+	p.AnalyzeGranule(pcm, &out)
+	if out.PES < 100 {
+		t.Errorf("transient PES = %v, want a spike (>= 100)", out.PES)
+	}
+}
+
+// psyShortGoldenSHA: cross-arch determinism gate; never re-freeze on an
+// arch mismatch (arm64 verification is task B4's job; this is the local
+// amd64 freeze).
+const psyShortGoldenSHA = "6259e8f244b2918a7638a2472e23e8274a7d1d18edbf9274e491d39a15c6458c"
+
+func TestPsyShortGolden(t *testing.T) {
+	// Three rates x two programs: LCG noise and a silence-then-burst
+	// transient confined to pcm[850:928) on the final granule (the same
+	// per-window-confined burst TestPsyShortPerWindowResolution uses);
+	// both are bit-portable (no libm in the input generator).
+	out := make([]float64, 0, 3*2*(39+39+1))
+	for sri := range 3 {
+		for prog := range 2 {
+			var p PsyModel
+			p.Reset(sri)
+			pcm := make([]float64, 1024)
+			var po PsyOut
+			seed := uint64(250 + prog)
+			for g := range 4 {
+				switch prog {
+				case 0:
+					for i := range pcm {
+						pcm[i] = testsignal.LCGSigned(&seed) * 0.6
+					}
+				case 1:
+					clear(pcm)
+					if g == 3 {
+						for i := 850; i < 928; i++ {
+							pcm[i] = 0.8
+						}
+					}
+				}
+				p.AnalyzeGranule(pcm, &po)
+			}
+			out = append(out, po.XminS[:]...)
+			out = append(out, po.EnS[:]...)
+			out = append(out, po.PES)
+		}
+	}
+	got := sha256Float64s(out...)
+	if psyShortGoldenSHA == "" {
+		t.Fatalf("FREEZE ME: const psyShortGoldenSHA = %q", got)
+	}
+	if got != psyShortGoldenSHA {
+		t.Fatalf("PsyModel short output changed: %s, frozen %s", got, psyShortGoldenSHA)
 	}
 }
 

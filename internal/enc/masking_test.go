@@ -206,10 +206,8 @@ func testMaskingContractCase(t *testing.T, sr, kbps, nch int, prog string) {
 
 	srIndex := srIndexForRate[sr]
 	bitrateIndex := bitrateIndexForKbps[kbps]
-	lay := &layoutLong[srIndex]
 
 	const nFrames = maskingGridFrames
-	drainFrame := nFrames
 	input := maskingGridProgram(prog, sr, nch, nFrames)
 
 	var pad paddingState
@@ -222,9 +220,20 @@ func testMaskingContractCase(t *testing.T, sr, kbps, nch int, prog string) {
 		if g == 0 && ch == 0 {
 			frameIdx++
 		}
-		if frameIdx == drainFrame {
-			return
-		}
+		// Frame 0 is validated like every other frame. It used to be excluded
+		// (Inc7 Task B2): before the stream-start attackNoPrior fix, the
+		// uninitialized zero attack carry misread the stream's opening
+		// sub-block as an attack and forced a spurious short block on the
+		// first granule, whose greedy escalation could converge one
+		// global_gain step short of the joint optimum. The attackNoPrior seed
+		// removed that false stream-start attack, so frame 0 is now an
+		// ordinary long block that meets the masking contract like the rest.
+
+		// The granule-channel's own decided block type picks its bandLayout
+		// (Inc7 block switching: a frame's granule-channels can carry
+		// different block types, so this can no longer be a single
+		// hoisted-out shared layout).
+		lay := layoutFor(diag.BlockType, srIndex)
 
 		// The kept coding's own masking metrics, the SAME measure
 		// (maskingMetrics, unfiltered by Exempt) escalation's own cache
@@ -266,10 +275,20 @@ func testMaskingContractCase(t *testing.T, sr, kbps, nch int, prog string) {
 		}
 	})
 
+	// Design decision 11's held-frame lookahead: EncodeFrame call f codes
+	// the PREVIOUSLY held frame (f-1's content), not frame f's own, and
+	// call 0 codes nothing at all (it only stashes). codeFrame's own
+	// e.pad.next() therefore advances once per call from f==1 onward, plus
+	// twice more at drain (the last held frame, then the silence flush
+	// frame): this independent pad tracker must advance in that exact
+	// order for currentFlatShare to match what escalateForMasking actually
+	// used for the frame currently being diagnosed.
 	var stream []byte
 	for f := range nFrames {
-		wantPad := pad.next(kbps, sr)
-		currentFlatShare = granuleBudgetBits(bitrateIndex, srIndex, wantPad, nch)
+		if f > 0 {
+			wantPad := pad.next(kbps, sr)
+			currentFlatShare = granuleBudgetBits(bitrateIndex, srIndex, wantPad, nch)
+		}
 
 		samples := make([][]float32, nch)
 		for ch := range nch {
@@ -283,8 +302,14 @@ func testMaskingContractCase(t *testing.T, sr, kbps, nch int, prog string) {
 			t.Fatalf("frame %d: EncodeFrame: %v", f, err)
 		}
 	}
-	drainPad := pad.next(kbps, sr)
-	currentFlatShare = granuleBudgetBits(bitrateIndex, srIndex, drainPad, nch)
+	// Drain codes the last held real frame first (frame nFrames-1's
+	// content, stashed by the final loop iteration above but not yet
+	// coded), using the pad state for that frame; the silence flush frame
+	// coded right after it always has keptOver==0 (an all-zero granule
+	// never violates), so the hook returns before ever reading
+	// currentFlatShare for it and no further advance is needed here.
+	lastPad := pad.next(kbps, sr)
+	currentFlatShare = granuleBudgetBits(bitrateIndex, srIndex, lastPad, nch)
 	stream, err = e.EncodeFrame(stream, nil)
 	if err != nil {
 		t.Fatalf("drain: EncodeFrame: %v", err)

@@ -37,8 +37,16 @@ func butterflyXr(xrL, xrR, xrM, xrS *[576]float64) {
 
 // msDecide reports whether the frame codes M/S: true when
 // peM+peS + msPeMarginBits <= peL+peR, each summed over both granules.
-// Inc7 seam (design decision 8): the block-switch increment adds a veto
-// here for frames whose channels disagree on block type.
 func msDecide(peL, peR, peM, peS float64) bool {
 	return peM+peS+msPeMarginBits <= peL+peR
+}
+
+// blockTypesAgree reports whether both channels decided the same block
+// type for both granules (design decision 13's M/S veto seam, Inc7): a
+// mismatched block type per granule makes M/S coding structurally
+// undefined (there is no single window_switching side-info state for two
+// coded channels wanting different windows), so codeFrame's DECIDE phase
+// ANDs msDecide's PE-driven result with this before ever coding M/S.
+func blockTypesAgree(bt *[2][2]int) bool {
+	return bt[0][0] == bt[0][1] && bt[1][0] == bt[1][1]
 }

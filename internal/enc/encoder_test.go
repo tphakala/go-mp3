@@ -216,6 +216,48 @@ func TestEncoderDrain(t *testing.T) {
 	}
 }
 
+// TestEncoderHeldFrameContract is design decision 11's held-frame
+// lookahead contract, pinned directly (TestEncoderStatsCount and
+// TestEncoderDrain already establish the N-calls-plus-drain-yields-N+1-
+// frames invariant generically; this test isolates the specific new
+// behavior that invariant depends on): EncodeFrame call 1 stashes its
+// samples and returns dst UNCHANGED (no frame emitted yet, since held
+// granule 1's wantNext needs a next frame's granule 0 that does not exist
+// until call 2), call 2 emits exactly the first coded frame, and N calls
+// plus drain still total exactly N+1 emitted frames.
+func TestEncoderHeldFrameContract(t *testing.T) {
+	cfg := Config{SampleRate: 44100, Channels: 1, BitrateKbps: 128}
+	e := mustEncoder(t, cfg)
+	seed := uint64(42)
+
+	dst, err := e.EncodeFrame(nil, planarSamples(&seed, 1, 0.5))
+	if err != nil {
+		t.Fatalf("call 1: EncodeFrame: %v", err)
+	}
+	if len(dst) != 0 {
+		t.Fatalf("call 1 (the first ever, before any lookahead exists): appended %d bytes, want 0", len(dst))
+	}
+
+	const nCalls = 6
+	for range nCalls - 1 {
+		var err error
+		dst, err = e.EncodeFrame(dst, planarSamples(&seed, 1, 0.5))
+		if err != nil {
+			t.Fatalf("EncodeFrame: %v", err)
+		}
+	}
+	dst, err = e.EncodeFrame(dst, nil) // drain
+	if err != nil {
+		t.Fatalf("drain: EncodeFrame: %v", err)
+	}
+	if got := e.Stats().Frames; got != nCalls+1 {
+		t.Fatalf("Stats().Frames = %d after %d calls + drain, want %d (N calls + drain = N+1 frames)", got, nCalls, nCalls+1)
+	}
+	if len(dst) == 0 {
+		t.Fatal("drained stream is empty")
+	}
+}
+
 // TestEncoderNaN requires a NaN OR an Inf (+Inf and -Inf both checked)
 // anywhere in samples to return ErrInvalidAudio, append nothing, and
 // poison the encoder until Reset. Each bad value sits at an interior
@@ -618,6 +660,83 @@ func TestEncoderReservoirDeterminism(t *testing.T) {
 // M/S emission path its own cross-arch golden coverage. Confirmed stable
 // across two consecutive amd64 runs before freezing; the arm64 CI leg is
 // the cross-arch confirmation.
+//
+// Re-frozen again in Phase 4 increment 7 Task B2 (attack-driven window
+// switching, the one-frame PCM lookahead, and the psymodel window
+// re-centering, design decisions 9-11): every one of these four streams'
+// bytes changed, for two compounding reasons named explicitly here rather
+// than left implicit. First, the psymodel's analysis window is no longer
+// causal (ending at a granule's own last sample); it is now CENTERED on
+// the granule (224 samples of history, 224 of lookahead, decision 11), so
+// every granule's Xmin/PE differs even for content that never switches
+// block type. Second, TestEncodeGolden and TestEncodeGoldenForcedLR no
+// longer drain (a 4-call loop with no trailing nil call, unchanged from
+// before this task), and the held-frame lookahead (decision 11) means
+// call 1 now only stashes its samples and emits nothing: the hashed
+// stream is 3 coded frames' worth of bytes, not 4, and none of them is
+// call 4's own content (that frame stays held, never coded within these 4
+// calls). This is the expected, documented consequence of "N calls (no
+// drain) emit N-1 frames" for the held-frame design, not a coding-path
+// regression.
+//
+// Re-frozen ONCE MORE in Phase 4 increment 7's stream-start grammar fix
+// (the attackNoPrior seed plus blockTypeFor opening a short run with a
+// start block). An earlier draft of this comment claimed these four cases
+// "genuinely exercise block switching at cold start" because full-scale
+// broadband noise from pcmHist's all-zero initial state tripped attackDetect
+// at granule 0. That cold-start switch was a BUG, not coverage: the zero
+// attack carry fabricated a false stream-start attack and the state machine
+// emitted an illegal 0->2 transition. The fix gives the very first sub-block
+// no prior energy to ratio against, so these steady programs (broadband
+// noise and tones, with no real transient) now stay long from the first
+// granule, and their bytes changed a final time. TestEncodeGolden is
+// therefore again block-switching-blind by design: dedicated switch-machinery
+// coverage lives in TestEncodeGoldenTransient (a controlled mid-stream
+// burst), which this fix left byte-identical because it opens on silence.
+// Confirmed stable across two consecutive amd64 runs before freezing; the
+// arm64 CI leg is the cross-arch confirmation.
+
+// transientGoldenSHA freezes sha256(full encoded stream) for a controlled
+// transient program (design decisions 9/10/11's decision-path coverage,
+// Phase 4 increment 7 Task B2): silence, one loud stored-LCG click, then
+// silence again, mono, drained. Unlike TestEncodeGolden's cases (steady
+// programs that no longer switch at all after the stream-start grammar
+// fix), this isolates the switch machinery on a single controlled burst well
+// after stream start, deliberately including the drain so the run's
+// closing long-block tail is covered too. Never re-freeze on an
+// arm64/amd64 mismatch (a determinism bug to fix); the arm64 CI leg (task
+// B4) is the cross-arch confirmation.
+const transientGoldenSHA = "8bcee4c5a93d6fd30b1f8af9534135527e5cd20513fe0daf1ad6aeae19c31c60"
+
+func TestEncodeGoldenTransient(t *testing.T) {
+	const nFrames = 10
+	const burstFrame = 4
+
+	e, err := New(Config{SampleRate: 44100, Channels: 1, BitrateKbps: 64})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	frames := clickTrainMono(nFrames, burstFrame, 0.8)
+	var stream []byte
+	for f := range nFrames {
+		var err error
+		stream, err = e.EncodeFrame(stream, frames[f:f+1])
+		if err != nil {
+			t.Fatalf("frame %d: EncodeFrame: %v", f, err)
+		}
+	}
+	stream, err = e.EncodeFrame(stream, nil) // drain
+	if err != nil {
+		t.Fatalf("drain: EncodeFrame: %v", err)
+	}
+
+	sum := sha256.Sum256(stream)
+	got := hex.EncodeToString(sum[:])
+	if got != transientGoldenSHA {
+		t.Fatalf("sha256 = %s, want %s", got, transientGoldenSHA)
+	}
+}
+
 func TestEncodeGolden(t *testing.T) {
 	cases := []struct {
 		name                 string
@@ -625,10 +744,10 @@ func TestEncodeGolden(t *testing.T) {
 		correlated           bool // identical channels (L==R): forces M/S on every frame
 		wantHex              string
 	}{
-		{"44100_2ch_128kbps", 44100, 2, 128, false, "06cafa9ef50877ff3a491a6ea6d2b38290477c1a2f693c672112f007e40f0e37"},
-		{"48000_1ch_320kbps", 48000, 1, 320, false, "d1d7d99887552f2b2ddc4dde49e74be60fa14988a6732d0f02424a0d1f60da19"},
-		{"32000_2ch_32kbps", 32000, 2, 32, false, "483ab51937594eafc9eddd9e7a557570b62ae2c4e6847fa393c19e2804b03c26"},
-		{"44100_2ch_128kbps_ms", 44100, 2, 128, true, "039a46f436cf711bdb724bf4371b8f3c2fd64aac9d75f5f212f4c64f4033438e"},
+		{"44100_2ch_128kbps", 44100, 2, 128, false, "e7b868ec37d11a7b653aa15d524e5e4022c9682747168a46205e0ff7f35c43a7"},
+		{"48000_1ch_320kbps", 48000, 1, 320, false, "cc1886c0c5e01dd9640b7df2b382fbb5045adf08c525efb914093728302ba712"},
+		{"32000_2ch_32kbps", 32000, 2, 32, false, "3cb6ea6799f179e9437d47145d9997f61cb164e49c68179bda79f6e43035df97"},
+		{"44100_2ch_128kbps_ms", 44100, 2, 128, true, "690aef6d1d21d6a2b7065e32b16c4e41462212440f209320d01decbb894978c6"},
 	}
 
 	for _, c := range cases {

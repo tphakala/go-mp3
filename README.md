@@ -7,9 +7,10 @@ The decoder is usable today and is validated bit-exactly against a pinned
 minimp3 C oracle across amd64 and arm64. The encoder is an independent
 implementation derived from ISO/IEC 11172-3 and published literature, never
 from LAME, Shine, or other GPL/LGPL encoders; see PROVENANCE.md for licensing
-provenance. It is currently a Phase 3 skeleton: fixed CBR bitrate, long
-blocks only, no psychoacoustic model or bit reservoir yet. Quality tiers
-arrive in later phases.
+provenance. It is a fixed-bitrate CBR encoder with a psychoacoustic model, a
+bit reservoir, per-frame M/S joint stereo, and attack-driven short blocks
+(block switching); quality at a given bitrate still lags a fully tuned
+encoder like LAME, and further tuning is planned. VBR is not planned.
 
 ## Decoding
 
@@ -44,9 +45,13 @@ its return values.
 
 ## Encoding
 
-`Encoder.EncodeFrame` encodes one MP3 frame at a time from planar float32
-PCM. Configure a CBR bitrate (or leave it zero for the 128 kb/s default),
-then drive it in a loop and drain at the end:
+`Encoder.EncodeFrame` feeds planar float32 PCM into the encoder, one
+`FrameSize`-sample frame per call, and appends zero or more complete MP3
+frames to the output: it holds a one-frame PCM lookahead for attack
+detection and block switching, so the first call typically appends nothing,
+and audio passed to call `n` comes back out no earlier than call `n+1`.
+Configure a CBR bitrate (or leave it zero for the 128 kb/s default), then
+drive it in a loop and drain at the end:
 
 ```go
 e, err := mp3.NewEncoder(mp3.EncoderConfig{
@@ -67,7 +72,7 @@ for pos := 0; pos < len(left); pos += mp3.FrameSize {
 		log.Fatal(err)
 	}
 }
-stream, err = e.EncodeFrame(stream, nil) // drain: flushes the final frame
+stream, err = e.EncodeFrame(stream, nil) // drain: flushes the held frame plus the final frame
 if err != nil {
 	log.Fatal(err)
 }
@@ -76,18 +81,26 @@ if err != nil {
 Only the final frame of a stream may be shorter than `FrameSize` (1152
 samples per channel); `EncodeFrame` zero-pads it and finalizes the stream,
 so any further non-nil call returns `ErrEncoderFinalized` until `Reset`. The
-nil drain call is always legal, including right after a short final frame.
+nil drain call is always legal, including right after a short final frame:
+it codes whichever real frame the encoder is still holding for its
+lookahead (if any), then the final silence flush frame, so `N` non-nil
+calls plus drain always total exactly `N+1` emitted frames.
 
-Status: this is a Phase 3 skeleton. It produces valid, standard-compliant
-CBR MPEG-1 Layer III streams (32/44.1/48 kHz, mono or stereo, the 14 legal
-CBR bitrates), but has no psychoacoustic model yet, so quality at a given
-bitrate lags a tuned encoder like LAME; quality tiers and VBR arrive with
-later phases.
+Status: it produces valid, standard-compliant CBR MPEG-1 Layer III streams
+(32/44.1/48 kHz, mono or stereo, the 14 legal CBR bitrates) with a
+psychoacoustic model, a bit reservoir, per-frame M/S joint stereo, and
+attack-driven short blocks, but quality at a given bitrate still lags a
+fully tuned encoder like LAME; further tuning is planned. VBR is not
+planned.
 
 The encoded stream is tagless (no Xing/LAME header), so the `pcm` decoder
 below applies no gapless trim to it: the decoded output carries
 `mp3.TotalDelay` (1057) leading samples of algorithmic delay, measured per
-channel. For the interleaved output that means discarding the first
+channel, unchanged by the one-frame lookahead above (it shifts when frames
+come back from `EncodeFrame`, not where they land in the decoded stream).
+`Encoder.TotalDelay()` and `Encoder.Delay()` return `mp3.TotalDelay` and
+`mp3.EncoderDelay` respectively for callers that only hold an `*Encoder`.
+For the interleaved output that means discarding the first
 `TotalDelay * Channels` sample values (not `TotalDelay` values) to align
 the decoded audio back to the original input.
 
@@ -118,5 +131,7 @@ float32 output instead of the default 16-bit PCM. When the source is an
 `io.Seeker`, `d.SeekToSample(n)` positions the decoder so the next `Read`
 starts at per-channel sample `n` in the gapless-trimmed timeline.
 
-The decoder is usable today. The encoder is a Phase 3 CBR skeleton, usable
-but without a psychoacoustic model yet; see the Encoding section above.
+The decoder is usable today. The encoder is a usable CBR encoder with a
+psychoacoustic model, bit reservoir, M/S joint stereo, and short blocks,
+though quality still lags a fully tuned encoder like LAME; see the Encoding
+section above.

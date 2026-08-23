@@ -96,6 +96,118 @@ func TestPsyThresholdsMatchReference(t *testing.T) {
 	}
 }
 
+// refShortThresholds recomputes computeShortThresholds from the same
+// annex equations with unrestricted libm (math.Pow for the fixed power
+// ratio). Decision 8's model 2 simplification (resolve-at-impl item 7)
+// removes the tonality estimate entirely on the short path, so there is
+// no log() call here at all: item 10's R2b subnormal guard has nothing to
+// guard on this path, noted for the record rather than silently omitted.
+func refShortThresholds(tab *psyShortTable, r2 []float64) (e, nb []float64) {
+	n := tab.nParts
+	e = make([]float64, n)
+	for i := range 129 {
+		b := tab.partOfLine[i]
+		e[b] += r2[i]
+	}
+	bc := math.Pow(10, -psyNmtDB/10)
+	nb = make([]float64, n)
+	for b := range n {
+		var ecb float64
+		for bb := range n {
+			ecb += e[bb] * tab.sprd[b][bb]
+		}
+		nb[b] = math.Max(tab.qthr[b], ecb*tab.norm[b]*bc)
+	}
+	return e, nb
+}
+
+func TestPsyShortThresholdsMatchReference(t *testing.T) {
+	tab := &psyShortTables[1]
+	var p PsyModel
+	p.Reset(1)
+	pcm := make([]float64, 1024)
+	seed := uint64(231)
+	for i := range pcm {
+		pcm[i] = testsignal.LCGSigned(&seed) * 0.7
+	}
+	for _, center := range shortWindowCenters {
+		p.analyzeShortWindow(pcm, center)
+		wantE, wantNb := refShortThresholds(tab, p.r2S[:])
+		p.computeShortThresholds(tab)
+		for b := range tab.nParts {
+			if wantE[b] != 0 {
+				if r := math.Abs((p.eS[b] - wantE[b]) / wantE[b]); r > refTol {
+					t.Fatalf("part %d: eS rel diff %.3g", b, r)
+				}
+			}
+			if r := math.Abs((p.nbS[b] - wantNb[b]) / wantNb[b]); r > refTol {
+				t.Fatalf("part %d: nbS = %g, reference %g (rel %.3g)", b, p.nbS[b], wantNb[b], r)
+			}
+		}
+	}
+}
+
+// TestPsyShortModelMatchesReference: full-pipeline agreement of the
+// runtime short path (plog/fixed-order sums) with the libm reference
+// (refShortThresholds plus a naive sfb mapping and math.Log2 PES), the
+// short-path sibling of TestPsyModelMatchesReference.
+func TestPsyShortModelMatchesReference(t *testing.T) {
+	const sri = 2
+	tab := &psyShortTables[sri]
+	sfb := &sfbWidthsShort[sri]
+	var p PsyModel
+	p.Reset(sri)
+	pcm := make([]float64, 1024)
+	seed := uint64(241)
+	for i := range pcm {
+		pcm[i] = testsignal.LCGSigned(&seed) * 0.8
+	}
+	var out PsyOut
+	p.AnalyzeGranule(pcm, &out)
+
+	var refXminS, refEnS [39]float64
+	var refPES float64
+	for w, center := range shortWindowCenters {
+		p.analyzeShortWindow(pcm, center)
+		e, nb := refShortThresholds(tab, p.r2S[:])
+
+		freq := 0
+		for s := range 13 {
+			var x, en float64
+			for range sfb[s] {
+				b := tab.partOfBand[freq]
+				x += nb[b] / tab.mlines[b]
+				en += e[b] / tab.mlines[b]
+				freq++
+			}
+			refXminS[3*s+w] = x
+			refEnS[3*s+w] = en
+		}
+		for b := range tab.nParts {
+			if ratio := e[b] / nb[b]; ratio > 1 {
+				refPES += tab.lines[b] * math.Log2(ratio)
+			}
+		}
+	}
+	for i := range 39 {
+		if refXminS[i] != 0 {
+			if r := math.Abs((out.XminS[i] - refXminS[i]) / refXminS[i]); r > refTol {
+				t.Fatalf("XminS[%d] rel diff %.3g", i, r)
+			}
+		}
+		if refEnS[i] != 0 {
+			if r := math.Abs((out.EnS[i] - refEnS[i]) / refEnS[i]); r > refTol {
+				t.Fatalf("EnS[%d] rel diff %.3g", i, r)
+			}
+		}
+	}
+	if refPES != 0 {
+		if r := math.Abs((out.PES - refPES) / refPES); r > refTol {
+			t.Fatalf("PES = %v, reference %v (rel %.3g)", out.PES, refPES, r)
+		}
+	}
+}
+
 // TestPsyModelMatchesReference: full-pipeline agreement of the runtime
 // path (plog/pexp2/fixed order) with the libm reference: sfb outputs and
 // PE within refTol relative.

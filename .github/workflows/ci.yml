@@ -55,7 +55,16 @@ jobs:
 
   compat:
     name: Compat
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # arm64 gains the same leg the test job runs: issue #31's
+        # arm64-cross-decoder compat item, previously only covered by the
+        # Oracle workflow's differential job (which already runs both
+        # arches), now also verified end to end through ffmpeg/mpg123 on
+        # real arm64 output rather than only amd64.
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -67,11 +76,12 @@ jobs:
       # PROVENANCE.md); their source is never consulted.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg mpg123
       # Longer than the 10m per-binary default: this job's total runtime is
-      # the base compat grid across all sample rates plus the new
-      # joint-stereo matrix, both run through ffmpeg and mpg123, made
-      # compute-heavy by the encoder's masking-driven budget escalation (a
-      # known Phase 5 throughput follow-up), so the default timeout is too
-      # tight on shared CI runners.
+      # the base compat grid across all sample rates plus the joint-stereo
+      # and short-block matrices, all run through ffmpeg and mpg123, made
+      # compute-heavy by the encoder's masking-driven budget escalation and
+      # by short-block coding (known Phase 5 throughput follow-ups), so the
+      # default timeout is too tight on shared CI runners, on both amd64
+      # and arm64.
       - run: go test ./ -run Compat -v -timeout 25m
         env:
           MP3_REQUIRE_COMPAT: '1'

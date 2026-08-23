@@ -84,7 +84,7 @@ func fuzzEncoderAPISeeds() []fuzzEncoderAPISeed {
 		{sampleRate: 44100, channels: 3, bitrate: 128000},             // bad channel count
 		{sampleRate: 44100, channels: 2, bitrate: 128500},             // 128500: the %1000 trap
 		{sampleRate: 44100, channels: 2, bitrate: 129000},             // multiple of 1000, still illegal
-		{sampleRate: 44100, channels: 2, bitrate: 0, quality: 5},      // Quality reserved for VBR
+		{sampleRate: 44100, channels: 2, bitrate: 0, quality: 5},      // Quality unsupported (CBR-only)
 		{sampleRate: 44100, channels: 2, bitrate: 128000, quality: 1}, // Bitrate and Quality both set
 		{valid.sampleRate, valid.channels, valid.bitrate, valid.quality, // clean encode-and-drain
 			[]byte{fuzzOpFullFrame, fuzzOpFullFrame, fuzzOpNilDrain}},

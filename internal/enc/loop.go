@@ -163,8 +163,13 @@ func escalateSubblockGain(sf *scfState, lay *bandLayout, w int) {
 // that window is raised by one unit and every scf-bearing band sharing the
 // window gives back the equivalent scf units, a pure re-expression of the
 // window's baseline amplification that buys the violating band more
-// individual headroom. preflag re-expression only applies to long granules
-// (a short granule's preflag is always 0).
+// individual headroom. Because the re-expression is an exact no-op on
+// every band's bandExtraQuarters, it needs the ssgJustApplied exemption
+// below to survive the strict progress guard for one iteration, long
+// enough for the FOLLOWING iteration's worstViolator pass to spend the
+// freed headroom on a genuine scf[w]++; see ssgJustApplied's doc comment.
+// preflag re-expression only applies to long granules (a short granule's
+// preflag is always 0).
 //
 // gc is caller-owned working state, overwritten every pass; best is
 // caller-owned scratch (the Encoder preallocates a single reusable buffer)
@@ -190,20 +195,41 @@ func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLay
 	// PREVIOUS iteration (if any) and its noise just before that
 	// amplification, so THIS iteration's futility check has a baseline to
 	// compare the re-measured noise against. -1 means nothing is pending:
-	// either this is iteration 1, or the previous amplification attempt
-	// found the band already at its scalefac_scale cap and only set
-	// unfixable directly, touching no scf (nothing to verify).
+	// either this is iteration 1, the previous amplification attempt found
+	// the band already at its scalefac_scale cap and only set unfixable
+	// directly (touching no scf, nothing to verify), or the previous
+	// iteration was a subblock_gain re-expression (see ssgJustApplied).
 	pendingBand := -1
 	var pendingNoise float64
+
+	// ssgJustApplied is a one-iteration exemption from the strict progress
+	// guard (design decision 7's integration fix): a subblock_gain
+	// re-expression (escalateSubblockGain) is a deliberate NO-OP on every
+	// band's bandExtraQuarters by construction (it raises the window's ssg
+	// by one unit, worth exactly 8 quarter-steps, and gives back exactly
+	// that many quarter-steps from every scf-bearing band sharing the
+	// window), so the iteration right after it always recomputes an
+	// identical extra[] to prevExtra. Without this exemption the progress
+	// guard reads that as "nothing changed" and breaks immediately,
+	// discarding the freed scf headroom before the very next iteration's
+	// worstViolator pass can spend it on a genuine scf[w]++ (a real PR A
+	// review finding: the re-expression rung was integrated but never
+	// actually reachable). The exemption is consumed unconditionally after
+	// one use, and no pendingBand is registered for the re-expression
+	// iteration itself (there is nothing to verify: the re-expression does
+	// not change noise on its own, by construction, so a futility check
+	// against it would always spuriously fire).
+	ssgJustApplied := false
 
 	for iters = 1; iters <= outerLoopMaxIters; iters++ {
 		var extra [39]int
 		for s := range lay.nBands {
 			extra[s] = sf.bandExtraQuarters(s, lay)
 		}
-		if extra == prevExtra {
+		if extra == prevExtra && !ssgJustApplied {
 			break // strict progress guard: last iteration changed nothing
 		}
+		ssgJustApplied = false
 		prevExtra = extra
 
 		gc.sf = sf
@@ -294,8 +320,12 @@ func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLay
 			}
 			pendingBand, pendingNoise = w, noise[w]
 		case lay.short && sf.subblockGain[lay.win[w]] < 7:
+			// A pure re-expression, no futility check to register (see
+			// ssgJustApplied's doc comment): the freed scf headroom is
+			// spent by a genuine scf[w]++ on a later iteration, which DOES
+			// register a pendingBand of its own.
 			escalateSubblockGain(&sf, lay, w)
-			pendingBand, pendingNoise = w, noise[w]
+			ssgJustApplied = true
 		default:
 			unfixable[w] = true
 		}

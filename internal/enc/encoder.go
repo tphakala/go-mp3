@@ -60,6 +60,31 @@ func ValidBitrateKbps(kbps int) bool {
 // individual per-band ratio stays within 4x of this frozen value.
 const XminScale float64 = 0x1.fed2bcc6bd0f8p-21
 
+// XminScaleShort is XminScale's short-block counterpart (design decision
+// 14): xminXr[b] = PsyOut.XminS[b] * XminScaleShort for a short granule's
+// coding band b. Decision 14 predicted XminScale itself would apply
+// unchanged to XminS, since the psymodel's band-energy mapping and the
+// coding-path spectrum transform look structurally identical for short
+// bands; that prediction did NOT hold. TestPsyXrCalibrationShort
+// (internal/enc/psymodel_test.go) measures the SAME ratio methodology
+// TestPsyXrCalibration uses for XminScale (sum(xr[i]^2 over a coding
+// band)/PsyOut.EnS[band], density-floored, median-of-medians across a
+// 3-sample-rate x 2-program grid of STATIONARY content, entirely bypassing
+// Encoder/quantizeGranule/outerLoop so the freeze is not tautological) and
+// found a systematic, tightly-clustered factor of about 15.76x XminScale
+// (the six per-case medians spanned only 1.31e-05 to 1.53e-05, a much
+// TIGHTER spread than XminScale's own long-block calibration grid), not
+// the "applies unchanged" the decision predicted. This surfaced as a real
+// masking-contract regression before the freeze: TestEncoderMaskingContract
+// failed on a hard silence-to-full-amplitude onset (the granule immediately
+// following stream start, where attackDetect's zero initial carry
+// legitimately calls it an attack) once short blocks were live, because
+// XminScale alone made XminS-derived thresholds far tighter than the
+// short-band coding path could ever satisfy, independent of budget.
+// Freezing this separate, measured constant is exactly decision 14's
+// documented contingency for that outcome, not a silent absorption.
+const XminScaleShort float64 = 0x1.f72d3b5af9b7dp-17
+
 // Config is the validated internal encoder configuration.
 type Config struct {
 	SampleRate  int // 32000, 44100, 48000
@@ -82,6 +107,33 @@ func (c Config) validate() error {
 		return fmt.Errorf("go-mp3/enc: invalid bitrate %d kbps, want one of the 14 MPEG-1 Layer III CBR rates", c.BitrateKbps)
 	}
 	return nil
+}
+
+// pcmHist layout constants (design decision 11): prevTail (one granule of
+// history before the held frame) + held (the frame codeFrame is about to
+// code) + next (the one-frame lookahead). See the Encoder.pcmHist field
+// doc comment for the full rationale.
+const (
+	pcmPrevTailLen = 576
+	pcmHeldLen     = 1152
+	pcmNextLen     = 1152
+	pcmHistLen     = pcmPrevTailLen + pcmHeldLen + pcmNextLen // 2880
+
+	// pcmWindowCenterOffset is how far the re-centered psymodel window
+	// (decision 11) starts before its granule's own first sample: half of
+	// 1024-576, so the granule sits centered in the window with an equal
+	// 224-sample margin of history and lookahead on each side.
+	pcmWindowCenterOffset = (1024 - 576) / 2
+)
+
+// pcmWindowStart returns pcmHist's offset for granule g's (0 or 1)
+// re-centered 1024-sample psymodel analysis window (design decision 11):
+// the granule's own 576 samples occupy the window's local [224,800), with
+// pcmWindowCenterOffset samples of history before them (reaching back into
+// prevTail for g==0) and the same amount of lookahead after (reaching into
+// next for g==1).
+func pcmWindowStart(g int) int {
+	return pcmPrevTailLen + g*576 - pcmWindowCenterOffset
 }
 
 // Encoder is a stateful MPEG-1 Layer III encoder: it carries the analysis
@@ -117,11 +169,69 @@ type Encoder struct {
 	// output (representation-major, granule-minor) so the M/S decision can
 	// compare all four before the coding path commits to one.
 	psy      [4]PsyModel      // psychoacoustic model 2 state, one per representation
-	psyWin   [2][1024]float64 // per-channel causal analysis window: clamped [-1,1] samples, BEFORE PCMScale
-	psyWinMS [2][1024]float64 // M (index 0) and S (index 1) windows: butterflied from psyWin
+	psyWinMS [2][1024]float64 // M (index 0) and S (index 1) windows: butterflied per-granule from pcmHist's L/R slices
 	psyOuts  [4][2]PsyOut     // [representation][granule] psymodel output
 	xrM, xrS [576]float64     // coding-path M/S butterfly scratch (written back into e.xr for an M/S frame)
 	msFrame  bool             // this frame codes M/S joint stereo (mode 01, mode_extension 10)
+
+	// reorderScratch is short-granule DSP's reorderShort destination
+	// buffer (encoder-value scratch, the e.cur/e.xrM/e.xrS precedent):
+	// reorderShort cannot write in place (coding order interleaves the
+	// three windows' slices), so the reordered spectrum lands here first
+	// and is copied back into e.xr[g][ch].
+	reorderScratch [576]float64
+
+	// pcmHist is the one-frame PCM lookahead's sliding analysis history
+	// (design decision 11), per channel: clamped [-1,1] samples (BEFORE
+	// PCMScale), laid out prevTail(576) + held(1152) + next(1152) =
+	// pcmHistLen. prevTail is the granule immediately preceding the held
+	// frame; held is the frame codeFrame is about to code (two granules);
+	// next is the frame just staged by the current EncodeFrame call,
+	// consulted only as lookahead (attack detection for wantShort, and the
+	// re-centered psymodel window's trailing 224 samples for granule 1).
+	// slidePcmHist advances it by one frame (1152 samples) after every
+	// codeFrame call.
+	pcmHist [2][pcmHistLen]float64
+
+	// held reports whether pcmHist's held region holds a real frame ready
+	// to code: false only before the very first EncodeFrame call, which
+	// stashes its samples directly into held and returns without coding
+	// (decision 11: there is no lookahead yet).
+	held bool
+
+	// attackCarry is attackDetect's cross-call carry (design decision 9):
+	// the energy of the sub-block immediately preceding the held frame's
+	// granule 0, i.e. the carry attackDetect would have returned right
+	// after processing the PREVIOUS call's held granule 1 (which sits, in
+	// stream order, exactly one granule before this call's held granule
+	// 0). Updated at the end of every analyzeAttacks call.
+	attackCarry [2]float64
+
+	// attackPrimed is false until the first analyzeAttacks call has run.
+	// While false, the held frame's granule-0 k=0 sub-block has no genuine
+	// preceding energy (the stream has not started yet), so attackDetect is
+	// seeded with attackNoPrior there instead of the zero attackCarry, which
+	// would otherwise fabricate a spurious stream-start attack. Its zero
+	// value is correct both at construction and after Reset (*e = Encoder{}).
+	attackPrimed bool
+
+	// wantShort caches this codeFrame call's three attack verdicts per
+	// channel, in stream order: index 0 = held granule 0, 1 = held granule
+	// 1, 2 = next granule 0 (which is held granule 1's wantNext). Next
+	// granule 1 is not needed: analyzeAttacks recomputes all verdicts from
+	// the slid pcmHist on the following call.
+	wantShort [2][3]bool
+
+	// blockPrev is channel ch's most recently CODED granule's decided
+	// block type: seeds blockTypeFor's prev argument for the next call's
+	// held granule 0. Updated to bt[1][ch] at the end of every codeFrame
+	// call.
+	blockPrev [2]int
+
+	// bt is this frame's decided block types, granule-major: bt[g][ch].
+	// Decided once per codeFrame call (decision 10's state machine) before
+	// the DSP chain runs, since MDCTGranuleBlock and layoutFor both need it.
+	bt [2][2]int
 
 	pad         paddingState
 	gr          [2][2]granuleCoding
@@ -359,7 +469,22 @@ func (e *Encoder) EncodeFrame(dst []byte, samples [][]float32) ([]byte, error) {
 			return dst, nil
 		}
 		e.drained = true
-		dst = e.codeFrame(dst, nil)
+		// Drain: zero next (silence lookahead), code the currently held
+		// real frame if there is one, then code the silence flush frame
+		// (design decision 11's held-frame drain contract: N input calls
+		// plus drain still yield N+1 stream frames). If N==0 (held is
+		// still false: EncodeFrame was never called with real samples),
+		// pcmHist is already all zero and only the flush frame is needed.
+		for ch := range e.nch {
+			for i := pcmPrevTailLen + pcmHeldLen; i < pcmHistLen; i++ {
+				e.pcmHist[ch][i] = 0
+			}
+		}
+		if e.held {
+			dst = e.codeFrame(dst)
+			e.slidePcmHist()
+		}
+		dst = e.codeFrame(dst) // the silence flush frame
 		before := len(dst)
 		dst = e.fifo.flushAll(dst)
 		e.bytes += int64(len(dst) - before)
@@ -389,7 +514,107 @@ func (e *Encoder) EncodeFrame(dst []byte, samples [][]float32) ([]byte, error) {
 		}
 	}
 
-	return e.codeFrame(dst, samples), nil
+	if !e.held {
+		// Call 1: stash directly into the held slot and return without
+		// coding (design decision 11: there is no lookahead yet, since
+		// held granule 1's wantNext needs a NEXT frame's granule 0).
+		for ch := range samples {
+			for i := range 1152 {
+				e.pcmHist[ch][pcmPrevTailLen+i] = clamp(float64(samples[ch][i]))
+			}
+		}
+		e.held = true
+		return dst, nil
+	}
+
+	// Call n >= 2: stash into next, then code the frame that has been
+	// sitting in held since the previous call, now that next supplies its
+	// lookahead.
+	for ch := range samples {
+		for i := range 1152 {
+			e.pcmHist[ch][pcmPrevTailLen+pcmHeldLen+i] = clamp(float64(samples[ch][i]))
+		}
+	}
+	dst = e.codeFrame(dst)
+	e.slidePcmHist()
+	return dst, nil
+}
+
+// slidePcmHist advances pcmHist by one frame (1152 samples) after a
+// codeFrame call: the held frame's second granule becomes the new
+// prevTail, next becomes the new held, and next itself is cleared to zero
+// (silence) pending the following call's stash or the drain's own
+// explicit zero.
+func (e *Encoder) slidePcmHist() {
+	for ch := range e.nch {
+		h := &e.pcmHist[ch]
+		copy(h[0:pcmPrevTailLen], h[pcmPrevTailLen+576:pcmPrevTailLen+pcmHeldLen])
+		copy(h[pcmPrevTailLen:pcmPrevTailLen+pcmHeldLen], h[pcmPrevTailLen+pcmHeldLen:pcmHistLen])
+		for i := pcmPrevTailLen + pcmHeldLen; i < pcmHistLen; i++ {
+			h[i] = 0
+		}
+	}
+}
+
+// analyzeAttacks runs attackDetect over the three granules the block
+// decision needs (held granule 0, held granule 1, next granule 0), in
+// stream order, chaining each call's carry into the next and filling
+// e.wantShort[ch]. On the first call (attackPrimed false) held granule 0's
+// prevE is seeded with attackNoPrior, since no energy precedes the stream.
+// e.attackCarry[ch] is left holding the carry in effect right before next
+// granule 0's own call, which is exactly the carry the FOLLOWING codeFrame
+// call needs to seed its own held granule 0 (that granule IS this call's
+// next granule 0, once pcmHist slides).
+func (e *Encoder) analyzeAttacks() {
+	for ch := range e.nch {
+		h := &e.pcmHist[ch]
+		heldG0 := h[pcmPrevTailLen : pcmPrevTailLen+576]
+		heldG1 := h[pcmPrevTailLen+576 : pcmPrevTailLen+pcmHeldLen]
+		nextG0 := h[pcmPrevTailLen+pcmHeldLen : pcmPrevTailLen+pcmHeldLen+576]
+
+		// At stream start there is no energy preceding the held frame's
+		// granule 0, so its k=0 sub-block has nothing to compare against:
+		// seed prevE with attackNoPrior so the uninitialized zero carry
+		// cannot fabricate an attack (which would force a spurious short
+		// block on the first granule, an illegal 0->2 window transition).
+		// After the first call attackCarry holds the real preceding energy.
+		carry0 := e.attackCarry[ch]
+		if !e.attackPrimed {
+			carry0 = attackNoPrior
+		}
+
+		var last0, last1 float64
+		e.wantShort[ch][0], last0 = attackDetect(heldG0, carry0)
+		e.wantShort[ch][1], last1 = attackDetect(heldG1, last0)
+		e.wantShort[ch][2], _ = attackDetect(nextG0, last1)
+
+		e.attackCarry[ch] = last1
+	}
+	e.attackPrimed = true
+}
+
+// decideBlockTypes advances the per-channel window state machine (design
+// decision 10) for the held frame's two granules, from the cached
+// wantShort verdicts and each channel's blockPrev, and leaves blockPrev
+// holding this frame's granule 1 for the next call.
+func (e *Encoder) decideBlockTypes() {
+	for ch := range e.nch {
+		bt0 := blockTypeFor(e.blockPrev[ch], e.wantShort[ch][0], e.wantShort[ch][1])
+		bt1 := blockTypeFor(bt0, e.wantShort[ch][1], e.wantShort[ch][2])
+		e.bt[0][ch] = bt0
+		e.bt[1][ch] = bt1
+		e.blockPrev[ch] = bt1
+	}
+}
+
+// layFor returns the coding-order band geometry for granule-channel index
+// i (g*e.nch+ch, matching e.gr's indexing), from that granule's own decided
+// block type: escalateForMasking and its helpers use this instead of a
+// single frame-shared layout, since a frame's granule-channels can now
+// carry different block types.
+func (e *Encoder) layFor(i int) *bandLayout {
+	g, ch := i/e.nch, i%e.nch
+	return layoutFor(e.bt[g][ch], e.srIndex)
 }
 
 // clamp restricts x to [-1, 1], the documented input domain: it bounds
@@ -415,22 +640,29 @@ func clamp(x float64) float64 {
 // must not run in parallel and must restore it via t.Cleanup.
 var forceLRForTest bool
 
-// codeFrame runs the full per-frame pipeline in two passes over the frame's
-// granule-channels, plus the reservoir/FIFO handoff:
+// codeFrame runs the full per-frame pipeline over the HELD frame in
+// pcmHist (design decision 11: the caller has already stashed this call's
+// real input, if any, into next and will slide pcmHist afterward), in four
+// phases plus the reservoir/FIFO handoff:
 //
-// Pass 1 (analysis): for each granule and channel, slide the psymodel's
-// causal window, run AnalyzeGranule to get this granule's masking
-// thresholds and perceptual entropy (PE), scale the thresholds into the xr
-// noise domain, then run AnalyzeGranule -> FlipOddSubbands -> MDCTGranule
-// -> save prev -> AliasReduce to get the spectrum. Every granule-channel's
-// spectrum and threshold are kept (e.xr/e.xminXr, granule-major
-// channel-minor) rather than a single scratch slot, and each one's PE
-// becomes its part23 demand estimate (gc.peBits), because the reservoir
-// needs the WHOLE frame's demand before it can split the frame's main-data
-// budget: coding cannot start until every granule-channel has been
-// analyzed.
+// INGEST is EncodeFrame's job, not this method's: by the time codeFrame
+// runs, pcmHist already holds prevTail/held/next for the frame about to be
+// coded.
 //
-// Between the passes: e.resv.planFrame turns the four (or two, mono)
+// ANALYZE: attackDetect runs over the four granules pcmHist spans (held
+// granule 0 and 1, next granule 0 and 1) to get this frame's wantShort
+// verdicts, decideBlockTypes turns those into bt[g][ch] (design decision
+// 10), then for each granule and channel the DSP chain
+// (AnalyzeGranule -> FlipOddSubbands -> MDCTGranuleBlock -> save prev ->
+// AliasReduce for long/start/stop, or reorderShort into coding order for
+// short) produces the spectrum, and the four-way psychoacoustic analysis
+// runs over the re-centered pcmHist window (design decision 11) to get
+// this granule's masking thresholds and perceptual entropy. e.xminXr and
+// e.gr.peBits are NOT written here: they are wired from the chosen
+// representation in the CODE phase, strictly after DECIDE, so an L/R PE
+// can never budget an M/S frame.
+//
+// Between ANALYZE and CODE: e.resv.planFrame turns the four (or two, mono)
 // demands into per-granule-channel Huffman budgets that together never
 // exceed the demand-driven huffTarget. When the reservoir's occupancy
 // forces this frame to physically spend more than that (occupancy sitting
@@ -440,8 +672,10 @@ var forceLRForTest bool
 // the topping-up step's own comment below for the measured regression that
 // makes this necessary, not optional.
 //
-// Pass 2 (coding): for each granule-channel, outerLoop picks scalefactors
-// and quantizes against its planned budget. After both granules, scfsi is
+// CODE: for each granule-channel, outerLoop picks scalefactors and
+// quantizes against its planned budget, against that granule's OWN
+// bandLayout (layoutFor(bt[g][ch], srIndex): a frame's granule-channels
+// can now carry different block types). After both granules, scfsi is
 // detected and applied per channel (its savings shrink the part23 sum: an
 // automatic reservoir deposit, no different from a granule-channel that
 // simply needed fewer bits than planned).
@@ -458,85 +692,77 @@ var forceLRForTest bool
 // ancillary padding), and threads through the FIFO's pending slots via
 // place. commitFrame then advances occupancy by this frame's actual spend,
 // and flushInto appends every slot that is now complete.
-//
-// samples == nil codes silence (the per-granule staging loop below writes
-// zero into e.in/e.psyWin instead of a real sample, which flushes the
-// filterbank, MDCT, and psymodel history through one real pass of the
-// pipeline) for the drain frame; EncodeFrame's drain branch force-flushes
-// whatever the FIFO still holds after this call returns.
-func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
+func (e *Encoder) codeFrame(dst []byte) []byte {
 	padding := e.pad.next(e.cfg.BitrateKbps, e.cfg.SampleRate)
-	lay := &layoutLong[e.srIndex]
 	nGC := 2 * e.nch
 	area := mainAreaBytes(e.bitrateIndex, e.srIndex, padding, e.nch)
 	capBytes := resCapBytes(e.bitrateIndex, e.srIndex, e.nch)
 	meanGB := area * 8 / nGC
 
-	// ANALYZE: run the per-physical-channel DSP chain and the four-way
-	// psychoacoustic analysis for the WHOLE frame, holding every result
-	// until the M/S decision below. e.xr[g][ch] receives physical channel
-	// ch's MDCT spectrum (the coding pass may overwrite it in place with
-	// the M/S spectrum). e.xminXr and e.gr.peBits are NOT written here:
-	// they are wired from the chosen representation in the CODE phase,
-	// strictly after DECIDE, so an L/R PE can never budget an M/S frame.
+	// ANALYZE: attack detection and the window-switching decision come
+	// first (design decisions 9/10), since the DSP chain below needs
+	// bt[g][ch] to pick MDCTGranuleBlock's window and reorderShort.
+	e.analyzeAttacks()
+	e.decideBlockTypes()
+
 	for g := range 2 {
 		for ch := range e.nch {
-			// Slide the psymodel's causal 1024-sample window forward by
-			// 576 (the newest 448 old samples stay, this granule's 576
-			// clamped [-1,1] samples land at the tail), then stage the
-			// SAME clamped value into e.in (PCMScale-scaled) so the two
-			// analysis paths see identical input.
-			copy(e.psyWin[ch][:1024-576], e.psyWin[ch][576:])
+			bt := e.bt[g][ch]
 			for i := range 576 {
-				v := 0.0
-				if samples != nil {
-					v = clamp(float64(samples[ch][g*576+i]))
-				}
-				e.psyWin[ch][1024-576+i] = v
-				e.in[ch][i] = float64(v * PCMScale)
+				e.in[ch][i] = e.pcmHist[ch][pcmPrevTailLen+g*576+i] * PCMScale
 			}
 
 			e.fb[ch].AnalyzeGranule(e.in[ch][:], &e.cur)
 			FlipOddSubbands(&e.cur)
-			MDCTGranule(&e.prev[ch], &e.cur, &e.xr[g][ch])
+			MDCTGranuleBlock(&e.prev[ch], &e.cur, &e.xr[g][ch], bt)
 			e.prev[ch] = e.cur
-			AliasReduce(&e.xr[g][ch])
+			if bt == blockShort {
+				reorderShort(&e.xr[g][ch], &e.reorderScratch, &sfbWidthsShort[e.srIndex])
+				e.xr[g][ch] = e.reorderScratch
+			} else {
+				AliasReduce(&e.xr[g][ch])
+			}
 		}
 
-		// Four-way psychoacoustic analysis. Mono drives repL alone; stereo
-		// also butterflies the two windows into M/S and analyzes all four
-		// representations. Each psymodel's history advances once per granule
-		// exactly as before, so repL/repR see the identical window sequence
-		// the pre-M/S encoder fed them.
-		e.psy[repL].AnalyzeGranule(e.psyWin[0][:], &e.psyOuts[repL][g])
+		// Four-way psychoacoustic analysis over the re-centered window
+		// (design decision 11). Mono drives repL alone; stereo also
+		// butterflies the two channels' windows into M/S and analyzes all
+		// four representations.
+		winStart := pcmWindowStart(g)
+		lWin := (*[1024]float64)(e.pcmHist[0][winStart : winStart+1024])
+		e.psy[repL].AnalyzeGranule(lWin[:], &e.psyOuts[repL][g])
 		if e.nch == 2 {
-			e.psy[repR].AnalyzeGranule(e.psyWin[1][:], &e.psyOuts[repR][g])
-			butterflyWindows(&e.psyWin[0], &e.psyWin[1], &e.psyWinMS[0], &e.psyWinMS[1])
+			rWin := (*[1024]float64)(e.pcmHist[1][winStart : winStart+1024])
+			e.psy[repR].AnalyzeGranule(rWin[:], &e.psyOuts[repR][g])
+			butterflyWindows(lWin, rWin, &e.psyWinMS[0], &e.psyWinMS[1])
 			e.psy[repM].AnalyzeGranule(e.psyWinMS[0][:], &e.psyOuts[repM][g])
 			e.psy[repS].AnalyzeGranule(e.psyWinMS[1][:], &e.psyOuts[repS][g])
 		}
 	}
 
 	// DECIDE: choose L/R or M/S from the four PEs, each summed over both
-	// granules. Mono is always L/R. Inc7 seam (design decision 8): the
-	// block-switch increment adds a veto here for frames whose channels
-	// disagree on block type.
+	// granules, using PES instead of PE for a granule the decided tiling
+	// codes as short (design decision 13). Mono is always L/R. The
+	// block-switch veto (design decision 13): mismatched channel block
+	// types make M/S structurally undefined, so msDecide's PE-driven
+	// choice is overridden to L/R whenever the channels disagree.
 	e.msFrame = false
 	if e.nch == 2 && !forceLRForTest {
-		peL := e.psyOuts[repL][0].PE + e.psyOuts[repL][1].PE
-		peR := e.psyOuts[repR][0].PE + e.psyOuts[repR][1].PE
-		peM := e.psyOuts[repM][0].PE + e.psyOuts[repM][1].PE
-		peS := e.psyOuts[repS][0].PE + e.psyOuts[repS][1].PE
-		e.msFrame = msDecide(peL, peR, peM, peS)
+		peL := e.repPE(repL, 0) + e.repPE(repL, 1)
+		peR := e.repPE(repR, 0) + e.repPE(repR, 1)
+		peM := e.repPE(repM, 0) + e.repPE(repM, 1)
+		peS := e.repPE(repS, 0) + e.repPE(repS, 1)
+		e.msFrame = msDecide(peL, peR, peM, peS) && blockTypesAgree(&e.bt)
 	}
 
 	// CODE: strictly after DECIDE. For an M/S frame, butterfly each
 	// granule's L/R spectra into M/S in place, so e.xr now holds exactly
 	// what the outer loop, escalation, and render read. Each coded channel
-	// takes its threshold (Xmin) and demand (PE) ONLY from its chosen
-	// representation (chosenRep: repL/repR for L/R, repM/repS for M/S); the
-	// phase indexes psyOuts exclusively through chosenRep so a
-	// cross-representation wiring mistake is compile-visible, not a silent
+	// takes its threshold (Xmin/XminS) and demand (PE/PES) ONLY from its
+	// chosen representation (chosenRep: repL/repR for L/R, repM/repS for
+	// M/S), selected by that granule's OWN decided block type; the phase
+	// indexes psyOuts exclusively through chosenRep so a cross-
+	// representation wiring mistake is compile-visible, not a silent
 	// budget leak.
 	for g := range 2 {
 		if e.msFrame {
@@ -545,11 +771,21 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 			e.xr[g][1] = e.xrS
 		}
 		for ch := range e.nch {
+			bt := e.bt[g][ch]
+			e.gr[g][ch].blockType = bt
+			lay := layoutFor(bt, e.srIndex)
 			rep := e.chosenRep(ch)
-			for s := range lay.nBands {
-				e.xminXr[g][ch][s] = float64(e.psyOuts[rep][g].Xmin[s] * XminScale)
+			if bt == blockShort {
+				for s := range lay.nBands {
+					e.xminXr[g][ch][s] = float64(e.psyOuts[rep][g].XminS[s] * XminScaleShort)
+				}
+				e.gr[g][ch].peBits = granuleDemandBits(e.psyOuts[rep][g].PES, meanGB)
+			} else {
+				for s := range lay.nBands {
+					e.xminXr[g][ch][s] = float64(e.psyOuts[rep][g].Xmin[s] * XminScale)
+				}
+				e.gr[g][ch].peBits = granuleDemandBits(e.psyOuts[rep][g].PE, meanGB)
 			}
-			e.gr[g][ch].peBits = granuleDemandBits(e.psyOuts[rep][g].PE, meanGB)
 		}
 	}
 
@@ -598,11 +834,12 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 	for g := range 2 {
 		for ch := range e.nch {
 			budget := budgets[g*e.nch+ch]
+			lay := layoutFor(e.bt[g][ch], e.srIndex)
 			_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, &e.gr[g][ch], &e.bestScratch)
 		}
 	}
 
-	e.escalateForMasking(nGC, lay, padding, area, capBytes)
+	e.escalateForMasking(nGC, padding, area, capBytes)
 
 	for ch := range e.nch {
 		mask := detectScfsi(&e.gr[0][ch], &e.gr[1][ch])
@@ -637,6 +874,24 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 		e.paddedFrames++
 	}
 	return dst
+}
+
+// repPE returns representation rep's PE-domain cost estimate for granule g
+// in the DECIDE phase's four-way comparison (design decision 13): PES when
+// the granule's decided tiling codes that representation's reference
+// channel as short, PE otherwise. repL/repM/repS all reference physical
+// channel 0's decided block type (repM/repS are only ever coded when both
+// channels already agree, per blockTypesAgree's veto, so channel 0's type
+// is as good a reference as channel 1's); repR references channel 1.
+func (e *Encoder) repPE(rep, g int) float64 {
+	ch := 0
+	if rep == repR {
+		ch = 1
+	}
+	if e.bt[g][ch] == blockShort {
+		return e.psyOuts[rep][g].PES
+	}
+	return e.psyOuts[rep][g].PE
 }
 
 // chosenRep maps a coded channel index (0 or 1) to the psymodel
@@ -709,13 +964,14 @@ func (e *Encoder) escNeediest(nGC int) int {
 // maskEscalationMaxCalls. Never itself decides satisfied/parked; callers
 // (the main loop, the fixpoint sweep) do that from the resulting
 // over-count (e.esc.bestOver[i] after the call).
-func (e *Encoder) escTryBudget(i int, lay *bandLayout, budget int) {
+func (e *Encoder) escTryBudget(i, budget int) {
 	// Count every attempt (hit or miss). The memo changes cost, not control
 	// flow: the budgets tried, their order, and where maskEscalationMaxCalls
 	// binds all stay byte-identical to the pre-memo escalation.
 	e.esc.calls++
 	g, ch := i/e.nch, i%e.nch
 	gc := &e.gr[g][ch]
+	lay := e.layFor(i)
 
 	var excess, ratio float64
 	var over int
@@ -754,12 +1010,12 @@ func (e *Encoder) escTryBudget(i int, lay *bandLayout, budget int) {
 // Inc4 coding) is attempted only when it differs from hiB. hiB is always
 // attempted first: a fixed, deterministic order matters because
 // betterPass ties break earliest-wins.
-func (e *Encoder) escAttempt(i int, lay *bandLayout, hiB, loB int) {
+func (e *Encoder) escAttempt(i, hiB, loB int) {
 	e.esc.triedHi[i] = hiB
 	e.esc.triedLo[i] = loB
-	e.escTryBudget(i, lay, hiB)
+	e.escTryBudget(i, hiB)
 	if loB != hiB {
-		e.escTryBudget(i, lay, loB)
+		e.escTryBudget(i, loB)
 	}
 }
 
@@ -854,7 +1110,7 @@ func (e *Encoder) escAttempt(i int, lay *bandLayout, hiB, loB int) {
 // frame was NOT escalated to fixpoint, e.g. a maskEscalationMaxCalls
 // truncation, which is the cost tripwire doing its job, not a false
 // positive.
-func (e *Encoder) escalateForMasking(nGC int, lay *bandLayout, padding, area, capBytes int) {
+func (e *Encoder) escalateForMasking(nGC, padding, area, capBytes int) {
 	_, hi := e.resv.spendBounds(area, capBytes)
 	flatShare := granuleBudgetBits(e.bitrateIndex, e.srIndex, padding, e.nch)
 
@@ -869,6 +1125,7 @@ func (e *Encoder) escalateForMasking(nGC int, lay *bandLayout, padding, area, ca
 	e.esc.memoN = 0
 	for i := range nGC {
 		g, ch := i/e.nch, i%e.nch
+		lay := e.layFor(i)
 		e.esc.best[i] = e.gr[g][ch]
 		var noise [39]float64
 		noiseGranule(&e.xr[g][ch], &e.gr[g][ch].ix, e.gr[g][ch].globalGain, &e.gr[g][ch].sf, lay, &noise)
@@ -892,7 +1149,7 @@ func (e *Encoder) escalateForMasking(nGC int, lay *bandLayout, padding, area, ca
 			e.esc.parked[g] = true // field cap reached, nothing to offer
 			continue
 		}
-		e.escAttempt(g, lay, hiB, min(flatShare, hiB))
+		e.escAttempt(g, hiB, min(flatShare, hiB))
 		switch {
 		case e.esc.bestOver[g] == 0:
 			// Satisfied: escNeediest excludes it for good from here on.
@@ -915,7 +1172,7 @@ func (e *Encoder) escalateForMasking(nGC int, lay *bandLayout, padding, area, ca
 			hiB := e.escOffer(i, nGC, hi)
 			loB := min(flatShare, hiB)
 			if hiB != e.esc.triedHi[i] || loB != e.esc.triedLo[i] {
-				e.escAttempt(i, lay, hiB, loB)
+				e.escAttempt(i, hiB, loB)
 				changed = true
 				if e.esc.calls >= maskEscalationMaxCalls {
 					break
@@ -934,6 +1191,7 @@ func (e *Encoder) escalateForMasking(nGC int, lay *bandLayout, padding, area, ca
 	for i := range nGC {
 		g, ch := i/e.nch, i%e.nch
 		gc := &e.gr[g][ch]
+		lay := e.layFor(i)
 
 		if e.diagHook != nil {
 			var noise [39]float64
@@ -950,6 +1208,7 @@ func (e *Encoder) escalateForMasking(nGC int, lay *bandLayout, padding, area, ca
 				BudgetBits:       gc.part23Length,
 				CapacityLeftBits: capacityLeftBits,
 				Xr:               e.xr[g][ch],
+				BlockType:        gc.blockType,
 			})
 		}
 
@@ -996,12 +1255,31 @@ func (e *Encoder) Stats() Stats {
 // needs the PRECEDING granule's subband samples before it emits the first
 // granule's true output) + 481
 // (the analysis+synthesis polyphase filterbank chain delay, frozen as
-// fbChainDelay in internal/dec/encx_filterbank_test.go:90). ChainDelay <
-// 1152 is asserted alongside the measurement: it is what makes the
-// one-silence-frame drain design correct, since a single flush frame
-// (1152 samples) covers more than the chain's total lag, so draining once
-// is enough to push every real sample through the pipeline and out the
-// decoder.
+// fbChainDelay in internal/dec/encx_filterbank_test.go:90).
+//
+// Re-measured (and reconfirmed at this same 1057) after the held-frame
+// one-frame PCM lookahead for attack detection and block switching landed
+// (design decision 11): EncodeFrame now needs one extra input call before a
+// frame's coding can even start (call 1 stashes into held and appends
+// nothing; call n codes the frame stashed since call n-1, once call n's
+// samples supply that frame's lookahead), so N input calls plus a drain
+// still total N+1 emitted frames, and the drain call itself now codes TWO
+// frames back to back (the held real frame, once next is zeroed to
+// silence, then the silence flush frame) instead of one. Both of those are
+// CALL-LATENCY and drain-shape facts about the EncodeFrame API contract,
+// not sample-domain delay: frame k of the emitted STREAM still codes input
+// samples [k*1152, (k+1)*1152) exactly as before the held-frame design,
+// so the decoded-output-vs-input lag this constant measures is unchanged.
+// A roadmap draft once proposed 1057 + 1152 = 2209 for this constant,
+// reasoning from the one-frame call latency; that conflates call latency
+// with stream alignment and was rejected (decision 12): migrating the
+// constant would falsely claim the bitstream carries an extra leading
+// silence frame, which would corrupt any downstream gapless-playback math
+// built on it. ChainDelay < 1152 is asserted alongside the measurement: it
+// is what makes the drain design correct regardless of how many frames the
+// drain call itself codes, since even the wider two-frame drain flush
+// covers more than the chain's total lag, so draining once is enough to
+// push every real sample through the pipeline and out the decoder.
 const ChainDelay = 1057
 
 // --- Test-only cross-package surface ---
@@ -1037,6 +1315,14 @@ type DiagGranule struct {
 	BudgetBits       int
 	CapacityLeftBits int
 	Xr               [576]float64
+
+	// BlockType is this granule-channel's decided window shape
+	// (blocktypes.go's blockLong/Start/Short/Stop), added for Inc7's block
+	// switching: a caller needs it to pick the matching bandLayout
+	// (layoutFor) before re-running outerLoop/noiseGranule/maskingMetrics
+	// against the captured Xr/XminXr, since a frame's granule-channels can
+	// now carry different block types.
+	BlockType int
 }
 
 // SetDiagHookPin installs a test-only hook that codeFrame invokes once per

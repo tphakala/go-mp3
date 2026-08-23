@@ -269,7 +269,99 @@ func fuzzEncodeValidateSeeds() []fuzzEncSeed {
 				return fuzzInt32Bits(y[sampleIdx])
 			})
 		}(), 0, 1, 8},
+
+		// Task B4 Step 3: short-block seeds, added alongside the M/S seeds
+		// above once block switching landed. Each still builds exactly
+		// fuzzEncMaxFrames (4) frames. Each builder lives in its own named
+		// function (rather than inline, like the seeds above) to keep this
+		// aggregator's cognitive complexity within golangci-lint's gocognit
+		// budget.
+		{fuzzClickTrainSeed(), 0, 0, 8},             // mono, 128kbps
+		{fuzzSubGranuleAlternatingSeed(), 0, 0, 13}, // mono, 320kbps
+		{fuzzPerChannelClicksSeed(), 0, 1, 8},       // stereo, 128kbps
+		{fuzzBurstEveryGranuleSeed(), 0, 1, 13},     // stereo, 320kbps
 	}
+}
+
+// fuzzClickTrainSeed builds a mono click-train seed: brief LCG-noise clicks
+// confined to the first 192 samples (one attack-detector sub-block) of
+// every other frame, otherwise silent, mirroring compat_test.go's periodic
+// click-train program. Distinct from the identical-channels/burst seeds
+// above (whole-frame noise or square waves): the attack here sits inside an
+// otherwise-silent frame, matching the real click content this seed's name
+// promises.
+func fuzzClickTrainSeed() []byte {
+	seed := uint64(0xC1CC7A31)
+	return fuzzSeedSamples(4*1152, func(i int) uint32 {
+		frameIdx := i / 1152
+		within := i % 1152
+		if frameIdx%2 != 1 || within >= 192 {
+			return 0
+		}
+		return fuzzInt32Bits(int32(testsignal.LCGSigned(&seed) * 0.8 * (1 << 31)))
+	})
+}
+
+// fuzzSubGranuleAlternatingSeed builds a mono seed alternating silence and
+// a full-scale impulse train at sub-granule period (576 samples, half a
+// frame): the maximal stress case (agy review suggestion) for the attack
+// detector's energy carry across granules and the outer loop's
+// subblock_gain escalation, since every granule boundary flips the
+// verdict.
+func fuzzSubGranuleAlternatingSeed() []byte {
+	return fuzzSeedSamples(4*1152, func(i int) uint32 {
+		granuleIdx := i / 576
+		if granuleIdx%2 == 0 {
+			return 0
+		}
+		if i%2 == 0 {
+			return fuzzInt32Bits(math.MinInt32)
+		}
+		return fuzzInt32Bits(math.MaxInt32)
+	})
+}
+
+// fuzzPerChannelClicksSeed builds a stereo seed where channel 0 clicks only
+// on frame 1 and channel 1 clicks only on frame 2, so the two channels
+// never attack together. Stresses blockTypesAgree's M/S veto
+// (internal/enc/stereo.go) when the channels disagree on transient timing
+// (coupling-veto coverage).
+func fuzzPerChannelClicksSeed() []byte {
+	seed0, seed1 := uint64(0xC1CC0), uint64(0xC1CC1)
+	return fuzzSeedSamples(4*2*1152, func(i int) uint32 {
+		frameIdx := i / (2 * 1152)
+		within := i % (2 * 1152)
+		ch := within / 1152
+		sampleIdx := within % 1152
+		switch {
+		case ch == 0 && frameIdx == 1 && sampleIdx < 192:
+			return fuzzInt32Bits(int32(testsignal.LCGSigned(&seed0) * 0.8 * (1 << 31)))
+		case ch == 1 && frameIdx == 2 && sampleIdx < 192:
+			return fuzzInt32Bits(int32(testsignal.LCGSigned(&seed1) * 0.8 * (1 << 31)))
+		default:
+			return 0
+		}
+	})
+}
+
+// fuzzBurstEveryGranuleSeed builds a stereo seed with a few full-scale
+// samples at the start of every 576-sample granule: maximal
+// switch-decision flapping across the whole reachable stream (every
+// granule wants short).
+func fuzzBurstEveryGranuleSeed() []byte {
+	// Stereo seed (chSel 1): fuzzBuildFrames consumes 2*1152 samples per
+	// frame, so all four frames need 4*2*1152 samples. Supplying only 4*1152
+	// would build just two frames and lose half the flapping coverage.
+	return fuzzSeedSamples(4*2*1152, func(i int) uint32 {
+		within := i % 576
+		if within >= 4 {
+			return 0
+		}
+		if i%2 == 0 {
+			return fuzzInt32Bits(math.MinInt32)
+		}
+		return fuzzInt32Bits(math.MaxInt32)
+	})
 }
 
 // fuzzInt32Bits reinterprets v's two's-complement bit pattern as a uint32.

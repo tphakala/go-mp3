@@ -42,6 +42,19 @@ const (
 // transcendental.
 const psyLog2E = 0x1.71547652b82fep+00
 
+// psyShortBC is the fixed power ratio the short path's required SNR
+// converts to: with only a single 256-point spectrum per window and no
+// cross-window unpredictability history, decision 8's model 2
+// simplification (resolve-at-impl item 7: short tonality) is a FIXED,
+// NMT-dominated required SNR rather than a per-partition tonality
+// estimate, so bc = 10^(-psyNmtDB/10) is the same constant for every
+// partition and every window; precomputing it once here means the short
+// path's per-partition loop needs no pexp2 call at all. Computed via
+// pexp2/psyLog2TenOver10 rather than math.Pow so it is exactly the value
+// the FMA-blocked runtime kit would produce, not a libm approximation of
+// it.
+var psyShortBC = pexp2(-psyNmtDB * psyLog2TenOver10)
+
 // PsyModel is one channel's psychoacoustic model 2 state. See the plan
 // for field semantics. Not safe for concurrent use; all scratch is
 // preallocated here so AnalyzeGranule is allocation-free.
@@ -56,6 +69,14 @@ type PsyModel struct {
 	r2, cw       [513]float64
 	e, ct        [psyMaxParts]float64
 	ecb, cbs, nb [psyMaxParts]float64
+
+	// Short-path scratch (decision 8): reused across the granule's three
+	// windows in sequence, never held across granules, since the short
+	// path carries no cross-granule or cross-window history (unlike the
+	// long path's prevRe/prevIm/nbPrev).
+	fftReS, fftImS [256]float64
+	r2S            [129]float64
+	eS, nbS        [psyMaxPartsS]float64
 }
 
 // Reset prepares the model for a fresh stream at srIndex (0 = 44100,
@@ -211,6 +232,19 @@ type PsyOut struct {
 	En   [22]float64
 	SMR  [22]float64
 	PE   float64
+
+	// XminS, EnS, and PES are the short-path counterparts, always filled
+	// (decision 8: the short analysis runs on every granule regardless of
+	// its actual block type, mirroring increment 6's all-four-
+	// representations rule), but consumed only for a granule the encoder
+	// has chosen to code as short (increment 7's block-switch wiring,
+	// task B2). Coding order: band b = 3*sfb + w for short sfb 0..12 and
+	// window 0..2 (blocktypes.go's bandLayout convention), so XminS and
+	// EnS drop straight into a short granule's bandLayout without
+	// reordering.
+	XminS [39]float64
+	EnS   [39]float64
+	PES   float64
 }
 
 // mapToSfb distributes partition thresholds and energies over the 22 long
@@ -254,13 +288,113 @@ func (t *psyRateTable) invMlinesTimes(v float64, b uint8) float64 {
 	return v / t.mlines[b]
 }
 
-// AnalyzeGranule runs the full model 2 long-block analysis on the most
-// recent 1024 samples of one channel's PCM (float64 in [-1, 1], oldest
-// first: the CAUSAL window ending at the granule's last sample; the
-// one-frame lookahead recentering is increment 7) and fills out.
-// Allocation-free after Reset.
+// analyzeShortWindow windows the 256 samples of pcm centered at center
+// (pcm[center-128:center+128)), transforms, and fills r2S with squared
+// magnitudes over the non-negative-frequency bins 0..128. No spectral
+// history is kept (unlike analyzeSpectrum's prevRe/prevIm rotation): the
+// short path recomputes each window from scratch, decision 8.
+func (p *PsyModel) analyzeShortWindow(pcm []float64, center int) {
+	base := center - 128
+	for i := range 256 {
+		p.fftReS[i] = pcm[base+i] * hannWindow256[i] // stored product: no fusion hazard
+		p.fftImS[i] = 0
+	}
+	fft256(&p.fftReS, &p.fftImS)
+	for i := range 129 {
+		re, im := p.fftReS[i], p.fftImS[i]
+		p.r2S[i] = float64(re*re) + float64(im*im)
+	}
+}
+
+// computeShortThresholds derives one window's per-partition energy eS and
+// masking threshold nbS from the current r2S: partition energies,
+// Schroeder spreading, the fixed NMT-dominated required SNR (psyShortBC;
+// decision 8, resolve-at-impl item 7: no unpredictability measure exists
+// at 256-line resolution, so there is no per-partition tonality estimate
+// to blend against TMN), and the absolute-threshold floor qthr. There is
+// no pre-echo cap here (contrast computeThresholds's rpelev/rpelev2): a
+// short granule's own existence IS the pre-echo response, so there is no
+// cross-window or cross-granule threshold history to cap against.
+func (p *PsyModel) computeShortThresholds(tab *psyShortTable) {
+	n := tab.nParts
+	for b := range n {
+		p.eS[b] = 0
+	}
+	for i := range 129 {
+		b := tab.partOfLine[i]
+		p.eS[b] += p.r2S[i]
+	}
+	for b := range n {
+		var ecb float64
+		sp := &tab.sprd[b]
+		for bb := range n {
+			ecb += float64(p.eS[bb] * sp[bb])
+		}
+		nb := float64(ecb*tab.norm[b]) * psyShortBC
+		if nb < tab.qthr[b] {
+			nb = tab.qthr[b]
+		}
+		p.nbS[b] = nb
+	}
+}
+
+// analyzeShort runs the short-block analysis over the granule's three
+// 256-sample windows and fills out.XminS, out.EnS, out.PES. pcm is the
+// re-centered 1024-sample buffer AnalyzeGranule now receives (decision 11):
+// the granule's own 576 samples occupy pcm[gStart:gStart+576), with gStart
+// samples of history before it and 1024-gStart-576 samples of lookahead
+// after it (224 on each side, a window centered on the granule rather than
+// ending at it), so window w's center (gStart + 192w - 32, decision 8) and
+// its +-128 span fall inside the buffer the caller assembles from pcmHist.
+func (p *PsyModel) analyzeShort(pcm []float64, out *PsyOut) {
+	tab := &psyShortTables[p.srIndex]
+	const gStart = 224      // granule's first sample within the re-centered buffer (decision 11)
+	_ = pcm[gStart+352+127] // bounds check once: window 2's span reaches furthest
+	sfb := &sfbWidthsShort[p.srIndex]
+
+	var pes float64
+	for w := range 3 {
+		center := gStart + 192*w - 32
+		p.analyzeShortWindow(pcm, center)
+		p.computeShortThresholds(tab)
+
+		freq := 0
+		for s := range 13 {
+			var x, en float64
+			for range sfb[s] {
+				b := tab.partOfBand[freq]
+				x += p.nbS[b] / tab.mlines[b]
+				en += p.eS[b] / tab.mlines[b]
+				freq++
+			}
+			out.XminS[3*s+w] = x
+			out.EnS[3*s+w] = en
+		}
+
+		for b := range tab.nParts {
+			if ratio := p.eS[b] / p.nbS[b]; ratio > 1 {
+				pes += float64(tab.lines[b] * plog(ratio))
+			}
+		}
+	}
+	out.PES = float64(pes * psyLog2E) // nats -> bits, same convention as PE
+}
+
+// AnalyzeGranule runs the full model 2 long-block analysis on a 1024-sample
+// window of one channel's PCM (float64 in [-1, 1], oldest first), plus the
+// short-path outputs (decision 8: always computed, every granule,
+// independent of the granule's actual block type). Allocation-free after
+// Reset.
+//
+// pcm is CENTERED on the granule (design decision 11, increment 7): the
+// granule's own 576 samples occupy pcm[224:800), with 224 samples of
+// history before them and 224 samples of lookahead after, rather than the
+// pre-increment-7 causal window that ended at the granule's last sample.
+// The caller (Encoder.codeFrame) assembles this window from pcmHist, which
+// holds the one-frame PCM lookahead the centering needs.
 func (p *PsyModel) AnalyzeGranule(pcm []float64, out *PsyOut) {
 	p.analyzeSpectrum(pcm)
 	p.computeThresholds()
 	p.mapToSfb(out)
+	p.analyzeShort(pcm, out)
 }

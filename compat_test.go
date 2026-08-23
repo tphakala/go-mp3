@@ -19,6 +19,7 @@ import (
 	"time"
 
 	mp3 "github.com/tphakala/go-mp3"
+	"github.com/tphakala/go-mp3/internal/bits"
 	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
@@ -145,6 +146,97 @@ func compatEncodeStereoStream(t *testing.T, sampleRate, kbps int, left, right []
 	return stream, e.Stats()
 }
 
+// compatClickPeriodFrames and compatClickBurstFrames define the cadence of
+// the click-train and tone+click programs below: a loud burst every
+// compatClickPeriodFrames frames, each burst compatClickBurstFrames frames
+// long. This mirrors internal/dec/encx_shortcalib_test.go's
+// buildShortCalibProgram (a single mid-stream click), generalized to a
+// periodic train so the compat grid actually exercises block switching
+// repeatedly across the stream rather than once.
+const (
+	compatClickPeriodFrames = 4
+	compatClickBurstFrames  = 1
+)
+
+// compatClickTrain returns nSamples of mono click-train content: silence
+// with a loud LCG-noise burst (amplitude 0.8) every
+// compatClickPeriodFrames*mp3.FrameSize samples, each burst
+// compatClickBurstFrames*mp3.FrameSize samples long, repeating for the
+// whole duration. This program exists purely to drive the encoder's attack
+// detector repeatedly (the Inc6 vacuous-pass lesson: the compat streams
+// must actually reach block switching, not merely decode cleanly).
+func compatClickTrain(nSamples int) []float32 {
+	x := make([]float32, nSamples)
+	seed := uint64(0xC1CC7A31)
+	period := compatClickPeriodFrames * mp3.FrameSize
+	burst := compatClickBurstFrames * mp3.FrameSize
+	for start := 0; start+burst <= nSamples; start += period {
+		for i := range burst {
+			x[start+i] = float32(testsignal.LCGSigned(&seed)) * 0.8
+		}
+	}
+	return x
+}
+
+// compatToneClick returns nSamples of mono tone+click content: a steady
+// multi-tone (testsignal.MultiTone, peak 0.5) with a loud LCG-noise click
+// (amplitude 0.4) additively superimposed every compatClickPeriodFrames
+// frames for compatClickBurstFrames frames at a time, clamped to [-1, 1].
+// Generalizes buildShortCalibProgram's single mid-stream click to a
+// periodic train, so long-block coding between clicks is exercised
+// alongside the short-block clicks themselves.
+func compatToneClick(sampleRate, nSamples int) []float32 {
+	tone := testsignal.MultiTone(sampleRate, nSamples, 0, 0.5)
+	seed := uint64(0x5A17C1CC)
+	period := compatClickPeriodFrames * mp3.FrameSize
+	burst := compatClickBurstFrames * mp3.FrameSize
+	for start := 0; start+burst <= nSamples; start += period {
+		for i := range burst {
+			tone[start+i] += testsignal.LCGSigned(&seed) * 0.4
+		}
+	}
+	x := make([]float32, nSamples)
+	for i, v := range tone {
+		if v > 1 {
+			v = 1
+		} else if v < -1 {
+			v = -1
+		}
+		x[i] = float32(v)
+	}
+	return x
+}
+
+// compatEncodeMonoStream encodes precomputed mono program (a whole number
+// of mp3.FrameSize-sample frames) through the public mp3.Encoder at kbps,
+// drains it, and returns the resulting stream plus the encoder's cumulative
+// Stats.
+func compatEncodeMonoStream(t *testing.T, sampleRate, kbps int, program []float32) ([]byte, mp3.Stats) {
+	t.Helper()
+
+	e, err := mp3.NewEncoder(mp3.EncoderConfig{SampleRate: sampleRate, Channels: 1, Bitrate: kbps * 1000})
+	if err != nil {
+		t.Fatalf("NewEncoder(sr=%d kbps=%d): %v", sampleRate, kbps, err)
+	}
+
+	nFrames := len(program) / mp3.FrameSize
+
+	var stream []byte
+	for f := range nFrames {
+		samples := [][]float32{program[f*mp3.FrameSize : (f+1)*mp3.FrameSize]}
+		stream, err = e.EncodeFrame(stream, samples)
+		if err != nil {
+			t.Fatalf("EncodeFrame at frame %d: %v", f, err)
+		}
+	}
+	stream, err = e.EncodeFrame(stream, nil) // drain
+	if err != nil {
+		t.Fatalf("drain EncodeFrame: %v", err)
+	}
+
+	return stream, e.Stats()
+}
+
 // mpegBitrateKbps and mpegSampleRateHz are the ISO/IEC 11172-3 MPEG-1 Layer
 // III header field tables (Table B.1 and the sampling_frequency field),
 // reproduced here so countMSFrames can walk a stream's frame headers
@@ -185,6 +277,94 @@ func countMSFrames(t *testing.T, stream []byte) int {
 
 		if mode == 1 && modeExt == 2 {
 			count++
+		}
+
+		off += 144000*mpegBitrateKbps[bitrateIndex]/mpegSampleRateHz[srIndex] + padding
+	}
+	return count
+}
+
+// countShortGranules walks stream as consecutive MPEG-1 Layer III frames
+// and returns how many granule-channels carry window_switching_flag==1: a
+// short, start, or stop block (internal/enc/sideinfo.go's writeSideInfo
+// writes this flag exactly when gc.blockType != blockLong). The side-info
+// field walk mirrors writeSideInfo's own write order field for field
+// (main_data_begin, private_bits, scfsi per channel, then per
+// granule/channel the shared fields through scalefac_compress, the
+// window-switching-or-not branch, then the shared preflag/scalefac_scale/
+// count1table_select tail), read back with the same MSB-first
+// internal/bits.Reader internal/dec/sideinfo.go's l3ReadSideInfo uses. Used
+// to prove (the Inc6 vacuous-pass lesson) that a compat program which is
+// supposed to exercise block switching actually did, rather than merely
+// decoding cleanly.
+func countShortGranules(t *testing.T, stream []byte) int {
+	t.Helper()
+
+	count := 0
+	for off := 0; off+4 <= len(stream); {
+		h := stream[off : off+4]
+		if h[0] != 0xFF || h[1]&0xE0 != 0xE0 {
+			t.Fatalf("countShortGranules: bad frame sync at offset %d: % x", off, h[:2])
+		}
+
+		bitrateIndex := int(h[2] >> 4)
+		srIndex := int(h[2] >> 2 & 3)
+		padding := int(h[2] >> 1 & 1)
+		mode := int(h[3] >> 6 & 3)
+
+		if bitrateIndex < 1 || bitrateIndex > 14 || srIndex > 2 {
+			t.Fatalf("countShortGranules: unsupported bitrate/sample-rate index at offset %d: br=%d sr=%d", off, bitrateIndex, srIndex)
+		}
+
+		nch := 2
+		if mode == 3 {
+			nch = 1
+		}
+
+		sideInfoLen := 32
+		privateBits := 3
+		if nch == 1 {
+			sideInfoLen = 17
+			privateBits = 5
+		}
+		sideOff := off + 4
+		if sideOff+sideInfoLen > len(stream) {
+			t.Fatalf("countShortGranules: side info at offset %d runs past stream end", sideOff)
+		}
+
+		r := bits.NewReader(stream[sideOff : sideOff+sideInfoLen])
+		r.Bits(9) // main_data_begin
+		r.Bits(privateBits)
+		for range nch {
+			r.Bits(4) // scfsi
+		}
+		for range 2 { // granule
+			for range nch {
+				r.Bits(12) // part2_3_length
+				r.Bits(9)  // big_values
+				r.Bits(8)  // global_gain
+				r.Bits(4)  // scalefac_compress
+				if r.Bits(1) == 1 {
+					// window_switching_flag: short/start/stop block.
+					count++
+					r.Bits(2) // block_type
+					r.Bits(1) // mixed_block_flag
+					r.Bits(5) // table_select[0]
+					r.Bits(5) // table_select[1]
+					r.Bits(3) // subblock_gain[0]
+					r.Bits(3) // subblock_gain[1]
+					r.Bits(3) // subblock_gain[2]
+				} else {
+					r.Bits(5) // table_select[0]
+					r.Bits(5) // table_select[1]
+					r.Bits(5) // table_select[2]
+					r.Bits(4) // region0_count
+					r.Bits(3) // region1_count
+				}
+				r.Bits(1) // preflag
+				r.Bits(1) // scalefac_scale
+				r.Bits(1) // count1table_select
+			}
 		}
 
 		off += 144000*mpegBitrateKbps[bitrateIndex]/mpegSampleRateHz[srIndex] + padding
@@ -361,6 +541,62 @@ func TestCompatFfmpegMpg123MS(t *testing.T) {
 						if n := countMSFrames(t, stream); n == 0 {
 							t.Fatalf("%s: no M/S-coded frames found, want at least one", name)
 						}
+					}
+
+					path := filepath.Join(dir, name+".mp3")
+					if err := os.WriteFile(path, stream, 0o644); err != nil {
+						t.Fatalf("WriteFile: %v", err)
+					}
+
+					compatCheckFfmpeg(t, ffmpeg, path)
+					compatCheckMpg123(t, mpg123, path)
+					compatCheckDuration(t, ffprobe, path, sr, stats)
+				})
+			}
+		}
+	}
+}
+
+// TestCompatFfmpegMpg123ShortBlocks extends the compat gate with the
+// click-train and tone+click programs (mono, 128 and 320 kbps, every
+// sample rate: the bitrates where short-block side info and the
+// bit-reservoir's subblock_gain escalation are most exercised). Both
+// programs must decode cleanly under ffmpeg and mpg123, AND (the Inc6
+// vacuous-pass lesson) must actually contain short-block-coded granules:
+// countShortGranules walks the side-info bits directly (mirroring
+// countMSFrames' header-walk pattern), so a regression that silently
+// stopped switching windows fails loudly here instead of the test staying
+// green on a stream that merely decodes.
+func TestCompatFfmpegMpg123ShortBlocks(t *testing.T) {
+	ffmpeg := requireCompatBinary(t, "ffmpeg")
+	mpg123 := requireCompatBinary(t, "mpg123")
+	ffprobe := requireCompatBinary(t, "ffprobe")
+
+	sampleRates := []int{44100, 48000, 32000}
+	kbpsList := []int{128, 320}
+
+	dir := t.TempDir()
+
+	for _, sr := range sampleRates {
+		nSamples := compatFramesForOneSecond(sr) * mp3.FrameSize
+
+		programs := []struct {
+			name string
+			pcm  []float32
+		}{
+			{"clicktrain", compatClickTrain(nSamples)},
+			{"toneclick", compatToneClick(sr, nSamples)},
+		}
+
+		for _, kbps := range kbpsList {
+			for _, p := range programs {
+				name := "sr" + strconv.Itoa(sr) + "_kbps" + strconv.Itoa(kbps) + "_" + p.name
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					stream, stats := compatEncodeMonoStream(t, sr, kbps, p.pcm)
+
+					if n := countShortGranules(t, stream); n == 0 {
+						t.Fatalf("%s: no short-block-coded granules found, want at least one", name)
 					}
 
 					path := filepath.Join(dir, name+".mp3")

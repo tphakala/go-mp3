@@ -39,11 +39,15 @@ func LCGSigned(seed *uint64) float64 {
 // float32(LCGSigned * 0.3) exactly (one float64 multiply, one conversion).
 // Duplicated on both channels of a stereo encode, it forces the M/S decision
 // every frame (the side channel is exactly zero before quantization). This
-// is the single source of truth for the seed and scale; TestMsIdenticalChannels
-// (internal/dec) and the M/S compat programs (root compat_test.go) consume
-// it, and the fuzz seed builders in internal/dec/encx_fuzz_test.go mirror the
-// same constants in int32 form (they cannot route through this float32 helper
-// without double-rounding their seed bytes; see the comment there).
+// is the single source of truth for the seed and scale of the float32 stereo
+// identical-channels program; TestMsIdenticalChannels (internal/dec) and the
+// M/S compat programs (root compat_test.go) consume it, and the fuzz seed
+// builders in internal/dec/encx_fuzz_test.go mirror the same constants in
+// int32 form (they cannot route through this float32 helper without
+// double-rounding their seed bytes; see the comment there). A separate
+// float64 mono program in encx_roundtrip_test.go reuses the same 0xC0FFEE/0.3
+// pair for XminScale calibration; it is a different signal and deliberately
+// does not route through this helper.
 func IdenticalNoise(nSamples int) []float32 {
 	seed := uint64(0xC0FFEE)
 	x := make([]float32, nSamples)

@@ -406,6 +406,15 @@ func clamp(x float64) float64 {
 	return x
 }
 
+// forceLRForTest, when true, pins codeFrame's DECIDE outcome to L/R
+// (msFrame=false) for every frame regardless of the four-way PE comparison.
+// Test-only hook: production code never sets it, and its zero value makes
+// the DECIDE phase byte-identical to the unhooked encoder.
+// TestEncodeGoldenForcedLR uses it to prove the L/R coding path still
+// reproduces the pre-M/S golden hashes. Unsynchronized: a test that sets it
+// must not run in parallel and must restore it via t.Cleanup.
+var forceLRForTest bool
+
 // codeFrame runs the full per-frame pipeline in two passes over the frame's
 // granule-channels, plus the reservoir/FIFO handoff:
 //
@@ -455,15 +464,6 @@ func clamp(x float64) float64 {
 // filterbank, MDCT, and psymodel history through one real pass of the
 // pipeline) for the drain frame; EncodeFrame's drain branch force-flushes
 // whatever the FIFO still holds after this call returns.
-// forceLRForTest, when true, pins codeFrame's DECIDE outcome to L/R
-// (msFrame=false) for every frame regardless of the four-way PE
-// comparison. Test-only hook: production code never sets it, and its zero
-// value makes the DECIDE phase byte-identical to the unhooked encoder.
-// TestEncodeGoldenForcedLR uses it to prove the L/R coding path still
-// reproduces the pre-M/S golden hashes. Unsynchronized: a test that sets it
-// must not run in parallel and must restore it via t.Cleanup.
-var forceLRForTest bool
-
 func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 	padding := e.pad.next(e.cfg.BitrateKbps, e.cfg.SampleRate)
 	sfb := &sfbWidthsLong[e.srIndex]

@@ -102,12 +102,6 @@ func (rr *reservoirReplay) finish(t *testing.T) {
 	}
 }
 
-// validateFrameHeaders walks stream frame by frame using only the decoder's
-// header and side-info parsers (no decode), checking every header field,
-// exact frame length, and every granule-channel's side-info invariants.
-// When reservoirManaged, it also runs reservoirReplay over the whole
-// stream's main-data placement and occupancy policy; otherwise it keeps the
-// simpler per-frame mdb-must-be-0 check (see validateFrames' doc comment).
 // frameModeExt returns header byte 3's mode (bits 7-6) and mode_extension
 // (bits 5-4) fields. Shared by validateFrameHeaders and countModes
 // (encx_mstereo_test.go), both in this package's test binary; internal/enc's
@@ -117,6 +111,12 @@ func frameModeExt(h []byte) (mode, modeExt byte) {
 	return (h[3] >> 6) & 3, (h[3] >> 4) & 3
 }
 
+// validateFrameHeaders walks stream frame by frame using only the decoder's
+// header and side-info parsers (no decode), checking every header field,
+// exact frame length, and every granule-channel's side-info invariants.
+// When reservoirManaged, it also runs reservoirReplay over the whole
+// stream's main-data placement and occupancy policy; otherwise it keeps the
+// simpler per-frame mdb-must-be-0 check (see validateFrames' doc comment).
 func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps, wantNch, nFrames int, reservoirManaged bool) {
 	t.Helper()
 

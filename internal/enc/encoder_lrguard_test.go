@@ -18,21 +18,29 @@ import (
 // must NOT call t.Parallel(), and restores the hook via t.Cleanup so it
 // cannot leak into other tests (including repeated runs under -count>1,
 // where each run sets and restores it independently).
+//
+// Re-frozen in Phase 4 increment 7 Task B2, in lockstep with
+// TestEncodeGolden's own re-freeze: the psymodel window re-centering and
+// the held-frame lookahead (design decisions 9-11) change every stream's
+// bytes for the same two reasons TestEncodeGolden's doc comment names in
+// full (the analysis window is no longer causal, and the 4-call/no-drain
+// stream now holds 3 coded frames instead of 4). The mono case is
+// byte-identical to TestEncodeGolden's own mono hash, as always (mono
+// never consults msDecide, so forceLRForTest changes nothing for it).
 func TestEncodeGoldenForcedLR(t *testing.T) {
 	forceLRForTest = true
 	t.Cleanup(func() { forceLRForTest = false })
 
 	// The three non-correlated TestEncodeGolden cases with their pre-M/S
-	// hashes (frozen before Phase 4 increment 6 Task 2; see TestEncodeGolden's
-	// doc comment, which documents these exact values).
+	// hashes.
 	cases := []struct {
 		name                 string
 		sampleRate, ch, kbps int
 		wantHex              string
 	}{
-		{"44100_2ch_128kbps", 44100, 2, 128, "c734a1491e179a2bf6386ef3d465c2177817660b901226d8ab0523ee7930ebda"},
-		{"48000_1ch_320kbps", 48000, 1, 320, "d1d7d99887552f2b2ddc4dde49e74be60fa14988a6732d0f02424a0d1f60da19"},
-		{"32000_2ch_32kbps", 32000, 2, 32, "11996294f75b9b529296cae97507e6e84f329ad43462fc387acfaa7687fc1a23"},
+		{"44100_2ch_128kbps", 44100, 2, 128, "07550f29ce530326743a3373f6ba1f6e47174add9a7af78f054ddee6daba61aa"},
+		{"48000_1ch_320kbps", 48000, 1, 320, "fd4bfd69f69ffe5515d6e429e80787edce256a0c1875bdf075e7f4fa5910e864"},
+		{"32000_2ch_32kbps", 32000, 2, 32, "7c75078bb8f8f908278023298d18200c20dc1d1ca773a5866d6959265449d6ec"},
 	}
 
 	for _, c := range cases {

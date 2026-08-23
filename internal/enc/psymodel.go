@@ -340,14 +340,16 @@ func (p *PsyModel) computeShortThresholds(tab *psyShortTable) {
 
 // analyzeShort runs the short-block analysis over the granule's three
 // 256-sample windows and fills out.XminS, out.EnS, out.PES. pcm is the
-// same causal 1024-sample buffer analyzeSpectrum consumes: the granule's
-// own 576 samples occupy pcm[gStart:1024), so window w's center
-// (gStart + 192w - 32, decision 8) and its +-128 span fall inside the
-// buffer already passed to AnalyzeGranule without any extra lookahead.
+// re-centered 1024-sample buffer AnalyzeGranule now receives (decision 11):
+// the granule's own 576 samples occupy pcm[gStart:gStart+576), with gStart
+// samples of history before it and 1024-gStart-576 samples of lookahead
+// after it (224 on each side, a window centered on the granule rather than
+// ending at it), so window w's center (gStart + 192w - 32, decision 8) and
+// its +-128 span fall inside the buffer the caller assembles from pcmHist.
 func (p *PsyModel) analyzeShort(pcm []float64, out *PsyOut) {
 	tab := &psyShortTables[p.srIndex]
-	const gStart = 1024 - 576 // granule's first sample within the causal buffer
-	_ = pcm[gStart+352+127]   // bounds check once: window 2's span reaches furthest
+	const gStart = 224      // granule's first sample within the re-centered buffer (decision 11)
+	_ = pcm[gStart+352+127] // bounds check once: window 2's span reaches furthest
 	sfb := &sfbWidthsShort[p.srIndex]
 
 	var pes float64
@@ -378,13 +380,18 @@ func (p *PsyModel) analyzeShort(pcm []float64, out *PsyOut) {
 	out.PES = float64(pes * psyLog2E) // nats -> bits, same convention as PE
 }
 
-// AnalyzeGranule runs the full model 2 long-block analysis on the most
-// recent 1024 samples of one channel's PCM (float64 in [-1, 1], oldest
-// first: the CAUSAL window ending at the granule's last sample; the
-// one-frame lookahead recentering is increment 7) and fills out, plus the
+// AnalyzeGranule runs the full model 2 long-block analysis on a 1024-sample
+// window of one channel's PCM (float64 in [-1, 1], oldest first), plus the
 // short-path outputs (decision 8: always computed, every granule,
 // independent of the granule's actual block type). Allocation-free after
 // Reset.
+//
+// pcm is CENTERED on the granule (design decision 11, increment 7): the
+// granule's own 576 samples occupy pcm[224:800), with 224 samples of
+// history before them and 224 samples of lookahead after, rather than the
+// pre-increment-7 causal window that ended at the granule's last sample.
+// The caller (Encoder.codeFrame) assembles this window from pcmHist, which
+// holds the one-frame PCM lookahead the centering needs.
 func (p *PsyModel) AnalyzeGranule(pcm []float64, out *PsyOut) {
 	p.analyzeSpectrum(pcm)
 	p.computeThresholds()

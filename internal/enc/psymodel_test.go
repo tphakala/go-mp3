@@ -2,6 +2,7 @@ package enc
 
 import (
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/tphakala/go-mp3/internal/testsignal"
@@ -909,12 +910,15 @@ func TestPsyModelGolden(t *testing.T) {
 }
 
 // shortWindowCenters are the three 256-sample analysis window centers
-// (decision 8: gStart + 192w - 32) within the causal 1024-sample buffer
-// AnalyzeGranule receives, where gStart = 1024-576 = 448 is the granule's
-// first sample inside that buffer. Test-only convenience shared by every
-// short-path test below that drives analyzeShortWindow/computeShortThresholds
-// directly instead of through AnalyzeGranule.
-var shortWindowCenters = [3]int{1024 - 576 - 32, 1024 - 576 + 160, 1024 - 576 + 352}
+// (decision 8: gStart + 192w - 32) within the re-centered 1024-sample
+// buffer AnalyzeGranule receives, where gStart = 224 is the granule's first
+// sample inside that buffer (decision 11: the granule sits centered in the
+// 1024-sample window, with 224 samples of history before it and 224 of
+// lookahead after, rather than the pre-increment-7 causal placement at
+// gStart = 448). Test-only convenience shared by every short-path test
+// below that drives analyzeShortWindow/computeShortThresholds directly
+// instead of through AnalyzeGranule.
+var shortWindowCenters = [3]int{224 - 32, 224 + 160, 224 + 352}
 
 // TestPsyShortSpreadingEffect is TestPsySpreadingEffect's short-path
 // sibling: a steady tone must raise thresholds in NEIGHBOR partitions
@@ -1020,18 +1024,20 @@ func TestPsyShortThresholdFloor(t *testing.T) {
 
 // TestPsyShortPerWindowResolution is the reason short blocks exist: a
 // burst confined to window 2's own span must raise window 2's XminS bands
-// relative to window 0's, which sees none of it. The burst sits in
-// pcm[850:928), inside window 2's [672,927] span but outside window 0's
-// [288,543] and window 1's [480,735]. Measured once (deterministic across
-// arches): sum0 = 980.69, sum2 = 1779.40 (ratio 1.81x). The floor below is
-// tightened to that measurement with margin (1.5x, comfortably below the
-// measured 1.81x).
+// relative to window 0's, which sees none of it. Under the decision-11
+// re-centered window (gStart = 224: window 0 spans [64,320), window 1
+// [256,512), window 2 [448,704)), the burst sits in pcm[600:678), inside
+// window 2's span but outside both window 0's and window 1's. Measured once
+// (deterministic across arches) after the decision-11 re-centering: sum0 =
+// 980.6863938210277, sum2 = 3476.569584518944 (ratio 3.545x). The floor
+// below is tightened to that measurement with margin (2.5x, comfortably
+// below the measured 3.545x).
 func TestPsyShortPerWindowResolution(t *testing.T) {
 	var p PsyModel
 	p.Reset(0)
 	pcm := make([]float64, 1024)
 	clear(pcm)
-	for i := 850; i < 928; i++ {
+	for i := 600; i < 678; i++ {
 		pcm[i] = 0.9
 	}
 	var out PsyOut
@@ -1041,7 +1047,7 @@ func TestPsyShortPerWindowResolution(t *testing.T) {
 		sum0 += out.XminS[3*s+0]
 		sum2 += out.XminS[3*s+2]
 	}
-	if sum2 <= sum0*1.5 {
+	if sum2 <= sum0*2.5 {
 		t.Errorf("window 2 (containing the burst) XminS sum = %g, want clearly above window 0's %g", sum2, sum0)
 	}
 }
@@ -1049,9 +1055,10 @@ func TestPsyShortPerWindowResolution(t *testing.T) {
 // TestPsyShortPESSpike is TestPsyModelSilenceAndTransientPE's short-path
 // sibling. Measured once (deterministic across arches, so the margin below
 // is not a source of cross-arch flakiness): silence PES = 0 exactly;
-// transient PES (the same burst as TestPsyShortPerWindowResolution) =
-// 148.9386440049125. The floor is tightened to that measurement with
-// margin: >= 100 (about 33% below measured).
+// transient PES (the same repositioned burst TestPsyShortPerWindowResolution
+// uses, decision-11 re-centering) = 157.4854063118873. The floor is
+// tightened to that measurement with margin: >= 100 (about 37% below
+// measured).
 func TestPsyShortPESSpike(t *testing.T) {
 	var p PsyModel
 	p.Reset(0)
@@ -1065,7 +1072,7 @@ func TestPsyShortPESSpike(t *testing.T) {
 		t.Errorf("silence PES = %v, want near 0", out.PES)
 	}
 	clear(pcm)
-	for i := 850; i < 928; i++ {
+	for i := 600; i < 678; i++ {
 		pcm[i] = 0.9
 	}
 	p.AnalyzeGranule(pcm, &out)
@@ -1077,7 +1084,13 @@ func TestPsyShortPESSpike(t *testing.T) {
 // psyShortGoldenSHA: cross-arch determinism gate; never re-freeze on an
 // arch mismatch (arm64 verification is task B4's job; this is the local
 // amd64 freeze).
-const psyShortGoldenSHA = "6259e8f244b2918a7638a2472e23e8274a7d1d18edbf9274e491d39a15c6458c"
+//
+// Re-frozen in Phase 4 increment 7 Task B2 (decision-11 psymodel
+// re-centering, deferred from Task B1's causal placeholder slice): moving
+// analyzeShort's internal gStart from 448 (causal) to 224 (centered)
+// changes every short-path threshold this golden hashes, even though none
+// of the analysis formulas themselves changed.
+const psyShortGoldenSHA = "0408493169ca0090e44270807b29cf88549d56e23bd3465a4a6200921c2a4ea4"
 
 func TestPsyShortGolden(t *testing.T) {
 	// Three rates x two programs: LCG noise and a silence-then-burst
@@ -1150,3 +1163,181 @@ func BenchmarkPsyAnalyzeGranule(b *testing.B) {
 		p.AnalyzeGranule(pcm, &out)
 	}
 }
+
+// psyXrCalibrationShortWarmup/Granules mirror internal/dec's
+// TestPsyXrCalibration constants (psyXrCalibrationWarmup/Granules): enough
+// leading granules for the filterbank+MDCT overlap history and the
+// re-centered psymodel window (design decision 11: pcmWindowCenterOffset =
+// 224 samples of lookahead) to fill with entirely real content before
+// accumulation starts.
+const (
+	psyXrCalibrationShortWarmup   = 8
+	psyXrCalibrationShortGranules = 20
+)
+
+// TestPsyXrCalibrationShort measures and freezes XminScaleShort (design
+// decision 14's contingency): the SAME ratio methodology internal/dec's
+// TestPsyXrCalibration uses for XminScale (sum(xr[i]^2 over a coding
+// band)/PsyOut.EnS[band], density-floored, median-of-medians across a
+// 3-sample-rate x 2-program grid of STATIONARY content), generalized to
+// short coding bands. Lives in this package (not internal/dec, where
+// XminScale's own calibration lives) purely for direct access to the
+// unexported blockShort/MDCTGranuleBlock/reorderShort/pcmWindowCenterOffset
+// symbols the short-block DSP chain needs; the independence property that
+// matters (bypassing Encoder/quantizeGranule/outerLoop entirely, so the
+// freeze is not tautological) is preserved identically.
+//
+// Decision 14 predicted XminScale itself would apply unchanged to XminS.
+// That prediction did not hold: this measurement found a systematic,
+// tightly-clustered factor of about 15.76x XminScale (the six per-case
+// medians span only 1.31e-05 to 1.53e-05, TIGHTER than XminScale's own
+// long-block calibration grid), surfaced by a genuine
+// TestEncoderMaskingContract regression (a hard silence-to-full-amplitude
+// onset became fixable only after freezing this separate constant).
+// psyXrCalibrationShortMedian measures ONE (sample rate, program) case's
+// median sum(xr[i]^2 over a short coding band)/PsyOut.EnS[band] ratio,
+// density-floored: the per-case body TestPsyXrCalibrationShort's grid
+// loop calls, factored out to keep that loop's own complexity low.
+func psyXrCalibrationShortMedian(t *testing.T, sr, srIndex int, gen func(sr, n int) []float64) (med float64, n int) {
+	t.Helper()
+	swidths := &sfbWidthsShort[srIndex]
+
+	// pcmWindowCenterOffset leading samples so granule 0's re-centered
+	// window (decision 11) never reads before the buffer; granule g's own
+	// samples then start at offset pcmWindowCenterOffset + g*576.
+	total := pcmWindowCenterOffset + (psyXrCalibrationShortWarmup+psyXrCalibrationShortGranules+1)*576
+	pcm := gen(sr, total)
+
+	var fb Filterbank
+	var prev, cur [18][32]float64
+	var xrRaw, xr [576]float64
+	var psy PsyModel
+	psy.Reset(srIndex)
+	var psyOut PsyOut
+
+	var sumXr, sumEn [39]float64
+	for g := range psyXrCalibrationShortWarmup + psyXrCalibrationShortGranules {
+		var in [576]float64
+		for i := range 576 {
+			in[i] = pcm[pcmWindowCenterOffset+g*576+i] * PCMScale
+		}
+		fb.AnalyzeGranule(in[:], &cur)
+		FlipOddSubbands(&cur)
+		MDCTGranuleBlock(&prev, &cur, &xrRaw, blockShort)
+		prev = cur
+		reorderShort(&xrRaw, &xr, swidths)
+
+		start := g * 576 // pcmWindowCenterOffset earlier than granule g's own first sample (at pcmWindowCenterOffset+g*576)
+		var win [1024]float64
+		copy(win[:], pcm[start:start+1024])
+		psy.AnalyzeGranule(win[:], &psyOut)
+
+		if g < psyXrCalibrationShortWarmup {
+			continue
+		}
+		i := 0
+		for s := range 13 {
+			w := swidths[s]
+			for win2 := range 3 {
+				b := 3*s + win2
+				for range w {
+					sumXr[b] += xr[i] * xr[i]
+					i++
+				}
+				sumEn[b] += psyOut.EnS[b]
+			}
+		}
+	}
+
+	maxDensity := 0.0
+	var density [39]float64
+	for b := range 39 {
+		w := swidths[b/3]
+		if w == 0 {
+			continue
+		}
+		density[b] = sumEn[b] / float64(w)
+		if density[b] > maxDensity {
+			maxDensity = density[b]
+		}
+	}
+
+	var ratios []float64
+	for b := range 36 { // nScf for short: the highest triple carries no scalefactor
+		if sumEn[b] <= 0 || maxDensity <= 0 || density[b]/maxDensity < psyXrCalibrationDensityFloorShort {
+			continue
+		}
+		ratios = append(ratios, sumXr[b]/sumEn[b])
+	}
+	slices.Sort(ratios)
+	if len(ratios) == 0 {
+		t.Fatalf("sr=%d: no band survived the density floor; nothing to calibrate against", sr)
+	}
+	return ratios[len(ratios)/2], len(ratios)
+}
+
+// TestPsyXrCalibrationShort measures and freezes XminScaleShort (design
+// decision 14's contingency): the SAME ratio methodology internal/dec's
+// TestPsyXrCalibration uses for XminScale (sum(xr[i]^2 over a coding
+// band)/PsyOut.EnS[band], density-floored, median-of-medians across a
+// 3-sample-rate x 2-program grid of STATIONARY content), generalized to
+// short coding bands. Lives in this package (not internal/dec, where
+// XminScale's own calibration lives) purely for direct access to the
+// unexported blockShort/MDCTGranuleBlock/reorderShort/pcmWindowCenterOffset
+// symbols the short-block DSP chain needs; the independence property that
+// matters (bypassing Encoder/quantizeGranule/outerLoop entirely, so the
+// freeze is not tautological) is preserved identically.
+//
+// Decision 14 predicted XminScale itself would apply unchanged to XminS.
+// That prediction did not hold: this measurement found a systematic,
+// tightly-clustered factor of about 15.76x XminScale (the six per-case
+// medians span only 1.31e-05 to 1.53e-05, TIGHTER than XminScale's own
+// long-block calibration grid), surfaced by a genuine
+// TestEncoderMaskingContract regression (a hard silence-to-full-amplitude
+// onset became fixable only after freezing this separate constant).
+func TestPsyXrCalibrationShort(t *testing.T) {
+	rates := []int{44100, 48000, 32000}
+	programs := []struct {
+		name string
+		gen  func(sr, n int) []float64
+	}{
+		{"lcgNoise", func(_, n int) []float64 {
+			seed := uint64(0xC0FFEE)
+			x := make([]float64, n)
+			for i := range x {
+				x[i] = testsignal.LCGSigned(&seed) * 0.3
+			}
+			return x
+		}},
+		{"multiTone", func(sr, n int) []float64 {
+			return testsignal.MultiTone(sr, n, 0, 0.5)
+		}},
+	}
+
+	caseMedians := make([]float64, 0, len(rates)*len(programs))
+	for srIndex, sr := range rates {
+		for _, prog := range programs {
+			med, n := psyXrCalibrationShortMedian(t, sr, srIndex, prog.gen)
+			t.Logf("sr=%d program=%s median ratio = %v (n=%d surviving bands)", sr, prog.name, med, n)
+			caseMedians = append(caseMedians, med)
+		}
+	}
+
+	slices.Sort(caseMedians)
+	overall := caseMedians[len(caseMedians)/2]
+	t.Logf("median-of-medians (candidate XminScaleShort) = %#v", overall)
+
+	if XminScaleShort == 0 {
+		t.Fatalf("FREEZE ME: const XminScaleShort float64 = %#v", overall)
+	}
+	for _, r := range caseMedians {
+		if rel := r / XminScaleShort; rel < 0.25 || rel > 4 {
+			t.Errorf("case median %v is more than 4x from frozen XminScaleShort %v (ratio %v)", r, XminScaleShort, rel)
+		}
+	}
+}
+
+// psyXrCalibrationDensityFloorShort mirrors internal/dec's
+// psyXrCalibrationDensityFloor (0.02): the same density-relative exclusion
+// rule, needed here because that constant lives in package dec.
+const psyXrCalibrationDensityFloorShort = 0.02

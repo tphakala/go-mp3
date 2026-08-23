@@ -502,3 +502,122 @@ func TestOuterLoopShortConverges(t *testing.T) {
 		t.Fatalf("part23 %d exceeds budget", gc.part23Length)
 	}
 }
+
+// bandRangeShort returns coding band b's [start, start+width) line range
+// under layoutShort[0], a small local helper so
+// TestOuterLoopShortSubblockGainIntegrated can place content in specific
+// bands by index without hand-computing cumulative widths.
+func bandRangeShort(b int) (start, width int) {
+	lay := &layoutShort[0]
+	for bb := range b {
+		start += lay.width[bb]
+	}
+	return start, lay.width[b]
+}
+
+// TestOuterLoopShortSubblockGainIntegrated is the carry-forward fix this
+// task settles: TestOuterLoopShortSubblockGain unit-tests
+// escalateSubblockGain in isolation, but PR A's integration of it into
+// outerLoop's escalation switch was a near-no-op in practice (the strict
+// progress guard broke the loop immediately after the re-expression, before
+// the freed scf headroom could ever be spent; see loop.go's ssgJustApplied
+// doc comment for the fix). This test drives outerLoop through a REALISTIC
+// ASYMMETRIC granule where reaching the target genuinely REQUIRES
+// subblock_gain, not just a scenario where it happens to fire:
+//
+//   - band 36 (sfb12, window 0, the widest short band) carries a large,
+//     LCG-varied anchor signal that pins minGlobalGain for the whole
+//     granule-channel, so amplifying any OTHER band's own scalefactor never
+//     moves global_gain (the non-anchor case outerLoop's own futility-check
+//     doc comment describes).
+//   - band 16 (sfb5, window 1) carries a much quieter LCG-varied signal:
+//     under the anchor-pinned global_gain, its baseline (scf=0) resolution
+//     is coarse, so reaching a tight xmin genuinely requires scalefactor
+//     amplification.
+//
+// The target xmin[16] = 0.001 is chosen to sit BETWEEN two independently
+// computed bounds: the scf+scalefac_scale-ONLY ceiling (scalefacScale=1,
+// scf[16] pinned at its cap 15, subblock_gain forced to 0) measures
+// noise[16] = 0.0013373726902515585, ABOVE the target, so no amount of
+// plain scalefactor amplification alone can reach it; outerLoop's real,
+// integrated run reaches noise[16] = 0.0004497421816708607 (comfortably
+// below target, over == 0), which is only possible because
+// sf.subblockGain[1] ends nonzero. This proves decision 7's mechanism does
+// genuine, necessary work when integrated into outerLoop, not just when
+// escalateSubblockGain is called directly in isolation.
+func TestOuterLoopShortSubblockGainIntegrated(t *testing.T) {
+	lay := &layoutShort[0]
+	const w = 16      // sfb5, window1: the band that needs subblock_gain
+	const anchor = 36 // sfb12, window0: pins minGlobalGain, never amplified
+
+	as, aw := bandRangeShort(anchor)
+	ws, ww := bandRangeShort(w)
+	if lay.win[w] != 1 {
+		t.Fatalf("test setup: layoutShort[0].win[%d] = %d, want window 1", w, lay.win[w])
+	}
+
+	seed := uint64(31)
+	var xr [576]float64
+	for i := range aw {
+		xr[as+i] = 8000000 + testsignal.LCG(&seed)*1000000
+	}
+	for i := range ww {
+		xr[ws+i] = 50 + testsignal.LCG(&seed)*100
+	}
+
+	var xmin [39]float64
+	for s := range lay.nBands {
+		xmin[s] = 1e18 // every other band trivially satisfiable
+	}
+	const target = 0.001
+	xmin[w] = target
+
+	// Independently computed ceiling: scalefacScale=1, scf[w] at its cap
+	// (15, since w < lay.slen1End), subblock_gain forced to 0. This is the
+	// best noise[w] achievable WITHOUT ever touching subblock_gain.
+	var ceilSf scfState
+	ceilSf.scalefacScale = 1
+	ceilSf.scf[w] = sfMaxLo
+	var ceilGC granuleCoding
+	ceilGC.sf = ceilSf
+	ceilGG := minGlobalGain(&xr, &ceilGC.sf, lay)
+	recode(&xr, ceilGG, lay, &ceilGC)
+	ceilGC.globalGain = ceilGG
+	var ceilNoise [39]float64
+	noiseGranule(&xr, &ceilGC.ix, ceilGC.globalGain, &ceilGC.sf, lay, &ceilNoise)
+	if ceilNoise[w] <= target {
+		t.Fatalf("test setup: scf+scale-only ceiling noise[w] = %v already satisfies target %v; tighten the scenario so subblock_gain is genuinely required", ceilNoise[w], target)
+	}
+
+	// The real, integrated run: outerLoop must reach past that ceiling by
+	// actually using subblock_gain.
+	var gc, best granuleCoding
+	iters := outerLoop(&xr, &xmin, 8000, lay, &gc, &best)
+	if iters >= outerLoopMaxIters {
+		t.Fatalf("loop ran to the cap (%d iters)", iters)
+	}
+
+	var noise [39]float64
+	noiseGranule(&xr, &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
+	if _, _, over := maskingMetrics(&noise, &xmin, lay); over != 0 {
+		t.Fatalf("masking contract violated: over=%d (noise[w]=%v, target=%v)", over, noise[w], target)
+	}
+	if noise[w] >= ceilNoise[w] {
+		t.Fatalf("noise[w] = %v did not improve past the no-ssg ceiling %v: subblock_gain did no useful work", noise[w], ceilNoise[w])
+	}
+	if got := gc.sf.subblockGain[lay.win[w]]; got == 0 {
+		t.Fatalf("subblock_gain[window %d] = 0, want > 0: the escalation arm never fired", lay.win[w])
+	}
+
+	// Sanity: a looser target on the SAME granule must NOT need
+	// subblock_gain at all, confirming the mechanism engages only when
+	// genuinely necessary rather than firing unconditionally.
+	xminLoose := xmin
+	xminLoose[w] = 1.0
+	var gcLoose, bestLoose granuleCoding
+	outerLoop(&xr, &xminLoose, 8000, lay, &gcLoose, &bestLoose)
+	if gcLoose.sf.subblockGain[lay.win[w]] != 0 {
+		t.Fatalf("loose target: subblock_gain[window %d] = %d, want 0 (scf+scale alone should have sufficed)",
+			lay.win[w], gcLoose.sf.subblockGain[lay.win[w]])
+	}
+}

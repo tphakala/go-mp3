@@ -566,3 +566,85 @@ func TestEncShortSubblockGainReadback(t *testing.T) {
 		}
 	})
 }
+
+// TestEncShortSubblockGainIntegratedReadback is the decoder-side half of
+// Phase 4 increment 7 Task B2's carry-forward fix (the enc-package
+// TestOuterLoopShortSubblockGainIntegrated proves the loop.go integration
+// fix at the outerLoop level; this proves the SAME real, escalation-driven
+// state round-trips through the actual bitstream, not just outerLoop's
+// return value). Unlike TestEncShortSubblockGainReadback (which forces a
+// known subblock_gain through the AppendFrameShortPinSG bypass), this
+// drives the REAL AppendFrameShortPin path, so subblock_gain here is
+// whatever outerLoop's masking-driven escalation actually decided.
+//
+// Granule 0 channel 0 carries the identical asymmetric construction the
+// enc-side test uses: coding band 36 (sfb12, window0, the widest short
+// band, lines [408,464) at 44.1kHz) is a loud LCG-varied anchor that pins
+// minGlobalGain without ever needing its own scalefactor; coding band 16
+// (sfb5, window1, lines [74,82)) is a much quieter LCG-varied signal whose
+// xmin (0.001) sits strictly above the scf+scalefac_scale-only ceiling
+// (0.0013373726902515585, independently measured on the enc side), so
+// reaching it requires subblock_gain. Granule 1 gets a generic, easily
+// satisfiable spectrum (looseShortXmin) so its coding is irrelevant noise
+// around the granule-channel under test.
+func TestEncShortSubblockGainIntegratedReadback(t *testing.T) {
+	const anchorStart, anchorWidth = 408, 56 // coding band 36 (sfb12, window0)
+	const wStart, wWidth = 74, 8             // coding band 16 (sfb5, window1)
+	const wWindow = 1
+	const target = 0.001
+
+	var bt [2][2]int
+	bt[0][0], bt[1][0] = blkShort, blkShort
+
+	var xr [2][2][576]float64
+	seed := uint64(31)
+	for i := range anchorWidth {
+		xr[0][0][anchorStart+i] = 8000000 + testsignal.LCG(&seed)*1000000
+	}
+	for i := range wWidth {
+		xr[0][0][wStart+i] = 50 + testsignal.LCG(&seed)*100
+	}
+	seed2 := uint64(0xB19E)
+	xr[1][0] = buildShortXr(&seed2, 4096)
+
+	xmin := looseShortXmin()
+	xmin[0][0][16] = target
+
+	frame := enc.AppendFrameShortPin(nil, 14, 0, 1, &bt, &xr, &xmin) // bitrateIndex 14 = 320kbps, srIndex 0 = 44100Hz, generous budget
+
+	hdr := frame[:4]
+	rd := bits.NewReader(frame[4:])
+	gr := make([]grInfo, 2)
+	if mdb := l3ReadSideInfo(&rd, gr, hdr, len(frame)-4); mdb != 0 {
+		t.Fatalf("l3ReadSideInfo = %d, want 0", mdb)
+	}
+	g0 := &gr[0]
+	if g0.subblockGain[wWindow] == 0 {
+		t.Fatalf("gr 0 ch 0: subblockGain[%d] = 0, want > 0 (the real escalation must have fired for this scenario, per the enc-side proof)", wWindow)
+	}
+
+	mainData := frame[4+sideInfoBitsFor(1)/8:]
+	main := bits.NewReader(mainData)
+	var istPos [40]uint8
+	var scf [40]float32
+	l3ReadScalefactors(hdr, scf[:], istPos[:], g0, &main, 0)
+
+	var dst [576]float32
+	l3Huffman(dst[:], &main, g0, scf[:], int(g0.part23Length))
+	if main.Overrun() {
+		t.Fatalf("gr 0 ch 0: bits.Reader overran main data")
+	}
+
+	var gotNoise float64
+	for i := range wWidth {
+		d := xr[0][0][wStart+i] - float64(dst[wStart+i])
+		gotNoise += d * d
+	}
+	if gotNoise > target {
+		t.Fatalf("decoded reconstruction noise for band 16 = %v, want <= target %v: the real bitstream round trip must meet the same masking target outerLoop coded against", gotNoise, target)
+	}
+	const noSsgCeiling = 0.0013373726902515585 // measured on the enc side, scf+scale-only, no subblock_gain
+	if gotNoise >= noSsgCeiling {
+		t.Fatalf("decoded reconstruction noise for band 16 = %v did not improve past the no-ssg ceiling %v: subblock_gain's contribution did not survive the round trip", gotNoise, noSsgCeiling)
+	}
+}

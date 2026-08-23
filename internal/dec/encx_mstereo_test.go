@@ -84,8 +84,7 @@ func countModes(t *testing.T, stream []byte) (ms, lr int) {
 		if !hdrValid(h) {
 			t.Fatalf("countModes: hdrValid = false at byte %d", pos)
 		}
-		mode := (h[3] >> 6) & 3
-		modeExt := (h[3] >> 4) & 3
+		mode, modeExt := frameModeExt(h)
 		switch {
 		case mode == 1 && modeExt == 2:
 			ms++
@@ -254,11 +253,7 @@ func TestMsSqrt2Calibration(t *testing.T) {
 func TestMsIdenticalChannels(t *testing.T) {
 	const sampleRate, kbps, n = 44100, 320, 20
 
-	seed := uint64(0xC0FFEE)
-	noise := make([]float32, n*1152)
-	for i := range noise {
-		noise[i] = float32(testsignal.LCGSigned(&seed) * 0.3)
-	}
+	noise := testsignal.IdenticalNoise(n * 1152)
 
 	stream, left, _ := encodeStereoFrames(t, sampleRate, kbps, n, func(_, i int) float32 {
 		return noise[i]
@@ -414,16 +409,14 @@ const msSeparationFloorDB = 40.0
 // mechanism (a direct L/R leak, or M/S quantization noise on the shared mid
 // channel correlating with x), that IS the leak by definition: however much
 // of decR's variance a best-fit multiple of x alone explains.
+//
+// The same decomposition is applied symmetrically to the decoded LEFT
+// channel: there y is the signal and x is the leak, so both directions of
+// the separation are gated (the "channel separation" name promises both).
 func TestMsChannelSeparation(t *testing.T) {
 	const sampleRate, kbps, n = 44100, 320, 20
 
-	seedX, seedY := uint64(0x5EED1), uint64(0x5EED2)
-	x := make([]float32, n*1152)
-	y := make([]float32, n*1152)
-	for i := range x {
-		x[i] = float32(testsignal.LCGSigned(&seedX) * 0.5)
-		y[i] = float32(testsignal.LCGSigned(&seedY) * 0.5)
-	}
+	x, y := testsignal.DecorrelatedNoise(n * 1152)
 
 	stream, _, _ := encodeStereoFrames(t, sampleRate, kbps, n, func(ch, i int) float32 {
 		if ch == 0 {
@@ -434,34 +427,55 @@ func TestMsChannelSeparation(t *testing.T) {
 	ms, lr := countModes(t, stream)
 	t.Logf("mode counts: ms=%d lr=%d", ms, lr)
 
-	_, decR := decodeStereo(t, stream)
+	decL, decR := decodeStereo(t, stream)
 
 	margin := enc.ChainDelay + 1152
 	lo, hi := margin, len(x)-margin
 
-	var xr, xx, yr, yy float64
+	// Both directions of the same first-order decomposition: for decoded
+	// RIGHT, y is the signal and x-explained power is the leak; for decoded
+	// LEFT, x is the signal and y-explained power is the leak. Each
+	// coefficient is cov(dec, ref)/var(ref), exactly the original estimator,
+	// now accumulated for both channels in one pass. The R-direction
+	// accumulators (xrR, yrR) receive the same addends in the same order as
+	// the original single-direction loop, so the right-channel separation
+	// number is bit-for-bit the prior regression anchor.
+	var xx, yy float64
+	var xrR, yrR, xrL, yrL float64
 	for i := lo; i < hi; i++ {
 		j := i + enc.ChainDelay
-		if j < 0 || j >= len(decR) {
+		if j < 0 || j >= len(decR) || j >= len(decL) {
 			continue
 		}
+		fx, fy := float64(x[i]), float64(y[i])
 		r := float64(decR[j])
-		xr += r * float64(x[i])
-		xx += float64(x[i]) * float64(x[i])
-		yr += r * float64(y[i])
-		yy += float64(y[i]) * float64(y[i])
+		l := float64(decL[j])
+		xrR += r * fx
+		yrR += r * fy
+		xrL += l * fx
+		yrL += l * fy
+		xx += fx * fx
+		yy += fy * fy
 	}
-	bx := xr / xx
-	by := yr / yy
-	leakEnergy := bx * bx * xx
-	signalEnergy := by * by * yy
 
-	if leakEnergy == 0 {
-		t.Fatalf("measured zero x-correlated energy; measurement window likely misaligned")
-	}
-	separationDB := 10 * math.Log10(signalEnergy/leakEnergy)
-	t.Logf("separation = %.2f dB (bx=%.6g by=%.6g signalEnergy=%.6g leakEnergy=%.6g, floor %.2f)", separationDB, bx, by, signalEnergy, leakEnergy, msSeparationFloorDB)
-	if separationDB < msSeparationFloorDB {
-		t.Fatalf("channel separation = %.2f dB, want >= %.2f dB", separationDB, msSeparationFloorDB)
+	for _, tc := range []struct {
+		name            string
+		leakB, sigB     float64 // best-fit coefficients: leak ref, signal ref
+		leakVar, sigVar float64 // var of leak ref, var of signal ref
+	}{
+		{"R (leak of x into decoded right)", xrR / xx, yrR / yy, xx, yy},
+		{"L (leak of y into decoded left)", yrL / yy, xrL / xx, yy, xx},
+	} {
+		leakEnergy := tc.leakB * tc.leakB * tc.leakVar
+		signalEnergy := tc.sigB * tc.sigB * tc.sigVar
+		if leakEnergy == 0 {
+			t.Fatalf("%s: measured zero leak-correlated energy; measurement window likely misaligned", tc.name)
+		}
+		separationDB := 10 * math.Log10(signalEnergy/leakEnergy)
+		t.Logf("%s: separation = %.2f dB (leakB=%.6g sigB=%.6g signalEnergy=%.6g leakEnergy=%.6g, floor %.2f)",
+			tc.name, separationDB, tc.leakB, tc.sigB, signalEnergy, leakEnergy, msSeparationFloorDB)
+		if separationDB < msSeparationFloorDB {
+			t.Fatalf("%s: channel separation = %.2f dB, want >= %.2f dB", tc.name, separationDB, msSeparationFloorDB)
+		}
 	}
 }

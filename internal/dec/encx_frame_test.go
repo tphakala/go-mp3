@@ -108,6 +108,15 @@ func (rr *reservoirReplay) finish(t *testing.T) {
 // When reservoirManaged, it also runs reservoirReplay over the whole
 // stream's main-data placement and occupancy policy; otherwise it keeps the
 // simpler per-frame mdb-must-be-0 check (see validateFrames' doc comment).
+// frameModeExt returns header byte 3's mode (bits 7-6) and mode_extension
+// (bits 5-4) fields. Shared by validateFrameHeaders and countModes
+// (encx_mstereo_test.go), both in this package's test binary; internal/enc's
+// countModes carries its own copy across the package boundary and cannot
+// reuse this one.
+func frameModeExt(h []byte) (mode, modeExt byte) {
+	return (h[3] >> 6) & 3, (h[3] >> 4) & 3
+}
+
 func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps, wantNch, nFrames int, reservoirManaged bool) {
 	t.Helper()
 
@@ -129,8 +138,7 @@ func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps,
 			t.Fatalf("frame %d: hdrSampleRateHz = %d, want %d", frames, got, wantSampleRate)
 		}
 
-		mode := (h[3] >> 6) & 3
-		modeExt := (h[3] >> 4) & 3
+		mode, modeExt := frameModeExt(h)
 		switch {
 		case wantNch == 1:
 			if mode != 3 {

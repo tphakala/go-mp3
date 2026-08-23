@@ -760,6 +760,36 @@ func TestEncoderMsSelection(t *testing.T) {
 	}
 }
 
+// TestEncoderMsInvertedSelection exercises stereoProgram's "inverted" case
+// (R = -L): the mid channel is silent and the side channel carries
+// everything, so M/S is the efficient representation and the PE rule
+// legitimately selects it (TestMsAntiCorrelated in internal/dec proves the
+// decoded audio side of the same scenario). Header-mode counting only, no
+// decode. Like TestMsAntiCorrelated this deliberately asserts at least ONE
+// M/S frame rather than all frames: anti-correlated material may
+// legitimately mix in L/R frames, so an all-frames assertion would
+// overconstrain the decision rule. Do not tighten it.
+func TestEncoderMsInvertedSelection(t *testing.T) {
+	e := mustEncoder(t, Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128})
+	var dst []byte
+	for _, fr := range stereoProgram(12, "inverted") {
+		var err error
+		dst, err = e.EncodeFrame(dst, fr[:])
+		if err != nil {
+			t.Fatalf("EncodeFrame: %v", err)
+		}
+	}
+	dst, err := e.EncodeFrame(dst, nil)
+	if err != nil {
+		t.Fatalf("drain EncodeFrame: %v", err)
+	}
+	ms, lr := countModes(t, dst)
+	t.Logf("inverted: ms=%d lr=%d", ms, lr)
+	if ms == 0 {
+		t.Errorf("inverted input never selected M/S (ms=%d, lr=%d): PE decision regression?", ms, lr)
+	}
+}
+
 func TestEncoderMsDeterminism(t *testing.T) {
 	// The same decorrelated program twice through fresh Encoders yields
 	// byte-identical streams (decision flips would show instantly).

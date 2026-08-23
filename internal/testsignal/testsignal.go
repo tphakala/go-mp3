@@ -34,6 +34,42 @@ func LCGSigned(seed *uint64) float64 {
 	return LCG(seed)*2 - 1
 }
 
+// IdenticalNoise returns nSamples of the canonical identical-channels noise
+// program: LCG noise from seed 0xC0FFEE scaled by 0.3, as
+// float32(LCGSigned * 0.3) exactly (one float64 multiply, one conversion).
+// Duplicated on both channels of a stereo encode, it forces the M/S decision
+// every frame (the side channel is exactly zero before quantization). This
+// is the single source of truth for the seed and scale; TestMsIdenticalChannels
+// (internal/dec) and the M/S compat programs (root compat_test.go) consume
+// it, and the fuzz seed builders in internal/dec/encx_fuzz_test.go mirror the
+// same constants in int32 form (they cannot route through this float32 helper
+// without double-rounding their seed bytes; see the comment there).
+func IdenticalNoise(nSamples int) []float32 {
+	seed := uint64(0xC0FFEE)
+	x := make([]float32, nSamples)
+	for i := range x {
+		x[i] = float32(LCGSigned(&seed) * 0.3)
+	}
+	return x
+}
+
+// DecorrelatedNoise returns two fully independent noise channels with no
+// shared structure: LCG noise from seeds 0x5EED1 (x) and 0x5EED2 (y), each
+// scaled by 0.5, as float32(LCGSigned * 0.5) exactly. Fed as (x, y) stereo
+// input it exercises whichever per-frame M/S versus L/R decisions the PE rule
+// makes on decorrelated content. Single source of truth for the seeds and
+// scale, on the same terms as IdenticalNoise above.
+func DecorrelatedNoise(nSamples int) (x, y []float32) {
+	seedX, seedY := uint64(0x5EED1), uint64(0x5EED2)
+	x = make([]float32, nSamples)
+	y = make([]float32, nSamples)
+	for i := range x {
+		x[i] = float32(LCGSigned(&seedX) * 0.5)
+		y[i] = float32(LCGSigned(&seedY) * 0.5)
+	}
+	return x, y
+}
+
 // MultiTone returns nSamples samples of a deterministic multi-tone program:
 // a 440 Hz fundamental plus overtones at -6 dB (880 Hz) and -12 dB (1320
 // Hz), scaled so |x[i]| <= peak for every i regardless of phase alignment

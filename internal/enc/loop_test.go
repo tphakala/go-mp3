@@ -158,56 +158,22 @@ func TestOuterLoopContract(t *testing.T) {
 	}
 }
 
-// bandAtCap reports whether sfb's scalefactor sits at its representable
-// cap under the granule's state (the loop may legitimately leave such a
-// band violating).
-func bandAtCap(sf *scfState, sfb int) bool {
-	if sfb >= 21 {
-		return true // sfb 21 has no scalefactor at all
-	}
-	maxv := sfMaxLo
-	if sfb >= 11 {
-		maxv = sfMaxHi
-	}
-	return sf.scalefacScale == 1 && sf.scf[sfb] >= maxv
-}
-
 // bandLocked reports whether band sfb in gc's final coding is beyond the
-// outer loop's reach: either at its scalefac_scale cap (bandAtCap), or
+// outer loop's reach: either at its scalefac_scale cap (diagAtCap), or
 // genuinely floor-bound, meaning one more scalefactor unit on sfb, recoded
 // against the same budget, would not reduce noise[sfb]. This mirrors
 // outerLoop's own empirical futility check (loop.go) as an external probe
 // on the loop's final answer, so a contract test can excuse bands the loop
 // correctly gave up on without needing outerLoop to expose its internal
-// unfixable set.
+// unfixable set. Delegates to the production diagAtCap/diagFloorBound pair
+// (encoder.go) so the layout-dependent band-count and slen1End cutovers
+// stay correct for any bandLayout, not just layoutLong.
 func bandLocked(t *testing.T, xr *[576]float64, lay *bandLayout, budget int, gc *granuleCoding, s int) bool {
 	t.Helper()
-	if bandAtCap(&gc.sf, s) {
-		return true
-	}
-	sfCap := sfMaxLo
-	if s >= 11 {
-		sfCap = sfMaxHi
-	}
-	if s >= 21 || gc.sf.scf[s] >= sfCap {
-		return true // no room to even try one more unit
-	}
-
-	var noiseNow [39]float64
-	noiseGranule(xr, &gc.ix, gc.globalGain, &gc.sf, lay, &noiseNow)
-
-	trial := *gc
-	trial.sf.scf[s]++
-	idx, part2, ok := chooseScalefacCompress(&trial.sf, 0, lay)
-	if !ok || part2 >= budget {
-		return true // no budget to even try the bump
-	}
-	codeGranule(xr, budget-part2, lay, &trial)
-	trial.scfCompress, trial.part2Bits = idx, part2
-
-	var noiseTrial [39]float64
-	noiseGranule(xr, &trial.ix, trial.globalGain, &trial.sf, lay, &noiseTrial)
-	return !(noiseTrial[s] < noiseNow[s])
+	atCap := diagAtCap(&gc.sf, lay)
+	var noise [39]float64
+	noiseGranule(xr, &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
+	return diagFloorBound(xr, lay, budget, gc, &noise, s, atCap[s])
 }
 
 func TestOuterLoopAmplifiesViolator(t *testing.T) {

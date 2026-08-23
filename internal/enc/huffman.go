@@ -105,11 +105,14 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 	return pb
 }
 
-// bigValuesPrefixCost returns prefixCost[t][k]: the bits needed to encode
+// bigValuesPrefixCost fills prefixCost[t][k]: the bits needed to encode
 // pairs [0, pb[k]) of ix using table t, for every table t in
-// validBigTables and every coding-band prefix k in [0,lay.nBands].
-func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout) [32][40]int {
-	var prefixCost [32][40]int
+// validBigTables and every coding-band prefix k in [0,lay.nBands]. Fills a
+// caller-owned array in place rather than returning by value, since it runs
+// up to 150x per granule inside the outer loop's masking escalation and the
+// [32][40]int result is large enough that a by-value return costs a
+// measurable copy on every call.
+func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCost *[32][40]int) {
 	for _, t := range validBigTables {
 		bt := bigTables[t]
 		cost := 0
@@ -122,7 +125,6 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout) [32][40]i
 			prefixCost[t][k+1] = cost
 		}
 	}
-	return prefixCost
 }
 
 // rangeCost returns the cheapest single table (and its cost) for encoding
@@ -224,7 +226,8 @@ func regionBounds(region0Count, region1Count, nBands int) (a, c int) {
 // lay.nBands via pairBoundaries' clamp, so nothing optimal is excluded.
 func chooseRegions(ix *[576]int32, part spectrumPartition, lay *bandLayout) regionInfo {
 	pb := pairBoundaries(lay, part.bigValues)
-	prefixCost := bigValuesPrefixCost(ix, &pb, lay)
+	var prefixCost [32][40]int
+	bigValuesPrefixCost(ix, &pb, lay, &prefixCost)
 
 	bestBits := impossibleCost
 	var best regionInfo
@@ -286,7 +289,8 @@ func chooseRegionsWS(ix *[576]int32, part spectrumPartition, lay *bandLayout, bl
 	a = min(a, lay.nBands)
 
 	pb := pairBoundaries(lay, part.bigValues)
-	prefixCost := bigValuesPrefixCost(ix, &pb, lay)
+	var prefixCost [32][40]int
+	bigValuesPrefixCost(ix, &pb, lay, &prefixCost)
 
 	cost0, t0 := rangeCost(&prefixCost, &pb, 0, a)
 	cost1, t1 := rangeCost(&prefixCost, &pb, a, lay.nBands)

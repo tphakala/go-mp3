@@ -190,8 +190,7 @@ func checkShortSideInfoGranule(t *testing.T, gi, ch int, g *grInfo, want int) {
 }
 
 func TestEncShortSideInfoReadback(t *testing.T) {
-	forEachShortCase(t, func(t *testing.T, rate, nch int, p shortPattern) {
-		t.Helper()
+	forEachShortCase(t, func(t *testing.T, rate, nch int, p shortPattern) { //nolint:thelper // deliberately not a helper: no t.Helper() call here means a Fatalf inside this closure reports its own line, not forEachShortCase's run() call site
 		seed := uint64(rate)<<40 | uint64(nch)<<24 | uint64(p.id)<<8 | 1
 		frame, _ := buildShortFrame(rate, nch, p, seed)
 
@@ -220,8 +219,7 @@ func TestEncShortSideInfoReadback(t *testing.T) {
 // for every rate x {mono, stereo} x block-type pattern, with no error and
 // a full 1152-sample granule pair.
 func TestEncShortFullDecodeReadback(t *testing.T) {
-	forEachShortCase(t, func(t *testing.T, rate, nch int, p shortPattern) {
-		t.Helper()
+	forEachShortCase(t, func(t *testing.T, rate, nch int, p shortPattern) { //nolint:thelper // deliberately not a helper: no t.Helper() call here means a Fatalf inside this closure reports its own line, not forEachShortCase's run() call site
 		seed := uint64(rate)<<40 | uint64(nch)<<24 | uint64(p.id)<<8 | 2
 		frame, _ := buildShortFrame(rate, nch, p, seed)
 
@@ -251,9 +249,8 @@ func TestEncShortFullDecodeReadback(t *testing.T) {
 // structural grids (runStructuralGrid, runEncoderStructuralGrid) never
 // emit a non-zero block_type.
 func TestEncShortValidatorGrammar(t *testing.T) {
-	const wantKbps = 128 // bitrateIndex 9, matches buildShortFrame
-	forEachShortCase(t, func(t *testing.T, rate, nch int, p shortPattern) {
-		t.Helper()
+	const wantKbps = 128                                                    // bitrateIndex 9, matches buildShortFrame
+	forEachShortCase(t, func(t *testing.T, rate, nch int, p shortPattern) { //nolint:thelper // deliberately not a helper: no t.Helper() call here means a Fatalf inside this closure reports its own line, not forEachShortCase's run() call site
 		seed := uint64(rate)<<40 | uint64(nch)<<24 | uint64(p.id)<<8 | 4
 		frame, _ := buildShortFrame(rate, nch, p, seed)
 		validateFrames(t, frame, shortRates[rate], wantKbps, nch, 1, false)
@@ -391,8 +388,7 @@ func checkSpectralRoundTrip(t *testing.T, gi, ch int, xr *[576]float64, dst []fl
 // go undetected; TestEncShortSubblockGainReadback below forces a known
 // nonzero subblock_gain to gate that mechanism instead.
 func TestEncShortSpectralReadback(t *testing.T) {
-	forEachShortCase(t, func(t *testing.T, rate, nch int, p shortPattern) {
-		t.Helper()
+	forEachShortCase(t, func(t *testing.T, rate, nch int, p shortPattern) { //nolint:thelper // deliberately not a helper: no t.Helper() call here means a Fatalf inside this closure reports its own line, not forEachShortCase's run() call site
 		seed := uint64(rate)<<40 | uint64(nch)<<24 | uint64(p.id)<<8 | 3
 		frame, xr := buildShortFrame(rate, nch, p, seed)
 
@@ -523,8 +519,7 @@ func expectScfForSubblockGain(gg int, sg [3]int, i int) float32 {
 // expectScfForSubblockGain's independent prediction for every band of
 // every short granule-channel in the grid.
 func TestEncShortSubblockGainReadback(t *testing.T) {
-	forEachShortCase(t, func(t *testing.T, rate, nch int, p shortPattern) {
-		t.Helper()
+	forEachShortCase(t, func(t *testing.T, rate, nch int, p shortPattern) { //nolint:thelper // deliberately not a helper: no t.Helper() call here means a Fatalf inside this closure reports its own line, not forEachShortCase's run() call site
 		want := [2]int{p.gr0, p.gr1}
 		if want[0] != blkShort && want[1] != blkShort {
 			t.Skip("no short granule in this pattern: subblock_gain has no functional effect on start/stop/long geometry")

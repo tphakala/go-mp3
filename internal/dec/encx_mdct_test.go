@@ -475,6 +475,7 @@ func TestEncMdctTransitionTDAC(t *testing.T) {
 		{0, 0, 1, 2, 2, 3, 0, 0, 1, 2},
 		{0, 1, 2, 3, 0, 1, 2, 2, 3, 0},
 		{0, 1, 2, 2, 2, 2, 3, 0, 0, 0},
+		{0, 1, 2, 3, 1, 2, 3, 1, 2, 3},
 	}
 
 	for si, seq := range sequences {

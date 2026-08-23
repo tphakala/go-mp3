@@ -30,8 +30,12 @@ type granuleCoding struct {
 	ix           [576]int32
 
 	// blockType is this granule's window shape (blockLong/Start/Short/Stop,
-	// blocktypes.go); always blockLong (0) in this task, since every caller
-	// still codes against the long layout. detectScfsi's decision-6 guard
+	// blocktypes.go). The live encoder path (Encoder.codeFrame /
+	// EncodeFrame) still only ever produces blockLong; the test-only
+	// AppendFrameShortPin/AppendFrameShortPinSG force the other three
+	// values. regionsFor dispatches on it (chooseRegions for blockLong,
+	// chooseRegionsWS otherwise), writeSideInfo emits the window-switching
+	// branch for any non-long value, and detectScfsi's decision-6 guard
 	// reads it.
 	blockType int
 

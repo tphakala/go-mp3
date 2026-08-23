@@ -941,7 +941,7 @@ func (e *Encoder) escalateForMasking(nGC int, lay *bandLayout, padding, area, ca
 			atCap := diagAtCap(&gc.sf, lay)
 			var exempt [39]bool
 			for s := range lay.nBands {
-				exempt[s] = diagFloorBound(&e.xr[g][ch], lay, gc.part23Length, gc, s, atCap[s])
+				exempt[s] = diagFloorBound(&e.xr[g][ch], lay, gc.part23Length, gc, &noise, s, atCap[s])
 			}
 			e.diagHook(g, ch, DiagGranule{
 				Noise:            noise,
@@ -1084,7 +1084,7 @@ func diagAtCap(sf *scfState, lay *bandLayout) [39]bool {
 // minGlobalGain-pinning line prevents any noise reduction) without its
 // scalefactor ever reaching the structural cap, exactly the scenario
 // outerLoop's own futility check exists to catch.
-func diagFloorBound(xr *[576]float64, lay *bandLayout, budget int, gc *granuleCoding, s int, atCap bool) bool {
+func diagFloorBound(xr *[576]float64, lay *bandLayout, budget int, gc *granuleCoding, noiseNow *[39]float64, s int, atCap bool) bool {
 	if atCap {
 		return true
 	}
@@ -1095,9 +1095,6 @@ func diagFloorBound(xr *[576]float64, lay *bandLayout, budget int, gc *granuleCo
 	if s >= lay.nScf || gc.sf.scf[s] >= sfCap {
 		return true // no room to even try one more unit
 	}
-
-	var noiseNow [39]float64
-	noiseGranule(xr, &gc.ix, gc.globalGain, &gc.sf, lay, &noiseNow)
 
 	trial := *gc
 	trial.sf.scf[s]++

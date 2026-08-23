@@ -43,20 +43,9 @@ func FlipOddSubbands(s *[18][32]float64) {
 //
 // Exported for the same cross-package test reason as FlipOddSubbands.
 //
-// Float discipline: the inner accumulate, sum += float64(mdctCos[k][n] *
-// z[n]), carries an explicit float64() conversion that is the load-bearing
-// barrier against arm64 fusing the multiply into an FMA with the
-// accumulator (a bare local assignment does not block that; the compiler
-// fuses across statements; see filterbank.go's matrixStep for the same
-// discipline). The two z-population lines above it also carry a float64()
-// wrap, but their products feed a store into z[i]/z[18+i], not an adjacent
-// +/-, so that wrap is not a barrier there; this was verified empirically
-// (GOARCH=arm64 go build -gcflags=-S produces byte-identical codegen for
-// those lines with or without the wrap, the same finding as filterbank.go's
-// window()). The wrap is kept anyway, as defensive uniformity across the
-// package rather than a correctness requirement. Accumulation in the inner
-// sum runs left to right in index order (n = 0..35), fixing the
-// association order for determinism across amd64 and arm64.
+// MDCTGranule is a thin wrapper over mdctGranuleWindowed with the long sine
+// window; the shared 36-point kernel and its float64()-wrap FMA-blocking
+// discipline are documented on mdctGranuleWindowed below.
 func MDCTGranule(prev, cur *[18][32]float64, xr *[576]float64) {
 	mdctGranuleWindowed(prev, cur, xr, &MDCTWindow)
 }

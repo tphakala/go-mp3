@@ -151,7 +151,8 @@ func escalateSubblockGain(sf *scfState, lay *bandLayout, w int) {
 //
 // Exits on zero violations, no fixable band, the iteration cap, part2
 // starving the budget, or the strict progress guard: if the effective
-// per-band amplification (bandExtraQuarters over sfbs 0..20) is unchanged
+// per-band amplification (bandExtraQuarters over the layout's coding bands
+// 0..nBands-1; the last band's amplification is a constant 0) is unchanged
 // from the previous iteration, the loop breaks immediately rather than
 // re-measuring identical noise forever (this fires precisely when an
 // amplification attempt only sets unfixable, touching no scf).

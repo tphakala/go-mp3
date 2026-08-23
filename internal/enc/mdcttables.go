@@ -843,10 +843,13 @@ var MDCTWindowStart = [36]float64{
 // MDCTWindowStart[35-i] (decision 3). This gives a zero head (i = 0..5), a
 // short rise of sin(pi/12*(i-6+0.5)) (i = 6..11, the mirror of
 // MDCTWindowStart's short fall), a flat plateau of 1.0 (i = 12..17), and a
-// long fall of sin(pi/36*(i+0.5)) (i = 18..35, the same formula as
-// MDCTWindow's own second half, bit-exact equal to it; both windows carry
-// the identical sin(pi-x) = sin(x) symmetry that MDCTWindow's own two
-// halves share). Each literal is the exact hex float64 encoding of
+// long fall of sin(pi/36*(i+0.5)) (i = 18..35, mathematically identical to
+// MDCTWindow's own second half via the sin(pi-x) = sin(x) symmetry, and
+// equal within the recompute tolerance: because these literals are the
+// exact reverse of MDCTWindowStart rather than an independent re-evaluation
+// of the sine at i = 18..35, 12 of the 18 tail entries differ from
+// MDCTWindow[18:36] by 1 ULP, which is expected and harmless). Each literal
+// is the exact hex float64 encoding of
 // MDCTWindowStart[35-i] from the same throwaway generator as
 // MDCTWindowStart; the committed literal is the runtime truth. See
 // TestMdctShortTablesRecompute for the reverse-relationship check.

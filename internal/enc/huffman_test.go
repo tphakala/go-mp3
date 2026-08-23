@@ -121,11 +121,11 @@ func TestChooseRegionsExhaustiveSmall(t *testing.T) {
 	vals := []int32{1, -2, 0, 3, -1, 2, 4, -3, 0, 1, 5, -2, 0, 0, 2, -1, 3, 0, -4, 1}
 	copy(ix[:], vals)
 	part := spectrumPartition{bigValues: 10, count1: 0}
-	sfbWidths := &sfbWidthsLong[0]
+	lay := &layoutLong[0]
 
-	got := chooseRegions(&ix, part, sfbWidths)
+	got := chooseRegions(&ix, part, lay)
 
-	pb := pairBoundaries(sfbWidths, part.bigValues)
+	pb := pairBoundaries(lay, part.bigValues)
 	bruteRangeCost := func(a, b int) int {
 		if pb[a] == pb[b] {
 			return 0
@@ -148,11 +148,11 @@ func TestChooseRegionsExhaustiveSmall(t *testing.T) {
 	wantR0, wantR1 := -1, -1
 	for r0 := range 16 {
 		for r1 := range 8 {
-			if r0+r1+2 > 22 {
+			if r0+r1+2 > lay.nBands {
 				continue
 			}
-			a, c := regionBounds(r0, r1)
-			total := bruteRangeCost(0, a) + bruteRangeCost(a, c) + bruteRangeCost(c, 22)
+			a, c := regionBounds(r0, r1, lay.nBands)
+			total := bruteRangeCost(0, a) + bruteRangeCost(a, c) + bruteRangeCost(c, lay.nBands)
 			if total < bestBits {
 				bestBits, wantR0, wantR1 = total, r0, r1
 			}
@@ -184,7 +184,7 @@ func TestWriteSpectrumBitsMatchCount(t *testing.T) {
 	}
 
 	for rate := range 3 {
-		sfbWidths := &sfbWidthsLong[rate]
+		lay := &layoutLong[rate]
 		for trial := range 20 {
 			var ix [576]int32
 			for i := range ix {
@@ -203,11 +203,11 @@ func TestWriteSpectrumBitsMatchCount(t *testing.T) {
 			}
 
 			part := partitionSpectrum(&ix)
-			ri := chooseRegions(&ix, part, sfbWidths)
+			ri := chooseRegions(&ix, part, lay)
 
 			var buf []byte
 			w := bits.NewWriter(buf)
-			got := writeSpectrum(&w, &ix, part, ri, sfbWidths)
+			got := writeSpectrum(&w, &ix, part, ri, lay)
 			if got != ri.bits {
 				t.Fatalf("rate %d trial %d: writeSpectrum returned %d bits, chooseRegions costed %d", rate, trial, got, ri.bits)
 			}
@@ -245,12 +245,12 @@ func TestHuffmanGolden(t *testing.T) {
 	}
 
 	part := partitionSpectrum(&ix)
-	sfbWidths := &sfbWidthsLong[1]
-	ri := chooseRegions(&ix, part, sfbWidths)
+	lay := &layoutLong[1]
+	ri := chooseRegions(&ix, part, lay)
 
 	var buf []byte
 	w := bits.NewWriter(buf)
-	n := writeSpectrum(&w, &ix, part, ri, sfbWidths)
+	n := writeSpectrum(&w, &ix, part, ri, lay)
 	if n != ri.bits {
 		t.Fatalf("writeSpectrum returned %d bits, want ri.bits=%d", n, ri.bits)
 	}

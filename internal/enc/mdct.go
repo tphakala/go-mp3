@@ -43,28 +43,29 @@ func FlipOddSubbands(s *[18][32]float64) {
 //
 // Exported for the same cross-package test reason as FlipOddSubbands.
 //
-// Float discipline: the inner accumulate, sum += float64(mdctCos[k][n] *
-// z[n]), carries an explicit float64() conversion that is the load-bearing
-// barrier against arm64 fusing the multiply into an FMA with the
-// accumulator (a bare local assignment does not block that; the compiler
-// fuses across statements; see filterbank.go's matrixStep for the same
-// discipline). The two z-population lines above it also carry a float64()
-// wrap, but their products feed a store into z[i]/z[18+i], not an adjacent
-// +/-, so that wrap is not a barrier there; this was verified empirically
-// (GOARCH=arm64 go build -gcflags=-S produces byte-identical codegen for
-// those lines with or without the wrap, the same finding as filterbank.go's
-// window()). The wrap is kept anyway, as defensive uniformity across the
-// package rather than a correctness requirement. Accumulation in the inner
-// sum runs left to right in index order (n = 0..35), fixing the
-// association order for determinism across amd64 and arm64.
+// MDCTGranule is a thin wrapper over mdctGranuleWindowed with the long sine
+// window; the shared 36-point kernel and its float64()-wrap FMA-blocking
+// discipline are documented on mdctGranuleWindowed below.
 func MDCTGranule(prev, cur *[18][32]float64, xr *[576]float64) {
+	mdctGranuleWindowed(prev, cur, xr, &MDCTWindow)
+}
+
+// mdctGranuleWindowed is the shared 36-point forward-MDCT body behind
+// MDCTGranule (blockLong, window = &MDCTWindow) and MDCTGranuleBlock's
+// blockStart (&MDCTWindowStart) and blockStop (&MDCTWindowStop) cases: only
+// the window differs across the three block types that share this 36-point
+// kernel, so the loop itself is factored out here, byte-identical in
+// statement shape, float64() wraps and left-to-right accumulation order to
+// MDCTGranule's original body (TestMdctGolden unchanged is the proof for
+// the blockLong case).
+func mdctGranuleWindowed(prev, cur *[18][32]float64, xr *[576]float64, window *[36]float64) {
 	for b := range 32 {
 		var z [36]float64
 		for i := range 18 {
-			z[i] = float64(prev[i][b] * MDCTWindow[i])
+			z[i] = float64(prev[i][b] * window[i])
 		}
 		for i := range 18 {
-			z[18+i] = float64(cur[i][b] * MDCTWindow[18+i])
+			z[18+i] = float64(cur[i][b] * window[18+i])
 		}
 		for k := range 18 {
 			sum := 0.0
@@ -72,6 +73,78 @@ func MDCTGranule(prev, cur *[18][32]float64, xr *[576]float64) {
 				sum += float64(mdctCos[k][n] * z[n])
 			}
 			xr[b*18+k] = sum * mdctScale
+		}
+	}
+}
+
+// mdctScaleShort is the output scale MDCTGranuleBlock's short-block path
+// applies to every spectral line, the short-block twin of mdctScale.
+// mdctScaleShort = 1/3 = 2/N with N = 6, the per-sub-window spectral line
+// count (the same 2/N normalization argument as mdctScale, which uses
+// N = 18, the per-half long-window spectral line count). Confirmed
+// empirically by TestEncMdctShortTDACRoundTrip (internal/dec/encx_mdct_test.go)
+// exactly as mdctScale was: with no output scaling (mdctScaleShort = 1),
+// the measured round-trip chain gain on granule 2's short-block decode is
+// 2.999999858369531 across all 576 line samples (all within 0.01% of the
+// mean), i.e. exactly 3 up to float32 measurement noise.
+const mdctScaleShort = 1.0 / 3.0
+
+// MDCTGranuleBlock computes one granule's forward MDCT for the given block
+// type (blockLong, blockStart, blockShort or blockStop, blocktypes.go).
+// blockLong, blockStart and blockStop share mdctGranuleWindowed,
+// parameterized by their respective window; blockShort runs
+// mdctGranuleShort's three 12-point MDCTs per subband instead. AliasReduce
+// is NOT called here for any block type; the caller applies it afterward
+// for blockLong/blockStart/blockStop only, mirroring the decoder's
+// antialias gating (l3Decode, internal/dec/decode.go, skips l3Antialias for
+// a pure short granule via aaBands = nLongBands - 1 = -1).
+func MDCTGranuleBlock(prev, cur *[18][32]float64, xr *[576]float64, blockType int) {
+	switch blockType {
+	case blockStart:
+		mdctGranuleWindowed(prev, cur, xr, &MDCTWindowStart)
+	case blockStop:
+		mdctGranuleWindowed(prev, cur, xr, &MDCTWindowStop)
+	case blockShort:
+		mdctGranuleShort(prev, cur, xr)
+	default: // blockLong
+		mdctGranuleWindowed(prev, cur, xr, &MDCTWindow)
+	}
+}
+
+// mdctGranuleShort computes one granule's forward MDCT under the short
+// block window: for every subband b, three 12-point MDCTs run over a
+// 36-sample span formed by prev's 18 samples followed by cur's 18 samples
+// (span[i] = prev[i][b] for i < 18, span[i] = cur[i-18][b] for i >= 18),
+// sub-window w (0, 1, 2) reading span[6+6w : 18+6w). Output is window-major
+// within the subband: xr[b*18+w*6+k] is spectral line k of sub-window w of
+// subband b, the interleave l3ImdctShort (internal/dec/imdct.go) expects
+// once Task A2's reorder feeds it through the decoder's own grbuf layout.
+//
+// Float discipline: the same left-to-right, float64()-wrapped accumulation
+// discipline as mdctGranuleWindowed (see MDCTGranule's doc comment); the
+// z-population line's float64() wrap is likewise kept for package-wide
+// uniformity rather than because it is a proven FMA barrier there.
+func mdctGranuleShort(prev, cur *[18][32]float64, xr *[576]float64) {
+	for b := range 32 {
+		var span [36]float64
+		for i := range 18 {
+			span[i] = prev[i][b]
+		}
+		for i := range 18 {
+			span[18+i] = cur[i][b]
+		}
+		for w := range 3 {
+			var z [12]float64
+			for j := range 12 {
+				z[j] = float64(span[6+6*w+j] * MDCTWindowShort[j])
+			}
+			for k := range 6 {
+				sum := 0.0
+				for j := range 12 {
+					sum += float64(mdctCos12[k][j] * z[j])
+				}
+				xr[b*18+w*6+k] = sum * mdctScaleShort
+			}
 		}
 	}
 }

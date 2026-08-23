@@ -33,13 +33,13 @@ func TestQuantizeKnownAnswers(t *testing.T) {
 	}
 
 	var sf scfState
-	sfb := &sfbWidthsLong[0]
+	lay := &layoutLong[0]
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var xr [576]float64
 			xr[0] = c.xr
 			var ix [576]int32
-			quantizeGranule(&xr, c.gg, &sf, sfb, &ix)
+			quantizeGranule(&xr, c.gg, &sf, lay, &ix)
 			if ix[0] != c.want {
 				t.Fatalf("quantizeGranule(xr=%v, gg=%d) = %d, want %d", c.xr, c.gg, ix[0], c.want)
 			}
@@ -125,14 +125,14 @@ func TestQuantizeMonotone(t *testing.T) {
 	}
 
 	var sf scfState
-	sfb := &sfbWidthsLong[0]
+	lay := &layoutLong[0]
 
 	var prev [576]int32
-	quantizeGranule(&xr, 0, &sf, sfb, &prev)
+	quantizeGranule(&xr, 0, &sf, lay, &prev)
 
 	var cur [576]int32
 	for gg := 1; gg < 256; gg++ {
-		quantizeGranule(&xr, gg, &sf, sfb, &cur)
+		quantizeGranule(&xr, gg, &sf, lay, &cur)
 		for i := range 576 {
 			if abs32(cur[i]) > abs32(prev[i]) {
 				t.Fatalf("line %d: |ix| rose from gg=%d to gg=%d: %d -> %d",
@@ -167,9 +167,9 @@ func TestMinGlobalGain(t *testing.T) {
 	var xr [576]float64
 	xr[300] = 5e5
 	var sf scfState
-	sfb := &sfbWidthsLong[0]
+	lay := &layoutLong[0]
 
-	gg := minGlobalGain(&xr, &sf, sfb)
+	gg := minGlobalGain(&xr, &sf, lay)
 	if gg <= 0 || gg >= 256 {
 		t.Fatalf("minGlobalGain returned out-of-range gg=%d", gg)
 	}
@@ -182,12 +182,12 @@ func TestMinGlobalGain(t *testing.T) {
 	}
 
 	var ix [576]int32
-	quantizeGranule(&xr, gg, &sf, sfb, &ix)
+	quantizeGranule(&xr, gg, &sf, lay, &ix)
 	if ix[300] > maxQuant {
 		t.Fatalf("quantizeGranule at gg=%d: ix[300]=%d > maxQuant %d", gg, ix[300], maxQuant)
 	}
 
-	quantizeGranule(&xr, gg-1, &sf, sfb, &ix)
+	quantizeGranule(&xr, gg-1, &sf, lay, &ix)
 	if ix[300] != maxQuant {
 		t.Fatalf("quantizeGranule at gg-1=%d: ix[300]=%d, want the clamp to engage at %d",
 			gg-1, ix[300], maxQuant)
@@ -291,7 +291,7 @@ func legacyQuantize(xr *[576]float64, gg int, ix *[576]int32) {
 }
 
 func TestQuantizeScaledKnownAnswers(t *testing.T) {
-	sfb := &sfbWidthsLong[0]
+	lay := &layoutLong[0]
 	var xr [576]float64
 	var ix [576]int32
 
@@ -302,7 +302,7 @@ func TestQuantizeScaledKnownAnswers(t *testing.T) {
 	sf.scf[0] = 1
 	sf.scalefacScale = 1
 	xr[0] = 100
-	quantizeGranule(&xr, quantGainBase, &sf, sfb, &ix)
+	quantizeGranule(&xr, quantGainBase, &sf, lay, &ix)
 	if ix[0] != 53 {
 		t.Errorf("scaled quantize: ix[0] = %d, want 53", ix[0])
 	}
@@ -314,7 +314,7 @@ func TestQuantizeScaledKnownAnswers(t *testing.T) {
 		xr[i] = (testsignal.LCG(&seed) - 0.5) * 1e5
 	}
 	var ixA, ixB [576]int32
-	quantizeGranule(&xr, 180, &zero, sfb, &ixA)
+	quantizeGranule(&xr, 180, &zero, lay, &ixA)
 	legacyQuantize(&xr, 180, &ixB) // test-local copy of the Phase 3 body
 	if ixA != ixB {
 		t.Fatal("zero scfState diverges from the Phase 3 quantizer")
@@ -327,26 +327,26 @@ func TestQuantizeScaledKnownAnswers(t *testing.T) {
 	clear(xr[:])
 	lo := 0
 	for s := range 15 {
-		lo += sfb[s]
+		lo += lay.width[s]
 	}
 	xr[lo] = 100
-	quantizeGranule(&xr, quantGainBase, &pf, sfb, &ix)
+	quantizeGranule(&xr, quantGainBase, &pf, lay, &ix)
 	if ix[lo] != 53 { // same 100 -> 200 -> 53 arithmetic as above
 		t.Errorf("preflag quantize: ix[%d] = %d, want 53", lo, ix[lo])
 	}
 }
 
 func TestNoiseGranuleKnownAnswer(t *testing.T) {
-	sfb := &sfbWidthsLong[0]
+	lay := &layoutLong[0]
 	var xr [576]float64
 	var ix [576]int32
 	var sf scfState
 	sf.scf[0] = 1
 	sf.scalefacScale = 1
 	xr[0] = 100
-	quantizeGranule(&xr, quantGainBase, &sf, sfb, &ix) // ix[0] = 53
-	var noise [22]float64
-	noiseGranule(&xr, &ix, quantGainBase, &sf, sfb, &noise)
+	quantizeGranule(&xr, quantGainBase, &sf, lay, &ix) // ix[0] = 53
+	var noise [39]float64
+	noiseGranule(&xr, &ix, quantGainBase, &sf, lay, &noise)
 	// dequant = pow43[53] * 2^(-4/4) = 53^(4/3)/2 = 99.535...; noise in
 	// band 0 = (100 - dequant)^2; recompute test-side with math.Pow.
 	deq := math.Pow(53, 4.0/3.0) / 2
@@ -364,7 +364,7 @@ func TestNoiseGranuleKnownAnswer(t *testing.T) {
 func TestNoiseDecreasesWithAmplification(t *testing.T) {
 	// Amplifying a band strictly reduces (or keeps equal) its measured
 	// noise: finer effective step, more precision.
-	sfb := &sfbWidthsLong[0]
+	lay := &layoutLong[0]
 	var xr [576]float64
 	seed := uint64(11)
 	for i := range 40 { // bands 0..~7 populated
@@ -377,10 +377,10 @@ func TestNoiseDecreasesWithAmplification(t *testing.T) {
 			sf.scf[s] = amp
 		}
 		var ix [576]int32
-		var noise [22]float64
-		gg := minGlobalGain(&xr, &sf, sfb)
-		quantizeGranule(&xr, gg, &sf, sfb, &ix)
-		noiseGranule(&xr, &ix, gg, &sf, sfb, &noise)
+		var noise [39]float64
+		gg := minGlobalGain(&xr, &sf, lay)
+		quantizeGranule(&xr, gg, &sf, lay, &ix)
+		noiseGranule(&xr, &ix, gg, &sf, lay, &noise)
 		total := 0.0
 		for _, n := range noise {
 			total += n
@@ -395,21 +395,21 @@ func TestNoiseDecreasesWithAmplification(t *testing.T) {
 func TestMinGlobalGainScaled(t *testing.T) {
 	// Amplification raises the needed gg; the returned gg always keeps
 	// every quantized magnitude within maxQuant WITHOUT the clamp firing.
-	sfb := &sfbWidthsLong[0]
+	lay := &layoutLong[0]
 	var xr [576]float64
 	xr[0] = 5e5
 	var sf scfState
 	sf.scf[0] = 10
-	gg := minGlobalGain(&xr, &sf, sfb)
+	gg := minGlobalGain(&xr, &sf, lay)
 	var ix [576]int32
-	quantizeGranule(&xr, gg, &sf, sfb, &ix)
+	quantizeGranule(&xr, gg, &sf, lay, &ix)
 	if ix[0] > maxQuant {
 		t.Fatalf("ix[0] = %d exceeds maxQuant at returned gg", ix[0])
 	}
 	if gg > 0 {
 		sf2 := sf
 		var ix2 [576]int32
-		quantizeGranule(&xr, gg-1, &sf2, sfb, &ix2)
+		quantizeGranule(&xr, gg-1, &sf2, lay, &ix2)
 		// quantizeGranule's clamp guarantees ix2[0] <= maxQuant always,
 		// whether or not gg-1 truly fits, so "does gg-1 fit" has to be
 		// read off the clamp engaging (ix2[0] == maxQuant exactly, the
@@ -417,6 +417,115 @@ func TestMinGlobalGainScaled(t *testing.T) {
 		// above uses for the unscaled case.
 		if ix2[0] != maxQuant {
 			t.Fatalf("gg-1 also fits: minGlobalGain not minimal (ix2[0]=%d, want the clamp to engage at %d)", ix2[0], maxQuant)
+		}
+	}
+}
+
+// TestBandExtraQuartersShort hand-checks bandExtraQuarters over a short
+// layout's scalefactor-bearing bands: 2*(scalefacScale+1)*scf[b] plus the
+// band's window's subblock_gain contribution (8 quarter-steps per unit),
+// and confirms preflag (a long-only field) is ignored even when set.
+func TestBandExtraQuartersShort(t *testing.T) {
+	lay := &layoutShort[0]
+
+	cases := []struct {
+		name          string
+		b             int
+		scf           int
+		scalefacScale int
+		ssg           int
+		preflag       int
+		want          int
+	}{
+		{"scale 0, ssg 0", 5, 3, 0, 0, 0, 2 * 3},
+		{"scale 1, ssg 0", 5, 3, 1, 0, 0, 4 * 3},
+		{"scale 0, ssg nonzero", 5, 3, 0, 2, 0, 2*3 + 8*2},
+		{"scale 1, ssg nonzero", 5, 3, 1, 2, 0, 4*3 + 8*2},
+		{"preflag set: ignored for short", 5, 3, 0, 2, 1, 2*3 + 8*2},
+		{"zero scf, nonzero ssg only", 5, 0, 1, 4, 0, 8 * 4},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var sf scfState
+			sf.scf[c.b] = c.scf
+			sf.scalefacScale = c.scalefacScale
+			sf.subblockGain[lay.win[c.b]] = c.ssg
+			sf.preflag = c.preflag
+			if got := sf.bandExtraQuarters(c.b, lay); got != c.want {
+				t.Fatalf("bandExtraQuarters(%d) = %d, want %d", c.b, got, c.want)
+			}
+		})
+	}
+}
+
+// TestBandExtraQuartersScflessTriple is a dedicated regression for the
+// scalefactor-less highest short triple (bands lay.nScf..lay.nBands-1,
+// bands 36-38 at 44.1kHz): a classic high-frequency quantization-bug
+// source, since these bands must get ONLY the window's subblock_gain
+// contribution, never a scf term (they have no scf slot at all: scfState's
+// scf array is sized exactly lay.nScf). Every real scf-bearing band is set
+// to a large nonzero value that WOULD leak into the result if the
+// scfless-triple branch ever mistakenly read a scf slot (e.g. a wraparound
+// or off-by-one band index); the assertion proves it does not.
+func TestBandExtraQuartersScflessTriple(t *testing.T) {
+	lay := &layoutShort[0]
+	var sf scfState
+	for b := range lay.nScf {
+		sf.scf[b] = 99
+	}
+	sf.subblockGain = [3]int{1, 4, 7}
+
+	for b := lay.nScf; b < lay.nBands; b++ {
+		win := lay.win[b]
+		want := 8 * sf.subblockGain[win]
+		if got := sf.bandExtraQuarters(b, lay); got != want {
+			t.Errorf("band %d (win %d): bandExtraQuarters = %d, want %d (scfless triple must ignore scf entirely)",
+				b, win, got, want)
+		}
+	}
+}
+
+// TestQuantizeShortKnownAnswers hand-checks quantizeGranule against a
+// synthetic coding-order xr under a short layout with nonzero
+// subblock_gain: band 4 (sfb 1, window 1 at 44.1kHz) gets
+// scalefacScale=1, scf=0, subblockGain[1]=2, so bandExtraQuarters(4) =
+// 2*2*0 + 8*2 = 16 quarter-steps, an exact integer power of two (stepQ(16)
+// = 2^4 = 16) so the expected quantized magnitude can be hand-verified:
+// (1000*16)^0.75 = 1422.6235..., +0.4054 truncated = 1423.
+func TestQuantizeShortKnownAnswers(t *testing.T) {
+	lay := &layoutShort[0]
+	if lay.win[4] != 1 {
+		t.Fatalf("test setup: layoutShort[0].win[4] = %d, want 1", lay.win[4])
+	}
+
+	off := 0
+	for b := range 4 {
+		off += lay.width[b]
+	}
+
+	var sf scfState
+	sf.scalefacScale = 1
+	sf.subblockGain[1] = 2
+	if extra := sf.bandExtraQuarters(4, lay); extra != 16 {
+		t.Fatalf("test setup: bandExtraQuarters(4) = %d, want 16", extra)
+	}
+
+	var xr [576]float64
+	xr[off] = 1000
+
+	var ix [576]int32
+	quantizeGranule(&xr, quantGainBase, &sf, lay, &ix)
+
+	const want = 1423
+	if ix[off] != want {
+		t.Fatalf("ix[%d] = %d, want %d", off, ix[off], want)
+	}
+	for i := range ix {
+		if i == off {
+			continue
+		}
+		if ix[i] != 0 {
+			t.Errorf("ix[%d] = %d, want 0 (band silent elsewhere)", i, ix[i])
 		}
 	}
 }

@@ -107,7 +107,7 @@ type Encoder struct {
 	// see the frame's total demand, so the coding pass that follows needs
 	// every earlier granule-channel's xr/xminXr still around.
 	xr     [2][2][576]float64
-	xminXr [2][2][22]float64
+	xminXr [2][2][39]float64 // long fills indices 0..21, the rest stay zero
 
 	in [2][576]float64 // per-granule staging: clamped, PCMScale-scaled samples
 
@@ -206,7 +206,7 @@ type escState struct {
 
 	// memo caches each distinct outerLoop result within one frame's
 	// escalation, keyed by (granule-channel index i, budget). outerLoop is a
-	// pure function of (xr[i], xmin[i], budget, sfb); those inputs are frozen
+	// pure function of (xr[i], xmin[i], budget, lay); those inputs are frozen
 	// for the whole escalation (codeFrame writes them in its CODE phase,
 	// strictly before escalateForMasking, which never rewrites them), so
 	// (i, budget) is an exact key. memoN is the live length, reset to 0 each
@@ -222,7 +222,7 @@ type escState struct {
 // excess/ratio/over are its masking metrics (noiseGranule+maskingMetrics),
 // stored so a cache hit reproduces betterPass's operands bit-for-bit without
 // recomputing them. granuleCoding is a fixed-size value type with no slices
-// (its only pointer, sfb, addresses a frame-constant shared table), so a
+// (its only pointer, lay, addresses a frame-constant shared table), so a
 // by-value copy into the preallocated store never heap-allocates.
 type escMemoEntry struct {
 	i, budget int
@@ -466,7 +466,7 @@ var forceLRForTest bool
 // whatever the FIFO still holds after this call returns.
 func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 	padding := e.pad.next(e.cfg.BitrateKbps, e.cfg.SampleRate)
-	sfb := &sfbWidthsLong[e.srIndex]
+	lay := &layoutLong[e.srIndex]
 	nGC := 2 * e.nch
 	area := mainAreaBytes(e.bitrateIndex, e.srIndex, padding, e.nch)
 	capBytes := resCapBytes(e.bitrateIndex, e.srIndex, e.nch)
@@ -546,7 +546,7 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 		}
 		for ch := range e.nch {
 			rep := e.chosenRep(ch)
-			for s := range 22 {
+			for s := range lay.nBands {
 				e.xminXr[g][ch][s] = float64(e.psyOuts[rep][g].Xmin[s] * XminScale)
 			}
 			e.gr[g][ch].peBits = granuleDemandBits(e.psyOuts[rep][g].PE, meanGB)
@@ -598,11 +598,11 @@ func (e *Encoder) codeFrame(dst []byte, samples [][]float32) []byte {
 	for g := range 2 {
 		for ch := range e.nch {
 			budget := budgets[g*e.nch+ch]
-			_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, sfb, &e.gr[g][ch], &e.bestScratch)
+			_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, &e.gr[g][ch], &e.bestScratch)
 		}
 	}
 
-	e.escalateForMasking(nGC, sfb, padding, area, capBytes)
+	e.escalateForMasking(nGC, lay, padding, area, capBytes)
 
 	for ch := range e.nch {
 		mask := detectScfsi(&e.gr[0][ch], &e.gr[1][ch])
@@ -709,7 +709,7 @@ func (e *Encoder) escNeediest(nGC int) int {
 // maskEscalationMaxCalls. Never itself decides satisfied/parked; callers
 // (the main loop, the fixpoint sweep) do that from the resulting
 // over-count (e.esc.bestOver[i] after the call).
-func (e *Encoder) escTryBudget(i int, sfb *[22]int, budget int) {
+func (e *Encoder) escTryBudget(i int, lay *bandLayout, budget int) {
 	// Count every attempt (hit or miss). The memo changes cost, not control
 	// flow: the budgets tried, their order, and where maskEscalationMaxCalls
 	// binds all stay byte-identical to the pre-memo escalation.
@@ -725,10 +725,10 @@ func (e *Encoder) escTryBudget(i int, sfb *[22]int, budget int) {
 		*gc = rec.gc
 		excess, ratio, over = rec.excess, rec.ratio, rec.over
 	} else {
-		_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, sfb, gc, &e.bestScratch)
-		var noise [22]float64
-		noiseGranule(&e.xr[g][ch], &gc.ix, gc.globalGain, &gc.sf, sfb, &noise)
-		excess, ratio, over = maskingMetrics(&noise, &e.xminXr[g][ch])
+		_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, gc, &e.bestScratch)
+		var noise [39]float64
+		noiseGranule(&e.xr[g][ch], &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
+		excess, ratio, over = maskingMetrics(&noise, &e.xminXr[g][ch], lay)
 		// Store the RAW outerLoop result, captured before the accept/rollback
 		// below mutates *gc or best[i]. The memoN < len guard is provably
 		// always true (see escMemoCap); it only backstops a future change to
@@ -754,12 +754,12 @@ func (e *Encoder) escTryBudget(i int, sfb *[22]int, budget int) {
 // Inc4 coding) is attempted only when it differs from hiB. hiB is always
 // attempted first: a fixed, deterministic order matters because
 // betterPass ties break earliest-wins.
-func (e *Encoder) escAttempt(i int, sfb *[22]int, hiB, loB int) {
+func (e *Encoder) escAttempt(i int, lay *bandLayout, hiB, loB int) {
 	e.esc.triedHi[i] = hiB
 	e.esc.triedLo[i] = loB
-	e.escTryBudget(i, sfb, hiB)
+	e.escTryBudget(i, lay, hiB)
 	if loB != hiB {
-		e.escTryBudget(i, sfb, loB)
+		e.escTryBudget(i, lay, loB)
 	}
 }
 
@@ -767,7 +767,7 @@ func (e *Encoder) escAttempt(i int, sfb *[22]int, hiB, loB int) {
 // escalation (design decision 9, third revision) after Stage 1's initial
 // coding pass: PE-derived budgets are estimates and can under-allocate
 // below the masking threshold on frames the old flat pre-reservoir budget
-// satisfied. nGC, sfb, padding, area, capBytes mirror codeFrame's own
+// satisfied. nGC, lay, padding, area, capBytes mirror codeFrame's own
 // locals. Also captures the (now final) per-granule-channel diagnostic via
 // SetDiagHookPin and updates the running global-gain stats, both moved
 // here (from the single Stage 1 coding pass) so they observe the frame's
@@ -854,7 +854,7 @@ func (e *Encoder) escAttempt(i int, sfb *[22]int, hiB, loB int) {
 // frame was NOT escalated to fixpoint, e.g. a maskEscalationMaxCalls
 // truncation, which is the cost tripwire doing its job, not a false
 // positive.
-func (e *Encoder) escalateForMasking(nGC int, sfb *[22]int, padding, area, capBytes int) {
+func (e *Encoder) escalateForMasking(nGC int, lay *bandLayout, padding, area, capBytes int) {
 	_, hi := e.resv.spendBounds(area, capBytes)
 	flatShare := granuleBudgetBits(e.bitrateIndex, e.srIndex, padding, e.nch)
 
@@ -870,9 +870,9 @@ func (e *Encoder) escalateForMasking(nGC int, sfb *[22]int, padding, area, capBy
 	for i := range nGC {
 		g, ch := i/e.nch, i%e.nch
 		e.esc.best[i] = e.gr[g][ch]
-		var noise [22]float64
-		noiseGranule(&e.xr[g][ch], &e.gr[g][ch].ix, e.gr[g][ch].globalGain, &e.gr[g][ch].sf, sfb, &noise)
-		e.esc.bestExcess[i], e.esc.bestRatio[i], e.esc.bestOver[i] = maskingMetrics(&noise, &e.xminXr[g][ch])
+		var noise [39]float64
+		noiseGranule(&e.xr[g][ch], &e.gr[g][ch].ix, e.gr[g][ch].globalGain, &e.gr[g][ch].sf, lay, &noise)
+		e.esc.bestExcess[i], e.esc.bestRatio[i], e.esc.bestOver[i] = maskingMetrics(&noise, &e.xminXr[g][ch], lay)
 		e.esc.parked[i] = false
 		e.esc.triedHi[i] = -1
 		e.esc.triedLo[i] = -1
@@ -892,7 +892,7 @@ func (e *Encoder) escalateForMasking(nGC int, sfb *[22]int, padding, area, capBy
 			e.esc.parked[g] = true // field cap reached, nothing to offer
 			continue
 		}
-		e.escAttempt(g, sfb, hiB, min(flatShare, hiB))
+		e.escAttempt(g, lay, hiB, min(flatShare, hiB))
 		switch {
 		case e.esc.bestOver[g] == 0:
 			// Satisfied: escNeediest excludes it for good from here on.
@@ -915,7 +915,7 @@ func (e *Encoder) escalateForMasking(nGC int, sfb *[22]int, padding, area, capBy
 			hiB := e.escOffer(i, nGC, hi)
 			loB := min(flatShare, hiB)
 			if hiB != e.esc.triedHi[i] || loB != e.esc.triedLo[i] {
-				e.escAttempt(i, sfb, hiB, loB)
+				e.escAttempt(i, lay, hiB, loB)
 				changed = true
 				if e.esc.calls >= maskEscalationMaxCalls {
 					break
@@ -936,12 +936,12 @@ func (e *Encoder) escalateForMasking(nGC int, sfb *[22]int, padding, area, capBy
 		gc := &e.gr[g][ch]
 
 		if e.diagHook != nil {
-			var noise [22]float64
-			noiseGranule(&e.xr[g][ch], &gc.ix, gc.globalGain, &gc.sf, sfb, &noise)
-			atCap := diagAtCap(&gc.sf)
-			var exempt [22]bool
-			for s := range 22 {
-				exempt[s] = diagFloorBound(&e.xr[g][ch], sfb, gc.part23Length, gc, s, atCap[s])
+			var noise [39]float64
+			noiseGranule(&e.xr[g][ch], &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
+			atCap := diagAtCap(&gc.sf, lay)
+			var exempt [39]bool
+			for s := range lay.nBands {
+				exempt[s] = diagFloorBound(&e.xr[g][ch], lay, gc.part23Length, gc, &noise, s, atCap[s])
 			}
 			e.diagHook(g, ch, DiagGranule{
 				Noise:            noise,
@@ -1031,9 +1031,9 @@ const ChainDelay = 1057
 // under-allocation with room to spare (TestEncoderMaskingContract's
 // distinguisher). Test-only, filled by SetDiagHookPin.
 type DiagGranule struct {
-	Noise            [22]float64
-	XminXr           [22]float64
-	Exempt           [22]bool
+	Noise            [39]float64
+	XminXr           [39]float64
+	Exempt           [39]bool
 	BudgetBits       int
 	CapacityLeftBits int
 	Xr               [576]float64
@@ -1053,22 +1053,22 @@ func (e *Encoder) SetDiagHookPin(hook func(g, ch int, diag DiagGranule)) {
 }
 
 // diagAtCap reports, per band, whether sf's scalefactor sits at its
-// representable cap (scalefacScale==1 and scf[sfb] at sfMaxLo/sfMaxHi), or
-// sfb 21 which carries no scalefactor at all: bands the outer loop cannot
-// amplify any further under this state, mirroring loop_test.go's
-// package-internal bandAtCap helper.
-func diagAtCap(sf *scfState) [22]bool {
-	var atCap [22]bool
-	for sfb := range 22 {
-		if sfb >= 21 {
-			atCap[sfb] = true
+// representable cap (scalefacScale==1 and scf[b] at sfMaxLo/sfMaxHi), or a
+// band that carries no scalefactor at all (b >= lay.nScf): bands the outer
+// loop cannot amplify any further under this state, mirroring
+// loop_test.go's package-internal bandAtCap helper.
+func diagAtCap(sf *scfState, lay *bandLayout) [39]bool {
+	var atCap [39]bool
+	for b := range lay.nBands {
+		if b >= lay.nScf {
+			atCap[b] = true
 			continue
 		}
 		maxv := sfMaxLo
-		if sfb >= slen1Bands {
+		if b >= lay.slen1End {
 			maxv = sfMaxHi
 		}
-		atCap[sfb] = sf.scalefacScale == 1 && sf.scf[sfb] >= maxv
+		atCap[b] = sf.scalefacScale == 1 && sf.scf[b] >= maxv
 	}
 	return atCap
 }
@@ -1084,32 +1084,29 @@ func diagAtCap(sf *scfState) [22]bool {
 // minGlobalGain-pinning line prevents any noise reduction) without its
 // scalefactor ever reaching the structural cap, exactly the scenario
 // outerLoop's own futility check exists to catch.
-func diagFloorBound(xr *[576]float64, sfbWidths *[22]int, budget int, gc *granuleCoding, s int, atCap bool) bool {
+func diagFloorBound(xr *[576]float64, lay *bandLayout, budget int, gc *granuleCoding, noiseNow *[39]float64, s int, atCap bool) bool {
 	if atCap {
 		return true
 	}
 	sfCap := sfMaxLo
-	if s >= slen1Bands {
+	if s >= lay.slen1End {
 		sfCap = sfMaxHi
 	}
-	if s >= 21 || gc.sf.scf[s] >= sfCap {
+	if s >= lay.nScf || gc.sf.scf[s] >= sfCap {
 		return true // no room to even try one more unit
 	}
 
-	var noiseNow [22]float64
-	noiseGranule(xr, &gc.ix, gc.globalGain, &gc.sf, sfbWidths, &noiseNow)
-
 	trial := *gc
 	trial.sf.scf[s]++
-	idx, part2, ok := chooseScalefacCompress(&trial.sf, 0)
+	idx, part2, ok := chooseScalefacCompress(&trial.sf, 0, lay)
 	if !ok || part2 >= budget {
 		return true // no budget to even try the bump
 	}
 	huffBudget := min(budget, maxPart23Length) - part2
-	codeGranule(xr, huffBudget, sfbWidths, &trial)
+	codeGranule(xr, huffBudget, lay, &trial)
 	trial.scfCompress, trial.part2Bits = idx, part2
 
-	var noiseTrial [22]float64
-	noiseGranule(xr, &trial.ix, trial.globalGain, &trial.sf, sfbWidths, &noiseTrial)
+	var noiseTrial [39]float64
+	noiseGranule(xr, &trial.ix, trial.globalGain, &trial.sf, lay, &noiseTrial)
 	return !(noiseTrial[s] < noiseNow[s])
 }

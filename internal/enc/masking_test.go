@@ -206,7 +206,7 @@ func testMaskingContractCase(t *testing.T, sr, kbps, nch int, prog string) {
 
 	srIndex := srIndexForRate[sr]
 	bitrateIndex := bitrateIndexForKbps[kbps]
-	sfb := &sfbWidthsLong[srIndex]
+	lay := &layoutLong[srIndex]
 
 	const nFrames = maskingGridFrames
 	drainFrame := nFrames
@@ -230,7 +230,7 @@ func testMaskingContractCase(t *testing.T, sr, kbps, nch int, prog string) {
 		// (maskingMetrics, unfiltered by Exempt) escalation's own cache
 		// compares with betterPass: apples to apples with what
 		// escalation itself would have computed.
-		keptExcess, keptRatio, keptOver := maskingMetrics(&diag.Noise, &diag.XminXr)
+		keptExcess, keptRatio, keptOver := maskingMetrics(&diag.Noise, &diag.XminXr, lay)
 		if keptOver == 0 {
 			return // fully satisfied
 		}
@@ -248,10 +248,10 @@ func testMaskingContractCase(t *testing.T, sr, kbps, nch int, prog string) {
 		failed := false
 		for _, budget := range [2]int{maxGrant, min(currentFlatShare, maxGrant)} {
 			var trial, trialBest granuleCoding
-			outerLoop(&diag.Xr, &diag.XminXr, budget, sfb, &trial, &trialBest)
-			var trialNoise [22]float64
-			noiseGranule(&diag.Xr, &trial.ix, trial.globalGain, &trial.sf, sfb, &trialNoise)
-			reExcess, reRatio, reOver := maskingMetrics(&trialNoise, &diag.XminXr)
+			outerLoop(&diag.Xr, &diag.XminXr, budget, lay, &trial, &trialBest)
+			var trialNoise [39]float64
+			noiseGranule(&diag.Xr, &trial.ix, trial.globalGain, &trial.sf, lay, &trialNoise)
+			reExcess, reRatio, reOver := maskingMetrics(&trialNoise, &diag.XminXr, lay)
 			if betterPass(reExcess, reRatio, reOver, keptExcess, keptRatio, keptOver) {
 				failed = true
 				break

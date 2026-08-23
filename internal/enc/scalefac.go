@@ -39,26 +39,46 @@ func PretabLongPin() [21]int { return pretabLong }
 // per-slen band counts (the cost), so a masked group can never drive the
 // choice of scalefac_compress: it costs 0 bits regardless of its scf
 // values, because those values are never written for that granule.
-func chooseScalefacCompress(sf *scfState, scfsi int) (index, totalBits int, ok bool) {
+func chooseScalefacCompress(sf *scfState, scfsi int, lay *bandLayout) (index, totalBits int, ok bool) {
 	maxLo, maxHi := 0, 0
 	loCount, hiCount := 0, 0
-	for g, band := range scfsiGroups {
-		if scfsi&(1<<(3-g)) != 0 {
-			continue // reused from granule 0 via scfsi, not transmitted
-		}
-		width := band[1] - band[0]
-		if g < 2 {
-			loCount += width
-			for sfb := band[0]; sfb < band[1]; sfb++ {
-				if sf.scf[sfb] > maxLo {
-					maxLo = sf.scf[sfb]
+	if lay.short {
+		// No scfsi grouping for short granules (decision 6: detectScfsi
+		// never masks a short granule), so every scf-bearing band
+		// contributes; the low/high split is lay.slen1End, not the
+		// long-block scfsiGroups table.
+		for b := range lay.nScf {
+			if b < lay.slen1End {
+				loCount++
+				if sf.scf[b] > maxLo {
+					maxLo = sf.scf[b]
+				}
+			} else {
+				hiCount++
+				if sf.scf[b] > maxHi {
+					maxHi = sf.scf[b]
 				}
 			}
-		} else {
-			hiCount += width
-			for sfb := band[0]; sfb < band[1]; sfb++ {
-				if sf.scf[sfb] > maxHi {
-					maxHi = sf.scf[sfb]
+		}
+	} else {
+		for g, band := range scfsiGroups {
+			if scfsi&(1<<(3-g)) != 0 {
+				continue // reused from granule 0 via scfsi, not transmitted
+			}
+			width := band[1] - band[0]
+			if g < 2 {
+				loCount += width
+				for sfb := band[0]; sfb < band[1]; sfb++ {
+					if sf.scf[sfb] > maxLo {
+						maxLo = sf.scf[sfb]
+					}
+				}
+			} else {
+				hiCount += width
+				for sfb := band[0]; sfb < band[1]; sfb++ {
+					if sf.scf[sfb] > maxHi {
+						maxHi = sf.scf[sfb]
+					}
 				}
 			}
 		}
@@ -78,12 +98,29 @@ func chooseScalefacCompress(sf *scfState, scfsi int) (index, totalBits int, ok b
 	return index, totalBits, found
 }
 
-// writeScalefactors emits granule gc's transmitted scalefactors (slen1
-// bits each for sfbs 0..10, slen2 for 11..20, skipping gc.scfsi groups)
-// and returns the bits written, which must equal gc.part2Bits.
+// writeScalefactors emits granule gc's transmitted scalefactors and returns
+// the bits written, which must equal gc.part2Bits. Long: slen1 bits each for
+// sfbs 0..10, slen2 for 11..20, skipping gc.scfsi groups. Short: gc.lay's
+// nScf bands in coding order, slen1 below gc.lay.slen1End and slen2 at or
+// above it, no scfsi masking (decision 6: a short granule's gc.scfsi is
+// always 0).
 func writeScalefactors(w *bits.Writer, gc *granuleCoding) int {
 	slen1, slen2 := slenTab[gc.scfCompress][0], slenTab[gc.scfCompress][1]
 	written := 0
+	if gc.lay.short {
+		for b := range gc.lay.nScf {
+			slen := slen1
+			if b >= gc.lay.slen1End {
+				slen = slen2
+			}
+			if slen == 0 {
+				continue
+			}
+			w.WriteBits(uint32(gc.sf.scf[b]), slen)
+			written += slen
+		}
+		return written
+	}
 	for g, band := range scfsiGroups {
 		if gc.scfsi&(1<<(3-g)) != 0 {
 			continue
@@ -108,12 +145,20 @@ func writeScalefactors(w *bits.Writer, gc *granuleCoding) int {
 // of groups where gr0 and gr1 scf values are equal AND scalefacScale AND
 // preflag agree; 0 if the granules' states are incompatible.
 //
+// scfsi is defined only in terms of the long-block scfsiGroups table, so a
+// short granule on either side (blockType != blockLong) disqualifies reuse
+// outright (design decision 6): the group boundaries below simply do not
+// describe a short granule's coding-order bands.
+//
 // scalefacScale and preflag are granule-wide fields (they scale/boost
 // every band's dequantized magnitude), not per-group, so a mismatch on
 // either disqualifies scfsi reuse entirely: granule 1 sharing a group's
 // raw scf values from granule 0 only reconstructs the same magnitude if
 // both granules also agree on how those raw values are scaled.
 func detectScfsi(g0, g1 *granuleCoding) int {
+	if g0.blockType != blockLong || g1.blockType != blockLong {
+		return 0
+	}
 	if g0.sf.scalefacScale != g1.sf.scalefacScale || g0.sf.preflag != g1.sf.preflag {
 		return 0
 	}
@@ -145,7 +190,7 @@ func applyScfsi(g1 *granuleCoding, mask int) int {
 	if mask == 0 {
 		return 0
 	}
-	idx, part2, ok := chooseScalefacCompress(&g1.sf, mask)
+	idx, part2, ok := chooseScalefacCompress(&g1.sf, mask, g1.lay)
 	if !ok {
 		return 0
 	}

@@ -29,15 +29,25 @@ type granuleCoding struct {
 	ri           regionInfo
 	ix           [576]int32
 
-	// sfb is the sfb-width table this granule-channel was coded against
-	// (codeGranule's own sfbWidths parameter, cached here): renderMainData
-	// needs one per granule-channel to call writeSpectrum, since the
-	// render pair no longer threads srIndex through a single frame-level
-	// call the way the Phase 3 appendFrame did. Every granule-channel in
-	// one frame is coded against the same pointer in practice (srIndex is
-	// fixed for an Encoder's lifetime), so this is redundant within a
-	// frame but keeps renderMainData self-contained.
-	sfb *[22]int
+	// blockType is this granule's window shape (blockLong/Start/Short/Stop,
+	// blocktypes.go). The live encoder path (Encoder.codeFrame /
+	// EncodeFrame) still only ever produces blockLong; the test-only
+	// AppendFrameShortPin/AppendFrameShortPinSG force the other three
+	// values. regionsFor dispatches on it (chooseRegions for blockLong,
+	// chooseRegionsWS otherwise), writeSideInfo emits the window-switching
+	// branch for any non-long value, and detectScfsi's decision-6 guard
+	// reads it.
+	blockType int
+
+	// lay is the coding-order band geometry this granule-channel was coded
+	// against (codeGranule's own lay parameter, cached here): renderMainData
+	// needs one per granule-channel to call writeSpectrum, since the render
+	// pair no longer threads srIndex through a single frame-level call the
+	// way the Phase 3 appendFrame did. Every long granule-channel in one
+	// frame is coded against the same pointer in practice (srIndex is fixed
+	// for an Encoder's lifetime), so this is redundant within a frame but
+	// keeps renderMainData self-contained.
+	lay *bandLayout
 }
 
 // maxPart23Length is the largest value part_2_3_length's 12-bit side-info
@@ -48,15 +58,30 @@ type granuleCoding struct {
 // caps its effective budget at this value so that can never happen.
 const maxPart23Length = 4095
 
+// regionsFor dispatches to chooseRegions for a long granule or
+// chooseRegionsWS for a window-switching one (start/short/stop,
+// gc.blockType != blockLong): the single seam recode and codeGranule's
+// truncation fallback both call, so a window-switching granule always
+// gets the fixed two-table region split the decoder actually implies
+// (ISO 2.4.2.7, design decision 5) rather than the long-block exhaustive
+// search, which searches a region-count encoding a window-switching
+// granule's side info never carries.
+func regionsFor(ix *[576]int32, part spectrumPartition, lay *bandLayout, blockType int) regionInfo {
+	if blockType == blockLong {
+		return chooseRegions(ix, part, lay)
+	}
+	return chooseRegionsWS(ix, part, lay, blockType)
+}
+
 // recode quantizes xr at gg under gc's scalefactor state, partitions the
 // result, and chooses region boundaries, writing straight into gc. A small
 // shared step so codeGranule's two rate-loop phases (raise gain, then
 // spectral truncation) do not duplicate the quantize/partition/choose
 // sequence.
-func recode(xr *[576]float64, gg int, sfbWidths *[22]int, gc *granuleCoding) {
-	quantizeGranule(xr, gg, &gc.sf, sfbWidths, &gc.ix)
+func recode(xr *[576]float64, gg int, lay *bandLayout, gc *granuleCoding) {
+	quantizeGranule(xr, gg, &gc.sf, lay, &gc.ix)
 	gc.part = partitionSpectrum(&gc.ix)
-	gc.ri = chooseRegions(&gc.ix, gc.part, sfbWidths)
+	gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
 }
 
 // codeGranule runs the inner rate loop for one granule-channel: from
@@ -70,21 +95,21 @@ func recode(xr *[576]float64, gg int, sfbWidths *[22]int, gc *granuleCoding) {
 // (whether from the cap or simply an easy-to-code granule) becomes zero
 // stuffing at the frame tail, same as any other unused main-data budget;
 // rolling it to another granule via a bit reservoir is deferred to Phase 4.
-func codeGranule(xr *[576]float64, budgetBits int, sfbWidths *[22]int, gc *granuleCoding) {
-	gc.sfb = sfbWidths
+func codeGranule(xr *[576]float64, budgetBits int, lay *bandLayout, gc *granuleCoding) {
+	gc.lay = lay
 	effBudget := min(budgetBits, maxPart23Length)
 
-	gg := minGlobalGain(xr, &gc.sf, sfbWidths)
-	recode(xr, gg, sfbWidths, gc)
+	gg := minGlobalGain(xr, &gc.sf, lay)
+	recode(xr, gg, lay, gc)
 
 	for gc.ri.bits > effBudget && gg < 255 {
 		gg++
-		recode(xr, gg, sfbWidths, gc)
+		recode(xr, gg, lay, gc)
 	}
 
-	for gc.ri.bits > effBudget && zeroTopSfb(&gc.ix, sfbWidths) {
+	for gc.ri.bits > effBudget && zeroTopSfb(&gc.ix, lay) {
 		gc.part = partitionSpectrum(&gc.ix)
-		gc.ri = chooseRegions(&gc.ix, gc.part, sfbWidths)
+		gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
 	}
 
 	gc.globalGain = gg
@@ -92,19 +117,19 @@ func codeGranule(xr *[576]float64, budgetBits int, sfbWidths *[22]int, gc *granu
 }
 
 // zeroTopSfb zeros the highest-indexed scalefactor band of ix that has any
-// nonzero line, per sfbWidths' cumulative band edges, and reports whether it
+// nonzero line, per lay's cumulative band edges, and reports whether it
 // found one to zero. It is codeGranule's global_gain=255 truncation
 // fallback: the deterministic last resort when even the maximum gain still
 // leaves a granule over budget. Repeated calls converge on the all-zero
 // spectrum (0 Huffman bits, within any nonnegative budget), so
 // codeGranule's fallback loop always terminates.
-func zeroTopSfb(ix *[576]int32, sfbWidths *[22]int) bool {
-	var edge [23]int
-	for i := range 22 {
-		edge[i+1] = edge[i] + sfbWidths[i]
+func zeroTopSfb(ix *[576]int32, lay *bandLayout) bool {
+	var edge [40]int
+	for i := range lay.nBands {
+		edge[i+1] = edge[i] + lay.width[i]
 	}
 
-	for sfb := 21; sfb >= 0; sfb-- {
+	for sfb := lay.nBands - 1; sfb >= 0; sfb-- {
 		lo, hi := edge[sfb], edge[sfb+1]
 		nonzero := false
 		for i := lo; i < hi; i++ {
@@ -332,14 +357,14 @@ func renderFrameInto(dst []byte, bitrateIndex, srIndex, padding, mode, modeExt i
 // until at least spendMin bytes have been added since dst's starting
 // length (the unused remainder of a pinned physical spend, same role as
 // appendFrame's old zero stuffing). Each granule-channel writes against
-// gc.sfb, the sfb-width table codeGranule cached at coding time, so this
+// gc.lay, the band layout codeGranule cached at coding time, so this
 // function needs no srIndex of its own.
 //
 // Panics if a granule-channel's written part2 (writeScalefactors) or
 // part3 (writeSpectrum) bit count disagrees with its own recorded
 // part2Bits/ri.bits, or their sum disagrees with part23Length: that can
 // only happen on an invariant violation in the caller (e.g. coding the
-// granule against a different sfbWidths row than gc.sfb names here, or
+// granule against a different layout than gc.lay names here, or
 // setting scfCompress/scfsi inconsistently with sf), not a recoverable
 // runtime condition (same rationale as bits.Writer's n-range panic).
 func renderMainData(dst []byte, gr *[2][2]granuleCoding, nch, spendMin int) []byte {
@@ -349,7 +374,7 @@ func renderMainData(dst []byte, gr *[2][2]granuleCoding, nch, spendMin int) []by
 		for ch := range nch {
 			gc := &gr[g][ch]
 			part2 := writeScalefactors(&w, gc)
-			part3 := writeSpectrum(&w, &gc.ix, gc.part, gc.ri, gc.sfb)
+			part3 := writeSpectrum(&w, &gc.ix, gc.part, gc.ri, gc.lay)
 			if part2 != gc.part2Bits || part3 != gc.ri.bits || part2+part3 != gc.part23Length {
 				panic("enc: renderMainData: part2+part3 bit count diverged from codeGranule's recorded part23Length")
 			}
@@ -401,13 +426,13 @@ func assembleFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2]
 // budget arithmetic, including the maxPart23Length cap) and assembles one
 // frame via the production assembleFrame. Test-only.
 func AppendFramePin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr *[2][2][576]float64, nch int) []byte {
-	sfb := &sfbWidthsLong[srIndex]
+	lay := &layoutLong[srIndex]
 	budget := granuleBudgetBits(bitrateIndex, srIndex, padding, nch)
 
 	var gr [2][2]granuleCoding
 	for g := range 2 {
 		for ch := range nch {
-			codeGranule(&xr[g][ch], budget, sfb, &gr[g][ch])
+			codeGranule(&xr[g][ch], budget, lay, &gr[g][ch])
 		}
 	}
 	return assembleFrame(dst, bitrateIndex, srIndex, padding, mode, &gr, nch)
@@ -440,7 +465,7 @@ type ScfPin struct {
 // reduction, part2 would land on top of an already-full Huffman budget and
 // overflow the frame's fixed byte length.
 func AppendFrameScfPin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr *[2][2][576]float64, pins *[2][2]ScfPin, useScfsi bool, nch int) []byte {
-	sfb := &sfbWidthsLong[srIndex]
+	lay := &layoutLong[srIndex]
 	budget := granuleBudgetBits(bitrateIndex, srIndex, padding, nch)
 
 	var gr [2][2]granuleCoding
@@ -448,18 +473,22 @@ func AppendFrameScfPin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr 
 		for ch := range nch {
 			gc := &gr[g][ch]
 			pin := pins[g][ch]
-			gc.sf.scf = pin.Scf
+			// ScfPin.Scf stays [21]int (the long-block pin surface
+			// internal/dec's readback tests already build literals
+			// against); copy it into the widened [36]int scfState.scf
+			// rather than a direct array assignment.
+			copy(gc.sf.scf[:len(pin.Scf)], pin.Scf[:])
 			gc.sf.scalefacScale = pin.ScalefacScale
 			gc.sf.preflag = pin.Preflag
 
-			idx, part2, ok := chooseScalefacCompress(&gc.sf, 0)
+			idx, part2, ok := chooseScalefacCompress(&gc.sf, 0, lay)
 			if !ok {
 				panic("enc: AppendFrameScfPin: pinned scalefactors not coverable by any scalefac_compress index")
 			}
 			gc.scfCompress = idx
 			gc.part2Bits = part2
 
-			codeGranule(&xr[g][ch], budget-part2, sfb, gc)
+			codeGranule(&xr[g][ch], budget-part2, lay, gc)
 		}
 	}
 
@@ -471,4 +500,89 @@ func AppendFrameScfPin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr 
 	}
 
 	return assembleFrame(dst, bitrateIndex, srIndex, padding, mode, &gr, nch)
+}
+
+// AppendFrameShortPin codes one self-contained frame (main_data_begin 0,
+// the AppendFramePin precedent) with each granule-channel's block type
+// FORCED from blockTypes, through the real production pipeline: outerLoop
+// (the masking-driven inner rate loop, unchanged by this task) picking
+// scalefactors/subblock_gain/global_gain against xmin, codeGranule's
+// regionsFor dispatch routing a window-switching granule to
+// chooseRegionsWS, and the same render path (writeSideInfo,
+// writeScalefactors, writeSpectrum) every other pin uses. xr must already
+// be in CODING order for any granule-channel whose blockTypes entry is
+// blockShort (callers run reorderShort first; see bandLayout's doc
+// comment for what "coding order" means for a short granule).
+//
+// Padding is fixed at 0 and mode is derived from nch (single_channel for
+// mono, L/R stereo for two channels): this pin exists to drive the
+// window-switching side-info and readback gates, not to exercise every
+// header permutation AppendFramePin/AppendFrameScfPin already cover.
+func AppendFrameShortPin(dst []byte, bitrateIndex, srIndex, nch int, blockTypes *[2][2]int, xr *[2][2][576]float64, xmin *[2][2][39]float64) []byte {
+	budget := granuleBudgetBits(bitrateIndex, srIndex, 0, nch)
+
+	var gr [2][2]granuleCoding
+	for g := range 2 {
+		for ch := range nch {
+			bt := blockTypes[g][ch]
+			lay := layoutFor(bt, srIndex)
+			gc := &gr[g][ch]
+			gc.blockType = bt
+
+			var best granuleCoding
+			outerLoop(&xr[g][ch], &xmin[g][ch], budget, lay, gc, &best)
+		}
+	}
+
+	mode := 0
+	if nch == 1 {
+		mode = 3
+	}
+	return assembleFrame(dst, bitrateIndex, srIndex, 0, mode, &gr, nch)
+}
+
+// AppendFrameShortPinSG is AppendFrameShortPin's sibling for driving
+// subblock_gain directly: instead of letting outerLoop's masking escalation
+// (escalateSubblockGain) pick subblock_gain, each granule-channel's value is
+// FORCED from subblockGain and the inner rate loop alone (codeGranule) codes
+// the granule against it, the AppendFrameScfPin precedent for scf/
+// scalefacScale/preflag applied here to subblock_gain instead.
+//
+// This exists because escalateSubblockGain, as integrated into outerLoop, is
+// largely a no-op in practice (a separate, already-flagged concern): driving
+// a nonzero subblock_gain through the real outer loop is unreliable, but the
+// decoder-readback gate for the iscf += subblockGain[i] << sh dequant term
+// (internal/dec/scalefactors.go) needs a known nonzero value regardless of
+// whether the escalation policy would ever choose one. blockTypes must pick
+// blockShort/blockStart/blockStop for any granule-channel given a nonzero
+// subblockGain; a long granule ignores it entirely (ISO 2.4.1.7, no
+// subblock_gain field).
+func AppendFrameShortPinSG(dst []byte, bitrateIndex, srIndex, nch int, blockTypes *[2][2]int, xr *[2][2][576]float64, subblockGain *[2][2][3]int) []byte {
+	budget := granuleBudgetBits(bitrateIndex, srIndex, 0, nch)
+
+	var gr [2][2]granuleCoding
+	for g := range 2 {
+		for ch := range nch {
+			bt := blockTypes[g][ch]
+			lay := layoutFor(bt, srIndex)
+			gc := &gr[g][ch]
+			gc.blockType = bt
+			gc.sf.subblockGain = subblockGain[g][ch]
+
+			idx, part2, ok := chooseScalefacCompress(&gc.sf, 0, lay)
+			if !ok {
+				panic("enc: AppendFrameShortPinSG: pinned scalefactors not coverable by any scalefac_compress index")
+			}
+			gc.scfCompress = idx
+			gc.part2Bits = part2
+
+			codeGranule(&xr[g][ch], budget-part2, lay, gc)
+		}
+	}
+
+	mode := 0
+	if nch == 1 {
+		mode = 3
+	}
+	return assembleFrame(dst, bitrateIndex, srIndex, 0, mode, &gr, nch)
 }

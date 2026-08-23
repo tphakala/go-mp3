@@ -6,35 +6,36 @@ import (
 	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
-func outerRun(t *testing.T, xr *[576]float64, xmin *[22]float64, budget int) (gc *granuleCoding, iters int) {
+func outerRun(t *testing.T, xr *[576]float64, xmin *[39]float64, budget int) (gc *granuleCoding, iters int) {
 	t.Helper()
 	var g, best granuleCoding
-	iters = outerLoop(xr, xmin, budget, &sfbWidthsLong[0], &g, &best)
+	iters = outerLoop(xr, xmin, budget, &layoutLong[0], &g, &best)
 	return &g, iters
 }
 
 func TestWorstViolator(t *testing.T) {
-	var noise, xmin [22]float64
-	var unfixable [22]bool
+	lay := &layoutLong[0]
+	var noise, xmin [39]float64
+	var unfixable [39]bool
 	var sf scfState
-	for s := range xmin {
+	for s := range 22 {
 		xmin[s] = 10
 	}
-	if b := worstViolator(&noise, &xmin, &unfixable, &sf); b != -1 {
+	if b := worstViolator(&noise, &xmin, &unfixable, &sf, lay); b != -1 {
 		t.Fatalf("no violations: got %d, want -1", b)
 	}
 	noise[3], noise[7], noise[15] = 20, 400, 100 // ratios 2, 40, 10
-	if b := worstViolator(&noise, &xmin, &unfixable, &sf); b != 7 {
+	if b := worstViolator(&noise, &xmin, &unfixable, &sf, lay); b != 7 {
 		t.Fatalf("worst = %d, want 7 (ratio 40)", b)
 	}
 	unfixable[7] = true
-	if b := worstViolator(&noise, &xmin, &unfixable, &sf); b != 15 {
+	if b := worstViolator(&noise, &xmin, &unfixable, &sf, lay); b != 15 {
 		t.Fatalf("worst fixable = %d, want 15", b)
 	}
 	noise[15], noise[3] = 30, 30 // equal ratios 3: lowest index wins
 	unfixable[7] = false
 	noise[7] = 0
-	if b := worstViolator(&noise, &xmin, &unfixable, &sf); b != 3 {
+	if b := worstViolator(&noise, &xmin, &unfixable, &sf, lay); b != 3 {
 		t.Fatalf("tie: got %d, want 3 (lowest index)", b)
 	}
 }
@@ -80,37 +81,37 @@ func TestOuterLoopContract(t *testing.T) {
 	// unreachable target.
 	var xr [576]float64
 	seed := uint64(41)
-	sfb := &sfbWidthsLong[0]
+	lay := &layoutLong[0]
 	lo := 0
-	for i := lo; i < lo+sfb[0]; i++ {
+	for i := lo; i < lo+lay.width[0]; i++ {
 		xr[i] = (testsignal.LCG(&seed) - 0.5) * 30000 // anchor band
 	}
-	lo += sfb[0]
+	lo += lay.width[0]
 	for s := 1; s < 22; s++ {
-		for i := lo; i < lo+sfb[s]; i++ {
+		for i := lo; i < lo+lay.width[s]; i++ {
 			xr[i] = (testsignal.LCG(&seed) - 0.5) * 500 // moderate content
 		}
-		lo += sfb[s]
+		lo += lay.width[s]
 	}
 
 	// Baseline: noise at scf=0 (no amplification), to calibrate an
 	// achievable demand instead of an arbitrary constant.
 	var zeroGC granuleCoding
-	idx, part2, ok := chooseScalefacCompress(&zeroGC.sf, 0)
+	idx, part2, ok := chooseScalefacCompress(&zeroGC.sf, 0, lay)
 	if !ok {
 		t.Fatal("baseline chooseScalefacCompress failed")
 	}
-	codeGranule(&xr, 3500-part2, sfb, &zeroGC)
+	codeGranule(&xr, 3500-part2, lay, &zeroGC)
 	zeroGC.scfCompress, zeroGC.part2Bits = idx, part2
-	var baseline [22]float64
-	noiseGranule(&xr, &zeroGC.ix, zeroGC.globalGain, &zeroGC.sf, sfb, &baseline)
-	if !bandLocked(t, &xr, sfb, 3500, &zeroGC, 0) {
+	var baseline [39]float64
+	noiseGranule(&xr, &zeroGC.ix, zeroGC.globalGain, &zeroGC.sf, lay, &baseline)
+	if !bandLocked(t, &xr, lay, 3500, &zeroGC, 0) {
 		t.Fatal("anchor band no longer floor-bound from scf=0: spectrum drifted, test no longer exercises the exemption")
 	}
 
 	targets := []int{3, 7, 11, 15}
-	var xmin [22]float64
-	for s := range xmin {
+	var xmin [39]float64
+	for s := range 22 {
 		xmin[s] = 1e12 // untargeted bands: trivially satisfied
 	}
 	for _, s := range targets {
@@ -122,8 +123,8 @@ func TestOuterLoopContract(t *testing.T) {
 	if iters >= outerLoopMaxIters {
 		t.Fatalf("loop ran to the cap (%d iters)", iters)
 	}
-	var noise [22]float64
-	noiseGranule(&xr, &gc.ix, gc.globalGain, &gc.sf, sfb, &noise)
+	var noise [39]float64
+	noiseGranule(&xr, &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
 
 	// The exemption clause must actually fire in this green run (not be
 	// dead code): the anchor band must still violate its demand, and
@@ -131,7 +132,7 @@ func TestOuterLoopContract(t *testing.T) {
 	if noise[0] <= xmin[0]*1.000001 {
 		t.Fatal("anchor band unexpectedly satisfied its demand: test no longer exercises the bandLocked exemption")
 	}
-	if !bandLocked(t, &xr, sfb, 3500, gc, 0) {
+	if !bandLocked(t, &xr, lay, 3500, gc, 0) {
 		t.Fatal("anchor band not recognized as floor-bound: bandLocked should excuse it")
 	}
 
@@ -147,7 +148,7 @@ func TestOuterLoopContract(t *testing.T) {
 		if noise[s] <= xmin[s]*1.000001 {
 			continue
 		}
-		if bandLocked(t, &xr, sfb, 3500, gc, s) {
+		if bandLocked(t, &xr, lay, 3500, gc, s) {
 			continue // genuinely floor-bound: excused, same as the loop's own futility check
 		}
 		t.Errorf("band %d: noise %g > xmin %g, bits available, and not floor-bound", s, noise[s], xmin[s])
@@ -157,56 +158,22 @@ func TestOuterLoopContract(t *testing.T) {
 	}
 }
 
-// bandAtCap reports whether sfb's scalefactor sits at its representable
-// cap under the granule's state (the loop may legitimately leave such a
-// band violating).
-func bandAtCap(sf *scfState, sfb int) bool {
-	if sfb >= 21 {
-		return true // sfb 21 has no scalefactor at all
-	}
-	maxv := sfMaxLo
-	if sfb >= 11 {
-		maxv = sfMaxHi
-	}
-	return sf.scalefacScale == 1 && sf.scf[sfb] >= maxv
-}
-
 // bandLocked reports whether band sfb in gc's final coding is beyond the
-// outer loop's reach: either at its scalefac_scale cap (bandAtCap), or
+// outer loop's reach: either at its scalefac_scale cap (diagAtCap), or
 // genuinely floor-bound, meaning one more scalefactor unit on sfb, recoded
 // against the same budget, would not reduce noise[sfb]. This mirrors
 // outerLoop's own empirical futility check (loop.go) as an external probe
 // on the loop's final answer, so a contract test can excuse bands the loop
 // correctly gave up on without needing outerLoop to expose its internal
-// unfixable set.
-func bandLocked(t *testing.T, xr *[576]float64, sfb *[22]int, budget int, gc *granuleCoding, s int) bool {
+// unfixable set. Delegates to the production diagAtCap/diagFloorBound pair
+// (encoder.go) so the layout-dependent band-count and slen1End cutovers
+// stay correct for any bandLayout, not just layoutLong.
+func bandLocked(t *testing.T, xr *[576]float64, lay *bandLayout, budget int, gc *granuleCoding, s int) bool {
 	t.Helper()
-	if bandAtCap(&gc.sf, s) {
-		return true
-	}
-	sfCap := sfMaxLo
-	if s >= 11 {
-		sfCap = sfMaxHi
-	}
-	if s >= 21 || gc.sf.scf[s] >= sfCap {
-		return true // no room to even try one more unit
-	}
-
-	var noiseNow [22]float64
-	noiseGranule(xr, &gc.ix, gc.globalGain, &gc.sf, sfb, &noiseNow)
-
-	trial := *gc
-	trial.sf.scf[s]++
-	idx, part2, ok := chooseScalefacCompress(&trial.sf, 0)
-	if !ok || part2 >= budget {
-		return true // no budget to even try the bump
-	}
-	codeGranule(xr, budget-part2, sfb, &trial)
-	trial.scfCompress, trial.part2Bits = idx, part2
-
-	var noiseTrial [22]float64
-	noiseGranule(xr, &trial.ix, trial.globalGain, &trial.sf, sfb, &noiseTrial)
-	return !(noiseTrial[s] < noiseNow[s])
+	atCap := diagAtCap(&gc.sf, lay)
+	var noise [39]float64
+	noiseGranule(xr, &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
+	return diagFloorBound(xr, lay, budget, gc, &noise, s, atCap[s])
 }
 
 func TestOuterLoopAmplifiesViolator(t *testing.T) {
@@ -226,16 +193,16 @@ func TestOuterLoopAmplifiesViolator(t *testing.T) {
 	// weakening, of that original test.
 	var xr [576]float64
 	seed := uint64(43)
-	sfb := &sfbWidthsLong[0]
-	for i := range sfb[0] {
+	lay := &layoutLong[0]
+	for i := range lay.width[0] {
 		xr[i] = (testsignal.LCG(&seed) - 0.5) * 30000 // anchor band
 	}
-	lo3 := sfb[0] + sfb[1] + sfb[2]
-	for i := range sfb[3] {
+	lo3 := lay.width[0] + lay.width[1] + lay.width[2]
+	for i := range lay.width[3] {
 		xr[lo3+i] = (testsignal.LCG(&seed) - 0.5) * 100 // the target band
 	}
-	var xmin [22]float64
-	for s := range xmin {
+	var xmin [39]float64
+	for s := range 22 {
 		xmin[s] = 1e12 // irrelevant bands, including the anchor: trivially satisfied
 	}
 	xmin[3] = 1e-6 // the target band: strict demand
@@ -243,21 +210,21 @@ func TestOuterLoopAmplifiesViolator(t *testing.T) {
 	// Baseline noise at scf=0, so "amplified" is checked against a real
 	// improvement, not just a nonzero scf.
 	var zeroGC granuleCoding
-	idx, part2, ok := chooseScalefacCompress(&zeroGC.sf, 0)
+	idx, part2, ok := chooseScalefacCompress(&zeroGC.sf, 0, lay)
 	if !ok {
 		t.Fatal("baseline chooseScalefacCompress failed")
 	}
-	codeGranule(&xr, 3500-part2, sfb, &zeroGC)
+	codeGranule(&xr, 3500-part2, lay, &zeroGC)
 	zeroGC.scfCompress, zeroGC.part2Bits = idx, part2
-	var baseline [22]float64
-	noiseGranule(&xr, &zeroGC.ix, zeroGC.globalGain, &zeroGC.sf, sfb, &baseline)
+	var baseline [39]float64
+	noiseGranule(&xr, &zeroGC.ix, zeroGC.globalGain, &zeroGC.sf, lay, &baseline)
 
 	gc, _ := outerRun(t, &xr, &xmin, 3500)
 	if gc.sf.scf[3] == 0 {
 		t.Fatal("violating band 3 was never amplified")
 	}
-	var noise [22]float64
-	noiseGranule(&xr, &gc.ix, gc.globalGain, &gc.sf, sfb, &noise)
+	var noise [39]float64
+	noiseGranule(&xr, &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
 	if !(noise[3] < baseline[3]) {
 		t.Fatalf("band 3 noise did not improve: got %g, scf=0 baseline %g", noise[3], baseline[3])
 	}
@@ -280,7 +247,7 @@ func TestOuterLoopDeterministicAndBounded(t *testing.T) {
 	for i := range xr {
 		xr[i] = (testsignal.LCG(&seed) - 0.5) * 1e4
 	}
-	var xminZero [22]float64
+	var xminZero [39]float64
 	a, itersA := outerRun(t, &xr, &xminZero, 1500)
 	b, itersB := outerRun(t, &xr, &xminZero, 1500)
 	if a.sf != b.sf || a.globalGain != b.globalGain || a.ix != b.ix ||
@@ -307,12 +274,12 @@ func TestOuterLoopProgressGuard(t *testing.T) {
 	seed := uint64(59)
 	lo := 0
 	for s := range 11 {
-		lo += sfbWidthsLong[0][s]
+		lo += layoutLong[0].width[s]
 	}
 	for i := lo; i < 576; i++ {
 		xr[i] = (testsignal.LCG(&seed) - 0.5) * 9000
 	}
-	var xminZero [22]float64 // unmeetable everywhere
+	var xminZero [39]float64 // unmeetable everywhere
 	gc, iters := outerRun(t, &xr, &xminZero, 3500)
 	if iters >= outerLoopMaxIters {
 		t.Fatalf("loop ran to the cap (%d iters): progress guard not effective", iters)
@@ -335,18 +302,18 @@ func TestOuterLoopPreflagReexpression(t *testing.T) {
 	// this amplitude/demand reliably reaches preflag well under the
 	// iteration cap (measured 110 iters), so the skip is removed.
 	var xr [576]float64
-	sfb := &sfbWidthsLong[0]
-	for i := range sfb[0] {
+	lay := &layoutLong[0]
+	for i := range lay.width[0] {
 		xr[i] = 30000 // anchor band
 	}
 	seed := uint64(71)
 	lo := 0
 	for s := range 11 {
-		lo += sfb[s]
+		lo += lay.width[s]
 	}
 	hi := lo
 	for s := 11; s < 21; s++ {
-		hi += sfb[s]
+		hi += lay.width[s]
 	}
 	for i := lo; i < hi; i++ {
 		xr[i] = (testsignal.LCG(&seed) - 0.5) * 1000
@@ -354,17 +321,17 @@ func TestOuterLoopPreflagReexpression(t *testing.T) {
 
 	// Baseline at scf=0, to calibrate an achievable demand on bands 11..20.
 	var zeroGC granuleCoding
-	idx, part2, ok := chooseScalefacCompress(&zeroGC.sf, 0)
+	idx, part2, ok := chooseScalefacCompress(&zeroGC.sf, 0, lay)
 	if !ok {
 		t.Fatal("baseline chooseScalefacCompress failed")
 	}
-	codeGranule(&xr, 3500-part2, sfb, &zeroGC)
+	codeGranule(&xr, 3500-part2, lay, &zeroGC)
 	zeroGC.scfCompress, zeroGC.part2Bits = idx, part2
-	var baseline [22]float64
-	noiseGranule(&xr, &zeroGC.ix, zeroGC.globalGain, &zeroGC.sf, sfb, &baseline)
+	var baseline [39]float64
+	noiseGranule(&xr, &zeroGC.ix, zeroGC.globalGain, &zeroGC.sf, lay, &baseline)
 
-	var xmin [22]float64
-	for s := range xmin {
+	var xmin [39]float64
+	for s := range 22 {
 		xmin[s] = 1e12 // untargeted bands, including the anchor: trivially satisfied
 	}
 	for s := 11; s < 21; s++ {
@@ -396,8 +363,8 @@ func TestOuterLoopPreflagReexpression(t *testing.T) {
 		counterfactual.scf[s] += pretabLong[s]
 	}
 	for s := 11; s < 21; s++ {
-		got := gc.sf.bandExtraQuarters(s)
-		want := counterfactual.bandExtraQuarters(s)
+		got := gc.sf.bandExtraQuarters(s, lay)
+		want := counterfactual.bandExtraQuarters(s, lay)
 		if got != want {
 			t.Errorf("band %d: preflag re-expression changed effective amplification: got %d, want %d (pre-re-expression equivalent)", s, got, want)
 		}
@@ -419,18 +386,119 @@ func TestOuterLoopAllocs(t *testing.T) {
 	for i := range xr {
 		xr[i] = (testsignal.LCG(&seed) - 0.5) * 2000
 	}
-	var xmin [22]float64
-	for s := range xmin {
+	var xmin [39]float64
+	for s := range 22 {
 		xmin[s] = 1e6
 	}
-	sfb := &sfbWidthsLong[0]
+	lay := &layoutLong[0]
 	var gc, best granuleCoding
-	outerLoop(&xr, &xmin, 1500, sfb, &gc, &best) // warmup
+	outerLoop(&xr, &xmin, 1500, lay, &gc, &best) // warmup
 
 	n := testing.AllocsPerRun(20, func() {
-		outerLoop(&xr, &xmin, 1500, sfb, &gc, &best)
+		outerLoop(&xr, &xmin, 1500, lay, &gc, &best)
 	})
 	if n != 0 {
 		t.Fatalf("outerLoop allocates: %v allocs per run, want 0", n)
+	}
+}
+
+// TestOuterLoopShortSubblockGain unit-tests escalateSubblockGain (design
+// decision 7), the pure step outerLoop's escalation switch calls once a
+// short granule's worst violator sits at its scf cap with scalefacScale
+// already 1: raises that band's window subblock_gain by one unit and gives
+// back exactly 2 scf units (8/(2*(1+1))) from every scf-bearing band
+// sharing the window, floored at 0. Factored out and tested directly
+// (the worstViolator/maskingMetrics precedent) since reaching this exact
+// state through a full outerLoop run, starting from its always-zero
+// initial scfState, is not a clean way to pin the arithmetic
+// deterministically.
+func TestOuterLoopShortSubblockGain(t *testing.T) {
+	lay := &layoutShort[0]
+	const w = 10 // sfb 3, window 1 (3*3+1 = 10)
+	if lay.win[w] != 1 {
+		t.Fatalf("test setup: layoutShort[0].win[%d] = %d, want 1", w, lay.win[w])
+	}
+
+	var sf scfState
+	sf.scalefacScale = 1
+	sf.subblockGain[1] = 3
+	for b := range lay.nScf {
+		if lay.win[b] != 1 {
+			continue
+		}
+		sf.scf[b] = 5
+	}
+	sf.scf[w] = 1 // this band floors at 0 after the give-back of 2
+
+	escalateSubblockGain(&sf, lay, w)
+
+	if sf.subblockGain[1] != 4 {
+		t.Fatalf("subblockGain[1] = %d, want 4 (raised by one unit)", sf.subblockGain[1])
+	}
+	for b := range lay.nScf {
+		if lay.win[b] != 1 {
+			if sf.scf[b] != 0 {
+				t.Errorf("band %d (other window): scf = %d, want untouched 0", b, sf.scf[b])
+			}
+			continue
+		}
+		want := 3 // 5 - 2
+		if b == w {
+			want = 0 // 1 - 2, floored at 0
+		}
+		if sf.scf[b] != want {
+			t.Errorf("band %d: scf = %d, want %d (give-back of 2 at scalefacScale 1)", b, sf.scf[b], want)
+		}
+	}
+
+	// Deterministic: an independent run from the identical starting state
+	// reproduces the exact same result.
+	var sf2 scfState
+	sf2.scalefacScale = 1
+	sf2.subblockGain[1] = 3
+	for b := range lay.nScf {
+		if lay.win[b] != 1 {
+			continue
+		}
+		sf2.scf[b] = 5
+	}
+	sf2.scf[w] = 1
+	escalateSubblockGain(&sf2, lay, w)
+	if sf2 != sf {
+		t.Fatal("escalateSubblockGain is not deterministic")
+	}
+}
+
+// TestOuterLoopShortConverges is the masking contract on a synthetic short
+// granule with a generous budget and a trivially-satisfiable xmin: the
+// generalized outer loop, run over a short bandLayout for the first time,
+// must converge to zero violations well under the iteration cap, exactly
+// like the long-block contract (TestOuterLoopContract's easy case).
+func TestOuterLoopShortConverges(t *testing.T) {
+	lay := &layoutShort[0]
+	var xr [576]float64
+	seed := uint64(97)
+	for i := range xr {
+		xr[i] = (testsignal.LCG(&seed) - 0.5) * 2000
+	}
+
+	var xmin [39]float64
+	for s := range lay.nBands {
+		xmin[s] = 1e12 // generously satisfiable
+	}
+
+	var gc, best granuleCoding
+	iters := outerLoop(&xr, &xmin, 3500, lay, &gc, &best)
+	if iters >= outerLoopMaxIters {
+		t.Fatalf("loop ran to the cap (%d iters)", iters)
+	}
+
+	var noise [39]float64
+	noiseGranule(&xr, &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
+	if _, _, over := maskingMetrics(&noise, &xmin, lay); over != 0 {
+		t.Fatalf("masking contract violated on a generously-satisfiable short granule: over=%d", over)
+	}
+	if gc.part23Length > 3500 {
+		t.Fatalf("part23 %d exceeds budget", gc.part23Length)
 	}
 }

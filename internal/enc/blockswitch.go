@@ -27,6 +27,17 @@ const (
 	attackFloorE = 1e-3
 )
 
+// attackNoPrior seeds attackDetect's prevE for the very first sub-block of a
+// stream, where no preceding energy exists to compare against. It is far
+// larger than any real 192-sample sub-block energy (bounded by ~192 for
+// clamped [-1,1] PCM), so the k=0 ratio test e[0] > attackRatio*prevE can
+// never fire: a stream that opens with steady sound is not misread as an
+// attack by the uninitialized zero carry, which would otherwise force a
+// spurious short block on the very first granule (and, at stream start, an
+// illegal 0->2 window transition). A real attack in a later sub-block, or a
+// genuine mid-stream silence-to-loud onset, still triggers normally.
+const attackNoPrior = 1e300
+
 // attackDetect reports whether granule pcm (576 clamped [-1,1] samples, the
 // same domain design decision 11's pcmHist stores) contains an attack:
 // sub-block energies e[0..2] over the granule's three 192-sample thirds,
@@ -105,8 +116,24 @@ func attackDetect(pcm []float64, prevE float64) (attack bool, lastE float64) {
 // want-sequences, not just by checking single-step inputs.
 func blockTypeFor(prev int, want, wantNext bool) int {
 	switch {
-	case want:
+	case prev == blockStart:
+		// A start block's only legal successor is a short block (ISO
+		// 11172-3 window grammar 1->{2}); the run of short blocks always
+		// begins on the granule after a start.
 		return blockShort
+	case want:
+		// This granule wants a short block. blockShort is a legal successor
+		// only of blockStart or blockShort; from blockLong or blockStop it
+		// would be an illegal transition (e.g. 0->2 straight after the
+		// decoder's implicit initial long state at stream start), so open
+		// the run with a start block instead, which forces the next granule
+		// short via the case above. In steady state prev is always blockShort
+		// here (a want granule is preceded by the start that wantNext emitted),
+		// so this only diverges at stream start, where prev is seeded to long.
+		if prev == blockShort {
+			return blockShort
+		}
+		return blockStart
 	case prev == blockShort:
 		if wantNext {
 			return blockShort // bridge: 2->1 is illegal, so stay short one more granule

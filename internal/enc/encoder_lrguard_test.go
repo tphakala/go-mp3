@@ -38,9 +38,9 @@ func TestEncodeGoldenForcedLR(t *testing.T) {
 		sampleRate, ch, kbps int
 		wantHex              string
 	}{
-		{"44100_2ch_128kbps", 44100, 2, 128, "07550f29ce530326743a3373f6ba1f6e47174add9a7af78f054ddee6daba61aa"},
-		{"48000_1ch_320kbps", 48000, 1, 320, "fd4bfd69f69ffe5515d6e429e80787edce256a0c1875bdf075e7f4fa5910e864"},
-		{"32000_2ch_32kbps", 32000, 2, 32, "7c75078bb8f8f908278023298d18200c20dc1d1ca773a5866d6959265449d6ec"},
+		{"44100_2ch_128kbps", 44100, 2, 128, "0fcfefa621bc0fc0291506297a6ef9d377c2dc6df447e25cbb05036c6a9b2c57"},
+		{"48000_1ch_320kbps", 48000, 1, 320, "cc1886c0c5e01dd9640b7df2b382fbb5045adf08c525efb914093728302ba712"},
+		{"32000_2ch_32kbps", 32000, 2, 32, "fd1ea422b612fd34e38d95822edb62eb8145359f1f891d2183ea5479581277b3"},
 	}
 
 	for _, c := range cases {

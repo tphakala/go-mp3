@@ -179,20 +179,34 @@ func compatClickTrain(nSamples int) []float32 {
 }
 
 // compatToneClick returns nSamples of mono tone+click content: a steady
-// multi-tone (testsignal.MultiTone, peak 0.5) with a loud LCG-noise click
-// (amplitude 0.4) additively superimposed every compatClickPeriodFrames
-// frames for compatClickBurstFrames frames at a time, clamped to [-1, 1].
-// Generalizes buildShortCalibProgram's single mid-stream click to a
-// periodic train, so long-block coding between clicks is exercised
+// multi-tone (testsignal.MultiTone, peak 0.5) interrupted every
+// compatClickPeriodFrames frames by a genuine onset (one granule of silence
+// then a full-scale LCG-noise burst of compatClickBurstFrames frames),
+// clamped to [-1, 1]. The silence-then-burst shape is what attackDetect
+// actually fires on: a click merely summed onto a loud tone never clears
+// attackRatio. Generalizes buildShortCalibProgram's single mid-stream click
+// to a periodic train, so long-block coding between clicks is exercised
 // alongside the short-block clicks themselves.
 func compatToneClick(sampleRate, nSamples int) []float32 {
 	tone := testsignal.MultiTone(sampleRate, nSamples, 0, 0.5)
 	seed := uint64(0x5A17C1CC)
 	period := compatClickPeriodFrames * mp3.FrameSize
 	burst := compatClickBurstFrames * mp3.FrameSize
-	for start := 0; start+burst <= nSamples; start += period {
+	// Each click must be a genuine onset, not noise summed onto the tone: a
+	// click merely added to a steady 0.5 tone never clears attackRatio (the
+	// tone's own energy dominates the sub-block ratio), so those "clicks"
+	// only ever produced short blocks via the old stream-start false attack.
+	// Silence one granule of the tone immediately before each burst so the
+	// burst sub-block is a real >10x energy jump attackDetect fires on. The
+	// first burst starts one period in, a true mid-stream onset rather than
+	// the stream-start granule the encoder deliberately never short-codes.
+	const gap = 576
+	for start := period; start+burst <= nSamples; start += period {
+		for i := start - gap; i < start; i++ {
+			tone[i] = 0
+		}
 		for i := range burst {
-			tone[start+i] += testsignal.LCGSigned(&seed) * 0.4
+			tone[start+i] = testsignal.LCGSigned(&seed) * 0.9
 		}
 	}
 	x := make([]float32, nSamples)

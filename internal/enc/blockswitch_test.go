@@ -17,9 +17,10 @@ var blockTypeForLegal = map[int]map[int]bool{
 // of blockTypeFor's total function against decision 10's formula
 // (including the prev==blockShort bridge case: 2->1 is illegal, so a
 // granule with no attack of its own but an attacking successor extends
-// the short run instead of jumping straight to start), and separately
-// asserts start -> stop (1 -> 3) is never emitted for ANY want/wantNext
-// pair.
+// the short run instead of jumping straight to start; and the stream-start
+// guard: a want granule whose prev is long or stop opens the run with a
+// start block, since 0->2 and 3->2 are illegal), and separately asserts
+// start -> stop (1 -> 3) is never emitted for ANY want/wantNext pair.
 func TestBlockTypeFor(t *testing.T) {
 	blockTypes := []int{blockLong, blockStart, blockShort, blockStop}
 
@@ -30,8 +31,17 @@ func TestBlockTypeFor(t *testing.T) {
 
 				var wantType int
 				switch {
-				case want:
+				case prev == blockStart:
 					wantType = blockShort
+				case want:
+					// blockShort is a legal successor only of start or short;
+					// from long or stop, opening the short run needs a start
+					// block first (the illegal 0->2 / 3->2 guard).
+					if prev == blockShort {
+						wantType = blockShort
+					} else {
+						wantType = blockStart
+					}
 				case prev == blockShort:
 					if wantNext {
 						wantType = blockShort
@@ -72,6 +82,10 @@ func TestBlockTypeFor(t *testing.T) {
 	}{
 		{blockLong, false, false},  // -> long
 		{blockLong, false, true},   // -> start
+		{blockLong, true, false},   // -> start (stream-start onset: 0->2 is illegal, open with start)
+		{blockLong, true, true},    // -> start
+		{blockStop, true, false},   // -> start (onset right after a stop: 3->2 is illegal, open with start)
+		{blockStart, false, false}, // -> short (start's only legal successor, even with no attack this granule)
 		{blockStart, true, false},  // -> short (the only reachable successor of start)
 		{blockStart, true, true},   // -> short
 		{blockShort, true, false},  // -> short
@@ -116,16 +130,16 @@ func TestBlockTypeForGrammarSimulation(t *testing.T) {
 			wants[i] = next(&seed)
 		}
 
-		// prev starts at blockLong as a BOOTSTRAP sentinel, the same
-		// arbitrary value Encoder.blockPrev's zero value carries: there is
-		// no real previous granule at stream start (silence precedes it),
-		// so the grammar has nothing genuine to violate on the very FIRST
-		// transition (a hard onset at granule 0 can legitimately jump
-		// straight to short there, exactly as it does in the real
-		// encoder). Enforcement starts at the SECOND transition, once
-		// prev is a real, blockTypeFor-produced value.
-		prev := blockTypeFor(blockLong, wants[0], wants[1])
-		for i := 1; i < n-1; i++ {
+		// prev starts at blockLong, the implicit initial window state the
+		// decoder assumes before the first granule (zero overlap, same as
+		// after a long block) and the value Encoder.blockPrev's zero value
+		// carries. The FIRST transition is enforced too: a hard onset at
+		// granule 0 must NOT jump straight to short (0->2 is illegal), it
+		// opens the run with a start block, exactly as the real encoder now
+		// does. Enforcing from i=0 is what catches a stream-start grammar
+		// regression.
+		prev := blockLong
+		for i := range n - 1 {
 			got := blockTypeFor(prev, wants[i], wants[i+1])
 			if !blockTypeForLegal[prev][got] {
 				t.Fatalf("seed=%d step=%d: blockTypeFor(prev=%d, want=%v, wantNext=%v) = %d, illegal successor of %d",

@@ -157,14 +157,12 @@ func TestEncoderSwitchesOnTransients(t *testing.T) {
 }
 
 // TestEncoderNeverSwitchesOnTones requires a steady multi-tone program and
-// a pure-silence program to produce only long blocks (design decisions
-// 9/10: attackDetect's ratio+floor test must never fire on either). Frame
-// 0 is excluded from the tone case only: attackDetect's zero initial carry
-// legitimately calls a stream's abrupt silence-to-full-amplitude opening
-// an attack (design decision 9's own rationale, confirmed in depth while
-// investigating a related TestEncoderMaskingContract regression, Inc7 Task
-// B2), a cold-start artifact with no bearing on steady-state behavior;
-// silence never trips the floor at any frame, including frame 0.
+// a pure-silence program to produce only long blocks at EVERY frame,
+// including frame 0 (design decisions 9/10: attackDetect's ratio+floor test
+// must never fire on either). The stream-start attackNoPrior seed keeps the
+// uninitialized zero carry from misreading the tone's opening sub-block as
+// an attack, so there is no cold-start artifact to exclude; silence never
+// trips the floor at any frame.
 func TestEncoderNeverSwitchesOnTones(t *testing.T) {
 	const nFrames = 12
 
@@ -181,9 +179,9 @@ func TestEncoderNeverSwitchesOnTones(t *testing.T) {
 		}
 		log := runLoggingBlockTypes(t, e, samples)
 		for _, l := range log {
-			if l.frame == 0 {
-				continue // cold-start onset, see doc comment
-			}
+			// Every frame including frame 0 must stay long: the attackNoPrior
+			// stream-start seed keeps the uninitialized carry from fabricating
+			// a cold-start onset, so a steady tone never switches at all.
 			if l.blockType != blockLong {
 				t.Errorf("frame %d g %d: blockType = %d, want blockLong (steady tone)", l.frame, l.g, l.blockType)
 			}
@@ -203,6 +201,54 @@ func TestEncoderNeverSwitchesOnTones(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestEncoderFirstBlockLegal is the regression guard for the stream-start
+// window-grammar bug: a program whose very first granule contains a genuine
+// onset (silent first sub-block, then a full-scale burst) must NOT emit a
+// bare short block as the first granule. blockShort is an illegal successor
+// of the decoder's implicit initial long state (0->2), so the encoder opens
+// the short run with a start block instead. The whole emitted block-type
+// sequence must be grammar-legal from the implicit blockLong seed. The old
+// code returned blockShort straight from blockLong here, producing a
+// TDAC-invalid 0->2 stream on almost any real audio that opens with sound.
+func TestEncoderFirstBlockLegal(t *testing.T) {
+	const nFrames = 6
+	e := mustEncoder(t, Config{SampleRate: 44100, Channels: 1, BitrateKbps: 128})
+
+	samples := make([][]float32, nFrames)
+	for f := range nFrames {
+		buf := make([]float32, 1152)
+		start := 0
+		if f == 0 {
+			// A real attack inside the very first granule: silence for the
+			// first 192-sample sub-block, then a full-scale onset. The k=0
+			// sub-block clears via attackNoPrior; the onset in sub-block 1
+			// legitimately fires the attack, so granule 0 wants a short block
+			// with no legal short predecessor available.
+			start = 192
+		}
+		for i := start; i < len(buf); i++ {
+			buf[i] = 0.9
+		}
+		samples[f] = buf
+	}
+
+	log := runLoggingBlockTypes(t, e, samples)
+	if len(log) == 0 {
+		t.Fatal("no block types logged")
+	}
+	if log[0].blockType == blockShort {
+		t.Errorf("first granule blockType = blockShort, want a legal successor of long (long or start); 0->2 is illegal")
+	}
+	prev := blockLong // the decoder's implicit initial window state
+	for _, l := range log {
+		if !blockTypeForLegal[prev][l.blockType] {
+			t.Errorf("frame %d g %d: blockType %d is an illegal successor of %d",
+				l.frame, l.g, l.blockType, prev)
+		}
+		prev = l.blockType
+	}
 }
 
 // TestEncoderChannelDisagreementForcesLR drives a stereo program with a

@@ -1090,12 +1090,14 @@ func TestPsyShortPESSpike(t *testing.T) {
 // analyzeShort's internal gStart from 448 (causal) to 224 (centered)
 // changes every short-path threshold this golden hashes, even though none
 // of the analysis formulas themselves changed.
-const psyShortGoldenSHA = "0408493169ca0090e44270807b29cf88549d56e23bd3465a4a6200921c2a4ea4"
+const psyShortGoldenSHA = "1b4ff08b4f5218beb3bad93a88e01dd89ee9e3b1047e45724546cd97a249f101"
 
 func TestPsyShortGolden(t *testing.T) {
 	// Three rates x two programs: LCG noise and a silence-then-burst
-	// transient confined to pcm[850:928) on the final granule (the same
-	// per-window-confined burst TestPsyShortPerWindowResolution uses);
+	// transient confined to pcm[600:678) on the final granule (the same
+	// per-window-confined burst TestPsyShortPerWindowResolution uses, inside
+	// short window 2's re-centered [448,704) span so it genuinely exercises
+	// the short path rather than landing outside every analysis window);
 	// both are bit-portable (no libm in the input generator).
 	out := make([]float64, 0, 3*2*(39+39+1))
 	for sri := range 3 {
@@ -1114,7 +1116,7 @@ func TestPsyShortGolden(t *testing.T) {
 				case 1:
 					clear(pcm)
 					if g == 3 {
-						for i := 850; i < 928; i++ {
+						for i := 600; i < 678; i++ {
 							pcm[i] = 0.8
 						}
 					}

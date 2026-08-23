@@ -19,18 +19,29 @@ const (
 )
 
 // buildShortCalibProgram returns one channel's [-1,1] samples: a steady
-// multi-tone (testsignal.MultiTone, amplitude 0.5) with a stored-LCG click
-// (amplitude 0.4) additively superimposed on shortCalibClickFrame's 1152
-// samples, then clamped to [-1,1] (EncodeFrame's own ingest clamp would do
-// this anyway; clamping here keeps the "input" reference array identical
-// to what the encoder actually saw).
+// multi-tone (testsignal.MultiTone, amplitude 0.5) interrupted at
+// shortCalibClickFrame by a genuine onset (its first granule silenced, then
+// a full-scale stored-LCG burst in its second granule) so block switching
+// actually engages, then clamped to [-1,1] (EncodeFrame's own ingest clamp
+// would do this anyway; clamping here keeps the "input" reference array
+// identical to what the encoder actually saw).
 func buildShortCalibProgram(sampleRate int) []float64 {
 	n := shortCalibFrames * 1152
 	x := testsignal.MultiTone(sampleRate, n, 0, 0.5)
 	seed := uint64(0x5A17)
 	base := shortCalibClickFrame * 1152
-	for i := range 1152 {
-		x[base+i] += testsignal.LCGSigned(&seed) * 0.4
+	// A genuine mid-stream onset, not noise summed onto the tone: silence the
+	// click frame's first granule, then a full-scale burst in its second, so
+	// the burst is a real >10x sub-block energy jump attackDetect fires on. A
+	// click merely added to the steady 0.5 tone never clears attackRatio, so
+	// it would not trigger block switching at all (it only did before via the
+	// stream-start false attack the encoder no longer fabricates). The
+	// amplitude-measurement frames (shortCalibClickFrame +-3) stay clean tone.
+	for i := range 576 {
+		x[base+i] = 0
+	}
+	for i := 576; i < 1152; i++ {
+		x[base+i] = testsignal.LCGSigned(&seed) * 0.9
 	}
 	for i := range x {
 		if x[i] > 1 {

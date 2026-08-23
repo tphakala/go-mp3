@@ -127,9 +127,13 @@ func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps,
 	// prevBlockType[ch] tracks the last granule's block_type seen for
 	// channel ch, across the WHOLE stream (frame boundaries included), for
 	// the decision-10 transition grammar validateGranules enforces; -1
-	// means "no previous granule yet" (the very first granule of the
-	// stream is never grammar-checked, matching the state machine having
-	// no predecessor to compare against).
+	// means "no previous granule yet". The very first granule is not
+	// grammar-checked here because this validator also runs over isolated,
+	// pin-constructed single-frame fixtures (TestEncShortValidatorGrammar)
+	// that deliberately open on a short block. Real stream-start legality
+	// (the first granule must be a legal successor of the decoder's implicit
+	// initial long state, never a bare short) is guarded encoder-side by
+	// TestEncoderFirstBlockLegal and TestBlockTypeForGrammarSimulation.
 	prevBlockType := make([]int, wantNch)
 	for i := range prevBlockType {
 		prevBlockType[i] = -1

@@ -220,34 +220,14 @@ func testMaskingContractCase(t *testing.T, sr, kbps, nch int, prog string) {
 		if g == 0 && ch == 0 {
 			frameIdx++
 		}
-		// Frame 0 (the very first coded frame, immediately following
-		// stream start) is excluded, the mirror image of the drain-frame
-		// exclusion this test used to carry: a genuine boundary artifact,
-		// not a masking-budget defect. attackDetect's zero initial carry
-		// legitimately calls a stream's opening transient an attack
-		// (design decision 9: any sound is an attack relative to true
-		// silence), and pcmHist's prevTail is genuinely all-zero at that
-		// point (there is no real audio before the stream), so a hard
-		// digital-silence-to-full-scale onset is possible only here.
-		// Investigated in depth (Inc7 Task B2): escalateForMasking's greedy
-		// per-channel fixpoint sweep can converge one global_gain step
-		// short of the frame's true joint optimum in exactly this
-		// scenario (confirmed by re-running outerLoop at the identical
-		// captured spectrum and budget: the discrepancy is a single
-		// global_gain unit, entirely within CapacityLeftBits of 1-6 bits),
-		// a known limitation of greedy single-channel reallocation
-		// (decision 9's own doc comment: "the cap only truncates
-		// pathological slow-converging cases") that long blocks' much
-		// larger absolute excess values never surfaced as an observable
-		// betterPass failure. Confirmed frame-0-only: raising
-		// maskEscalationMaxCalls 4x reproduced the identical residual
-		// (ruling out a call-budget truncation), and every other frame in
-		// every grid case passes. Deep pre-echo/onset handling is
-		// explicitly Phase 5 scope (see TestEncoderPreEchoBound's doc
-		// comment); this is that same edge case's leading boundary.
-		if frameIdx == 0 {
-			return
-		}
+		// Frame 0 is validated like every other frame. It used to be excluded
+		// (Inc7 Task B2): before the stream-start attackNoPrior fix, the
+		// uninitialized zero attack carry misread the stream's opening
+		// sub-block as an attack and forced a spurious short block on the
+		// first granule, whose greedy escalation could converge one
+		// global_gain step short of the joint optimum. The attackNoPrior seed
+		// removed that false stream-start attack, so frame 0 is now an
+		// ordinary long block that meets the masking contract like the rest.
 
 		// The granule-channel's own decided block type picks its bandLayout
 		// (Inc7 block switching: a frame's granule-channels can carry

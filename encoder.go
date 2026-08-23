@@ -91,15 +91,16 @@ type EncoderConfig struct {
 	// 128000, 160000, 192000, 224000, 256000, or 320000. Zero selects
 	// DefaultBitrate. Mutually exclusive with Quality.
 	Bitrate int
-	// Quality is reserved for a future VBR mode and is validated now so
-	// the config surface is stable: zero means unset; any nonzero value
-	// is rejected until VBR exists. Mutually exclusive with Bitrate.
+	// Quality is not supported: this encoder is CBR-only (VBR is not on the
+	// roadmap). The field exists so the config surface stays stable, and is
+	// validated now: zero means unset, any nonzero value is rejected.
+	// Mutually exclusive with Bitrate.
 	Quality int
 }
 
 // toEncConfig validates cfg and maps it to the internal enc.Config, in the
 // normative order: sample rate, channel count, the Bitrate/Quality
-// mutual-exclusivity rule, the Quality-reserved-for-VBR rejection, then
+// mutual-exclusivity rule, the Quality-unsupported rejection, then
 // the bitrate itself. The bitrate check tests %1000 before dividing:
 // dividing first would silently truncate a value like 128500 to a legal
 // 128 kbps instead of rejecting it.
@@ -116,7 +117,7 @@ func (cfg EncoderConfig) toEncConfig() (enc.Config, error) {
 		return enc.Config{}, errors.New("go-mp3: Bitrate and Quality are mutually exclusive")
 	}
 	if cfg.Quality != 0 {
-		return enc.Config{}, errors.New("go-mp3: Quality is reserved for a future VBR mode, not yet supported")
+		return enc.Config{}, errors.New("go-mp3: Quality is not supported, this encoder is CBR-only; set Bitrate instead")
 	}
 
 	bitrate := cfg.Bitrate

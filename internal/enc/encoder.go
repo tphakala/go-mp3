@@ -207,12 +207,20 @@ type Encoder struct {
 	// 0). Updated at the end of every analyzeAttacks call.
 	attackCarry [2]float64
 
-	// wantShort caches this codeFrame call's four attack verdicts per
+	// attackPrimed is false until the first analyzeAttacks call has run.
+	// While false, the held frame's granule-0 k=0 sub-block has no genuine
+	// preceding energy (the stream has not started yet), so attackDetect is
+	// seeded with attackNoPrior there instead of the zero attackCarry, which
+	// would otherwise fabricate a spurious stream-start attack. Its zero
+	// value is correct both at construction and after Reset (*e = Encoder{}).
+	attackPrimed bool
+
+	// wantShort caches this codeFrame call's three attack verdicts per
 	// channel, in stream order: index 0 = held granule 0, 1 = held granule
-	// 1, 2 = next granule 0 (also held granule 1's wantNext), 3 = next
-	// granule 1 (cached; becomes held granule 1's own verdict, i.e. index
-	// 1, on the FOLLOWING call once pcmHist slides).
-	wantShort [2][4]bool
+	// 1, 2 = next granule 0 (which is held granule 1's wantNext). Next
+	// granule 1 is not needed: analyzeAttacks recomputes all verdicts from
+	// the slid pcmHist on the following call.
+	wantShort [2][3]bool
 
 	// blockPrev is channel ch's most recently CODED granule's decided
 	// block type: seeds blockTypeFor's prev argument for the next call's
@@ -548,29 +556,41 @@ func (e *Encoder) slidePcmHist() {
 	}
 }
 
-// analyzeAttacks runs attackDetect over the four granules pcmHist currently
-// spans (held granule 0, held granule 1, next granule 0, next granule 1),
-// in stream order, chaining each call's carry into the next and filling
-// e.wantShort[ch]; e.attackCarry[ch] is left holding the carry in effect
-// right before next granule 0's own call, which is exactly the carry the
-// FOLLOWING codeFrame call needs to seed its own held granule 0 (that
-// granule IS this call's next granule 0, once pcmHist slides).
+// analyzeAttacks runs attackDetect over the three granules the block
+// decision needs (held granule 0, held granule 1, next granule 0), in
+// stream order, chaining each call's carry into the next and filling
+// e.wantShort[ch]. On the first call (attackPrimed false) held granule 0's
+// prevE is seeded with attackNoPrior, since no energy precedes the stream.
+// e.attackCarry[ch] is left holding the carry in effect right before next
+// granule 0's own call, which is exactly the carry the FOLLOWING codeFrame
+// call needs to seed its own held granule 0 (that granule IS this call's
+// next granule 0, once pcmHist slides).
 func (e *Encoder) analyzeAttacks() {
 	for ch := range e.nch {
 		h := &e.pcmHist[ch]
 		heldG0 := h[pcmPrevTailLen : pcmPrevTailLen+576]
 		heldG1 := h[pcmPrevTailLen+576 : pcmPrevTailLen+pcmHeldLen]
 		nextG0 := h[pcmPrevTailLen+pcmHeldLen : pcmPrevTailLen+pcmHeldLen+576]
-		nextG1 := h[pcmPrevTailLen+pcmHeldLen+576 : pcmHistLen]
 
-		var last0, last1, last2 float64
-		e.wantShort[ch][0], last0 = attackDetect(heldG0, e.attackCarry[ch])
+		// At stream start there is no energy preceding the held frame's
+		// granule 0, so its k=0 sub-block has nothing to compare against:
+		// seed prevE with attackNoPrior so the uninitialized zero carry
+		// cannot fabricate an attack (which would force a spurious short
+		// block on the first granule, an illegal 0->2 window transition).
+		// After the first call attackCarry holds the real preceding energy.
+		carry0 := e.attackCarry[ch]
+		if !e.attackPrimed {
+			carry0 = attackNoPrior
+		}
+
+		var last0, last1 float64
+		e.wantShort[ch][0], last0 = attackDetect(heldG0, carry0)
 		e.wantShort[ch][1], last1 = attackDetect(heldG1, last0)
-		e.wantShort[ch][2], last2 = attackDetect(nextG0, last1)
-		e.wantShort[ch][3], _ = attackDetect(nextG1, last2)
+		e.wantShort[ch][2], _ = attackDetect(nextG0, last1)
 
 		e.attackCarry[ch] = last1
 	}
+	e.attackPrimed = true
 }
 
 // decideBlockTypes advances the per-channel window state machine (design

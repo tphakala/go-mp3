@@ -59,7 +59,7 @@ func newTestEncoder(t *testing.T) *mp3.Encoder {
 
 // TestEncoderConfigValidation is table-driven over every EncoderConfig
 // validation rule: bad sample rate, bad channel count, the Bitrate/Quality
-// mutual-exclusivity rule, the Quality-reserved-for-VBR rejection, a
+// mutual-exclusivity rule, the Quality-unsupported rejection, a
 // negative bitrate, a bitrate that is not a multiple of 1000 (128500, the
 // %1000-before-divide trap: dividing first would wrongly truncate this to
 // a legal 128 kbps), and a bitrate that is a multiple of 1000 but not one
@@ -79,7 +79,7 @@ func TestEncoderConfigValidation(t *testing.T) {
 		{"zero channels", mp3.EncoderConfig{SampleRate: 44100, Channels: 0}, false},
 		{"three channels", mp3.EncoderConfig{SampleRate: 44100, Channels: 3}, false},
 		{"bitrate and quality both set", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: 128000, Quality: 1}, false},
-		{"quality reserved", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Quality: 5}, false},
+		{"quality unsupported", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Quality: 5}, false},
 		{"negative bitrate", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: -128000}, false},
 		{"bitrate not a multiple of 1000 (128500 trap)", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: 128500}, false},
 		{"bitrate multiple of 1000 but illegal (129000)", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: 129000}, false},

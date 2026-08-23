@@ -742,10 +742,10 @@ func TestEncodeGolden(t *testing.T) {
 		correlated           bool // identical channels (L==R): forces M/S on every frame
 		wantHex              string
 	}{
-		{"44100_2ch_128kbps", 44100, 2, 128, false, "359b6bbd7817463f0cfc9e8195f4b527600ffe843eb059e547d707b8aef684a1"},
-		{"48000_1ch_320kbps", 48000, 1, 320, false, "fd4bfd69f69ffe5515d6e429e80787edce256a0c1875bdf075e7f4fa5910e864"},
-		{"32000_2ch_32kbps", 32000, 2, 32, false, "a7d501a26abd22bae4ce9126001d6b22f560c4851e4c0eb0c21463a9d974974a"},
-		{"44100_2ch_128kbps_ms", 44100, 2, 128, true, "6953571cf82e041790aa5a7c1471d3d744fd652acf109d57e8e8201cdfe3f245"},
+		{"44100_2ch_128kbps", 44100, 2, 128, false, "e7b868ec37d11a7b653aa15d524e5e4022c9682747168a46205e0ff7f35c43a7"},
+		{"48000_1ch_320kbps", 48000, 1, 320, false, "cc1886c0c5e01dd9640b7df2b382fbb5045adf08c525efb914093728302ba712"},
+		{"32000_2ch_32kbps", 32000, 2, 32, false, "3cb6ea6799f179e9437d47145d9997f61cb164e49c68179bda79f6e43035df97"},
+		{"44100_2ch_128kbps_ms", 44100, 2, 128, true, "690aef6d1d21d6a2b7065e32b16c4e41462212440f209320d01decbb894978c6"},
 	}
 
 	for _, c := range cases {

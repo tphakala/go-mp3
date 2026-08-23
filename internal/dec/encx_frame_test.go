@@ -124,6 +124,16 @@ func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps,
 	if reservoirManaged {
 		rr = reservoirReplay{resCap: enc.ResCapBytesPin(wantKbps, wantSampleRate, wantNch)}
 	}
+	// prevBlockType[ch] tracks the last granule's block_type seen for
+	// channel ch, across the WHOLE stream (frame boundaries included), for
+	// the decision-10 transition grammar validateGranules enforces; -1
+	// means "no previous granule yet" (the very first granule of the
+	// stream is never grammar-checked, matching the state machine having
+	// no predecessor to compare against).
+	prevBlockType := make([]int, wantNch)
+	for i := range prevBlockType {
+		prevBlockType[i] = -1
+	}
 	pos := 0
 	frames := 0
 	for pos < len(stream) {
@@ -178,7 +188,7 @@ func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps,
 
 		frameMainBits := frameBytes*8 - 32 - sideInfoBitsFor(wantNch)
 		mainData := frame[4+sideInfoBitsFor(wantNch)/8:]
-		validateGranules(t, frames, frame[:4], gr, mainData, wantNch, frameMainBits, reservoirManaged)
+		validateGranules(t, frames, frame[:4], gr, mainData, wantNch, frameMainBits, reservoirManaged, prevBlockType)
 
 		pos += frameBytes
 		frames++
@@ -194,15 +204,57 @@ func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps,
 	}
 }
 
+// legalBlockSuccessors is design decision 10's per-channel state-machine
+// grammar (docs/superpowers/plans/2026-08-23-go-mp3-phase4-inc7-short-blocks.md):
+// with one granule of lookahead and no 1->3 transition ever emitted, block
+// N+1's type must be a member of legalBlockSuccessors[block N's type].
+// blockValidateGranules enforces this ACROSS the whole stream's granule
+// sequence per channel (frame boundaries included), even though PR A never
+// wires the real attack-driven state machine into codeFrame (that is PR
+// B's job): the window-switching plumbing this task adds must already
+// accept every stream a conforming encoder could produce.
+var legalBlockSuccessors = [4][]int{
+	0: {0, 1},
+	1: {2},
+	2: {2, 3},
+	3: {0, 1},
+}
+
+// legalBlockTransition reports whether to is a legal successor of from
+// under legalBlockSuccessors.
+func legalBlockTransition(from, to int) bool {
+	for _, w := range legalBlockSuccessors[from] {
+		if w == to {
+			return true
+		}
+	}
+	return false
+}
+
 // validateGranules checks every granule-channel's side-info invariants
-// (long blocks only, valid codebook numbers, legal scalefac_compress/
-// preflag/scalefac_scale range, granule 0 never masks via scfsi) and that
-// l3ReadScalefactors consumes EXACTLY the part2 bits expectedPart2Bits
-// predicts from scalefacCompress and the scfsi mask (walking the frame's
-// main data with a bits.Reader, the same technique readFrameScf uses); both
-// are content-independent (derived from side-info fields, not from what
-// bytes mainData actually holds), so they stay meaningful regardless of
-// where the granule's real bytes physically live.
+// (valid codebook numbers, legal scalefac_compress/preflag/scalefac_scale
+// range, granule 0 never masks via scfsi) and that l3ReadScalefactors
+// consumes EXACTLY the part2 bits expectedPart2Bits predicts from
+// scalefacCompress and the scfsi mask (walking the frame's main data with
+// a bits.Reader, the same technique readFrameScf uses); both are
+// content-independent (derived from side-info fields, not from what bytes
+// mainData actually holds), so they stay meaningful regardless of where
+// the granule's real bytes physically live.
+//
+// Since this task, block_type may be 0 (long) or a window-switching value
+// (1 start, 2 short, 3 stop; l3ReadSideInfo itself already rejects the
+// unused encoding block_type==0-with-flag-set, so any parsed non-zero
+// block_type is by construction a real window-switching granule): a
+// non-zero block_type requires mixed_block_flag==0 (mixed blocks are
+// never emitted, out of this task's scope) and every subblock_gain in
+// [0,7] (guaranteed by the 3-bit field width, checked anyway for
+// documentation); a channel with ANY non-long granule in the frame must
+// have scfsi==0 for granule 1 (design decision 6: scfsi is valid only
+// when window_switching_flag==0 for BOTH granules of a channel); and the
+// per-channel block_type sequence (this granule against the previous one
+// seen for the same channel, prevBlockType, threaded in from
+// validateFrameHeaders) must respect legalBlockSuccessors (design
+// decision 10).
 //
 // When NOT reservoirManaged, it additionally requires the granule-channels'
 // combined part2_3 length to fit the frame's OWN main-data budget
@@ -217,7 +269,64 @@ func validateFrameHeaders(t *testing.T, stream []byte, wantSampleRate, wantKbps,
 // validateFrameDecode proves full content decodability via the production
 // decoder's reservoir-aware l3RestoreReservoir; this per-frame check would
 // only be redundant-and-wrong on top of those.
-func validateGranules(t *testing.T, frameIdx int, hdr []byte, gr []grInfo, mainData []byte, nch, frameMainBits int, reservoirManaged bool) {
+// validateSideInfoInvariants checks one granule-channel's side-info field
+// invariants (bigValues bound, block_type/mixed_block_flag/subblock_gain,
+// the decision-10 transition grammar against prevBlockType, legal
+// scalefac_compress/preflag/scalefac_scale range, valid codebook numbers,
+// and the scfsi rules: granule 0 never masks, and design decision 6
+// disables scfsi for granule 1 of any channel with a non-long granule).
+// Split out of validateGranules to keep that function's cognitive
+// complexity down; nonLong[ch] is updated in place so the caller's
+// gi==1 scfsi check sees whether EITHER granule of the channel went
+// non-long.
+func validateSideInfoInvariants(t *testing.T, frameIdx, gi, ch int, g *grInfo, prevBlockType []int, nonLong []bool) {
+	t.Helper()
+	if g.bigValues > 288 {
+		t.Fatalf("frame %d gr %d ch %d: bigValues = %d, want <= 288", frameIdx, gi, ch, g.bigValues)
+	}
+	bt := int(g.blockType)
+	if bt > 3 {
+		t.Fatalf("frame %d gr %d ch %d: blockType = %d, want 0..3", frameIdx, gi, ch, bt)
+	}
+	if bt != 0 {
+		nonLong[ch] = true
+		for w, sg := range g.subblockGain {
+			if sg > 7 {
+				t.Fatalf("frame %d gr %d ch %d: subblockGain[%d] = %d, want 0..7", frameIdx, gi, ch, w, sg)
+			}
+		}
+	}
+	if g.mixedBlockFlag != 0 {
+		t.Fatalf("frame %d gr %d ch %d: mixedBlockFlag = %d, want 0", frameIdx, gi, ch, g.mixedBlockFlag)
+	}
+	if prevBlockType[ch] >= 0 && !legalBlockTransition(prevBlockType[ch], bt) {
+		t.Fatalf("frame %d gr %d ch %d: block_type transition %d -> %d illegal under decision 10's grammar",
+			frameIdx, gi, ch, prevBlockType[ch], bt)
+	}
+	prevBlockType[ch] = bt
+	if g.scalefacCompress > 15 {
+		t.Fatalf("frame %d gr %d ch %d: scalefacCompress = %d, want in [0,15]", frameIdx, gi, ch, g.scalefacCompress)
+	}
+	if g.preflag > 1 {
+		t.Fatalf("frame %d gr %d ch %d: preflag = %d, want 0 or 1", frameIdx, gi, ch, g.preflag)
+	}
+	if g.scalefacScale > 1 {
+		t.Fatalf("frame %d gr %d ch %d: scalefacScale = %d, want 0 or 1", frameIdx, gi, ch, g.scalefacScale)
+	}
+	for r, ts := range g.tableSelect {
+		if ts == 4 || ts == 14 {
+			t.Fatalf("frame %d gr %d ch %d region %d: tableSelect = %d, invalid codebook number", frameIdx, gi, ch, r, ts)
+		}
+	}
+	if gi == 0 && g.scfsi != 0 {
+		t.Fatalf("frame %d gr 0 ch %d: scfsi = %04b, want 0 (granule 0 never masks)", frameIdx, ch, g.scfsi)
+	}
+	if gi == 1 && nonLong[ch] && g.scfsi != 0 {
+		t.Fatalf("frame %d gr 1 ch %d: scfsi = %04b, want 0 (decision 6: a non-long granule in this channel disables scfsi)", frameIdx, ch, g.scfsi)
+	}
+}
+
+func validateGranules(t *testing.T, frameIdx int, hdr []byte, gr []grInfo, mainData []byte, nch, frameMainBits int, reservoirManaged bool, prevBlockType []int) {
 	t.Helper()
 
 	main := bits.NewReader(mainData)
@@ -225,39 +334,15 @@ func validateGranules(t *testing.T, frameIdx int, hdr []byte, gr []grInfo, mainD
 	var scf [40]float32
 	pos := 0
 	sumPart23 := 0
+	nonLong := make([]bool, nch) // per channel: does EITHER granule carry a non-long block_type
 
 	for gi := range 2 {
 		for ch := range nch {
 			i := gi*nch + ch
 			g := &gr[i]
-			if g.bigValues > 288 {
-				t.Fatalf("frame %d gr %d ch %d: bigValues = %d, want <= 288", frameIdx, gi, ch, g.bigValues)
-			}
-			if g.blockType != 0 {
-				t.Fatalf("frame %d gr %d ch %d: blockType = %d, want 0 (long blocks only)", frameIdx, gi, ch, g.blockType)
-			}
-			if g.mixedBlockFlag != 0 {
-				t.Fatalf("frame %d gr %d ch %d: mixedBlockFlag = %d, want 0", frameIdx, gi, ch, g.mixedBlockFlag)
-			}
-			if g.scalefacCompress > 15 {
-				t.Fatalf("frame %d gr %d ch %d: scalefacCompress = %d, want in [0,15]", frameIdx, gi, ch, g.scalefacCompress)
-			}
-			if g.preflag > 1 {
-				t.Fatalf("frame %d gr %d ch %d: preflag = %d, want 0 or 1", frameIdx, gi, ch, g.preflag)
-			}
-			if g.scalefacScale > 1 {
-				t.Fatalf("frame %d gr %d ch %d: scalefacScale = %d, want 0 or 1", frameIdx, gi, ch, g.scalefacScale)
-			}
-			for r, ts := range g.tableSelect {
-				if ts == 4 || ts == 14 {
-					t.Fatalf("frame %d gr %d ch %d region %d: tableSelect = %d, invalid codebook number", frameIdx, gi, ch, r, ts)
-				}
-			}
-			if gi == 0 && g.scfsi != 0 {
-				t.Fatalf("frame %d gr 0 ch %d: scfsi = %04b, want 0 (granule 0 never masks)", frameIdx, ch, g.scfsi)
-			}
+			validateSideInfoInvariants(t, frameIdx, gi, ch, g, prevBlockType, nonLong)
 
-			wantPart2 := expectedPart2Bits(int(g.scalefacCompress), int(g.scfsi))
+			wantPart2 := expectedPart2Bits(int(g.scalefacCompress), int(g.scfsi), int(g.nLongSfb), int(g.nShortSfb))
 
 			main.SetPos(pos)
 			before := main.Pos()
@@ -286,12 +371,26 @@ func validateGranules(t *testing.T, frameIdx int, hdr []byte, gr []grInfo, mainD
 // ISO 2.4.2.7's slen table, cross-checked independently by
 // internal/enc's TestSlenTabKnownAnswer), and scfsi masks out groups
 // reused from granule 0 (bit 3 = group 0 ... bit 0 = group 3, the
-// side-info order); group widths are scfPartitionsTable[0][:4] (6,5,5,5),
-// the same MPEG1 long-block scfCount l3ReadScalefactorsRaw consumes.
-func expectedPart2Bits(scalefacCompress, scfsi int) int {
+// side-info order); group widths come from scfPartitionsTable's row 0
+// (long: 6,5,5,5) or row 2 (pure short, nLongSfb==0: 9,9,6,12), the same
+// MPEG1 scfCount l3ReadScalefactorsRaw consumes for each geometry
+// (l3ReadScalefactors' own row selection, internal/dec/scalefactors.go:
+// 121-127; mixed blocks, row 1, are out of this task's scope and never
+// appear in a validated stream). scfsi masking never applies to a short
+// granule in practice (the encoder always writes scfsi=0 for a channel
+// with any non-long granule, design decision 6), but the mask is still
+// honored here for uniformity with the long-block formula.
+func expectedPart2Bits(scalefacCompress, scfsi, nLongSfb, nShortSfb int) int {
+	row := 0
+	if nShortSfb != 0 {
+		row++
+	}
+	if nLongSfb == 0 {
+		row++
+	}
 	part := int(scfcDecodeTable[scalefacCompress])
 	slen1, slen2 := part>>2, part&3
-	widths := scfPartitionsTable[0][:4]
+	widths := scfPartitionsTable[row][:4]
 	total := 0
 	for i, w := range widths {
 		if scfsi&(1<<(3-i)) != 0 {

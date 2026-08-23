@@ -380,3 +380,108 @@ func frameTestCodings(t *testing.T) *[2][2]granuleCoding {
 	}
 	return &gr
 }
+
+// TestWriteSideInfoWindowSwitching hand-computes the packed side-info bits
+// for a frame whose granule 0 is a window-switching (short) granule and
+// granule 1 is a plain long granule, then reads every field back with an
+// independent bits.Reader and checks it against the hand-computed
+// expectation, never against writeSideInfo's own output. This is the KAT
+// for design decision 5's window-switching branch: window_switching_flag,
+// block_type, mixed_block_flag=0, table_select[0..1], subblock_gain[0..2]
+// in place of the long branch's table_select[0..2]/region0_count/
+// region1_count, with preflag/scalefac_scale/count1table_select shared by
+// both branches (per writeSideInfo's doc comment, decision 2: the preflag
+// bit is physically transmitted for every granule, short included).
+func TestWriteSideInfoWindowSwitching(t *testing.T) {
+	const nch = 1
+	const mainDataBegin = 37
+
+	var gr [2][2]granuleCoding
+
+	// Granule 0: window-switching (short), known ssg/tables/scfCompress.
+	g0 := &gr[0][0]
+	g0.blockType = blockShort
+	g0.part23Length = 100
+	g0.part.bigValues = 50
+	g0.globalGain = 120
+	g0.scfCompress = 7
+	g0.ri.tableSelect = [3]uint8{5, 9, 99} // tableSelect[2] never read for a WS granule
+	g0.sf.subblockGain = [3]int{2, 5, 7}
+	g0.sf.preflag = 0
+	g0.sf.scalefacScale = 1
+	g0.ri.count1Table = 1
+
+	// Granule 1: plain long granule, the flag=0 branch (unchanged layout).
+	g1 := &gr[1][0]
+	g1.blockType = blockLong
+	g1.part23Length = 200
+	g1.part.bigValues = 150
+	g1.globalGain = 200
+	g1.scfCompress = 3
+	g1.ri.tableSelect = [3]uint8{10, 20, 30}
+	g1.ri.region0Count = 9
+	g1.ri.region1Count = 4
+	g1.sf.preflag = 1
+	g1.sf.scalefacScale = 0
+	g1.ri.count1Table = 0
+	g1.scfsi = 5 // gr[1][ch].scfsi drives the top-level per-channel scfsi field
+
+	var buf []byte
+	w := bits.NewWriter(buf)
+	writeSideInfo(&w, &gr, nch, mainDataBegin)
+	if got, want := w.BitsWritten(), sideInfoBits(nch); got != want {
+		t.Fatalf("writeSideInfo wrote %d bits, want sideInfoBits(%d) = %d", got, nch, want)
+	}
+	buf = w.Flush()
+
+	r := bits.NewReader(buf)
+	checkField := func(name string, n int, want uint32) {
+		t.Helper()
+		if got := r.Bits(n); got != want {
+			t.Fatalf("%s: got %d, want %d", name, got, want)
+		}
+	}
+
+	checkField("main_data_begin", 9, mainDataBegin)
+	checkField("private_bits", 5, 0) // mono
+	checkField("scfsi ch0", 4, 5)
+
+	// Granule 0 (window-switching branch).
+	checkField("gr0 part23Length", 12, 100)
+	checkField("gr0 bigValues", 9, 50)
+	checkField("gr0 globalGain", 8, 120)
+	checkField("gr0 scfCompress", 4, 7)
+	checkField("gr0 window_switching_flag", 1, 1)
+	checkField("gr0 block_type", 2, blockShort)
+	checkField("gr0 mixed_block_flag", 1, 0)
+	checkField("gr0 table_select[0]", 5, 5)
+	checkField("gr0 table_select[1]", 5, 9)
+	checkField("gr0 subblock_gain[0]", 3, 2)
+	checkField("gr0 subblock_gain[1]", 3, 5)
+	checkField("gr0 subblock_gain[2]", 3, 7)
+	checkField("gr0 preflag", 1, 0)
+	checkField("gr0 scalefac_scale", 1, 1)
+	checkField("gr0 count1table_select", 1, 1)
+
+	// Granule 1 (long, flag=0 branch: unchanged from before this task).
+	checkField("gr1 part23Length", 12, 200)
+	checkField("gr1 bigValues", 9, 150)
+	checkField("gr1 globalGain", 8, 200)
+	checkField("gr1 scfCompress", 4, 3)
+	checkField("gr1 window_switching_flag", 1, 0)
+	checkField("gr1 table_select[0]", 5, 10)
+	checkField("gr1 table_select[1]", 5, 20)
+	checkField("gr1 table_select[2]", 5, 30)
+	checkField("gr1 region0_count", 4, 9)
+	checkField("gr1 region1_count", 3, 4)
+	checkField("gr1 preflag", 1, 1)
+	checkField("gr1 scalefac_scale", 1, 0)
+	checkField("gr1 count1table_select", 1, 0)
+
+	if r.Pos() != sideInfoBits(nch) {
+		t.Fatalf("consumed %d bits reading back, want sideInfoBits(%d) = %d", r.Pos(), nch, sideInfoBits(nch))
+	}
+	if r.Overrun() {
+		t.Fatalf("bits.Reader overran the packed side info")
+	}
+}

@@ -54,6 +54,21 @@ type granuleCoding struct {
 // caps its effective budget at this value so that can never happen.
 const maxPart23Length = 4095
 
+// regionsFor dispatches to chooseRegions for a long granule or
+// chooseRegionsWS for a window-switching one (start/short/stop,
+// gc.blockType != blockLong): the single seam recode and codeGranule's
+// truncation fallback both call, so a window-switching granule always
+// gets the fixed two-table region split the decoder actually implies
+// (ISO 2.4.2.7, design decision 5) rather than the long-block exhaustive
+// search, which searches a region-count encoding a window-switching
+// granule's side info never carries.
+func regionsFor(ix *[576]int32, part spectrumPartition, lay *bandLayout, blockType int) regionInfo {
+	if blockType == blockLong {
+		return chooseRegions(ix, part, lay)
+	}
+	return chooseRegionsWS(ix, part, lay, blockType)
+}
+
 // recode quantizes xr at gg under gc's scalefactor state, partitions the
 // result, and chooses region boundaries, writing straight into gc. A small
 // shared step so codeGranule's two rate-loop phases (raise gain, then
@@ -62,7 +77,7 @@ const maxPart23Length = 4095
 func recode(xr *[576]float64, gg int, lay *bandLayout, gc *granuleCoding) {
 	quantizeGranule(xr, gg, &gc.sf, lay, &gc.ix)
 	gc.part = partitionSpectrum(&gc.ix)
-	gc.ri = chooseRegions(&gc.ix, gc.part, lay)
+	gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
 }
 
 // codeGranule runs the inner rate loop for one granule-channel: from
@@ -90,7 +105,7 @@ func codeGranule(xr *[576]float64, budgetBits int, lay *bandLayout, gc *granuleC
 
 	for gc.ri.bits > effBudget && zeroTopSfb(&gc.ix, lay) {
 		gc.part = partitionSpectrum(&gc.ix)
-		gc.ri = chooseRegions(&gc.ix, gc.part, lay)
+		gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
 	}
 
 	gc.globalGain = gg
@@ -481,4 +496,43 @@ func AppendFrameScfPin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr 
 	}
 
 	return assembleFrame(dst, bitrateIndex, srIndex, padding, mode, &gr, nch)
+}
+
+// AppendFrameShortPin codes one self-contained frame (main_data_begin 0,
+// the AppendFramePin precedent) with each granule-channel's block type
+// FORCED from blockTypes, through the real production pipeline: outerLoop
+// (the masking-driven inner rate loop, unchanged by this task) picking
+// scalefactors/subblock_gain/global_gain against xmin, codeGranule's
+// regionsFor dispatch routing a window-switching granule to
+// chooseRegionsWS, and the same render path (writeSideInfo,
+// writeScalefactors, writeSpectrum) every other pin uses. xr must already
+// be in CODING order for any granule-channel whose blockTypes entry is
+// blockShort (callers run reorderShort first; see bandLayout's doc
+// comment for what "coding order" means for a short granule).
+//
+// Padding is fixed at 0 and mode is derived from nch (single_channel for
+// mono, L/R stereo for two channels): this pin exists to drive the
+// window-switching side-info and readback gates, not to exercise every
+// header permutation AppendFramePin/AppendFrameScfPin already cover.
+func AppendFrameShortPin(dst []byte, bitrateIndex, srIndex, nch int, blockTypes *[2][2]int, xr *[2][2][576]float64, xmin *[2][2][39]float64) []byte {
+	budget := granuleBudgetBits(bitrateIndex, srIndex, 0, nch)
+
+	var gr [2][2]granuleCoding
+	for g := range 2 {
+		for ch := range nch {
+			bt := blockTypes[g][ch]
+			lay := layoutFor(bt, srIndex)
+			gc := &gr[g][ch]
+			gc.blockType = bt
+
+			var best granuleCoding
+			outerLoop(&xr[g][ch], &xmin[g][ch], budget, lay, gc, &best)
+		}
+	}
+
+	mode := 0
+	if nch == 1 {
+		mode = 3
+	}
+	return assembleFrame(dst, bitrateIndex, srIndex, 0, mode, &gr, nch)
 }

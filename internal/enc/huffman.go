@@ -256,6 +256,54 @@ func chooseRegions(ix *[576]int32, part spectrumPartition, lay *bandLayout) regi
 	return best
 }
 
+// chooseRegionsWS picks per-table costs for a window-switching granule's
+// two FIXED big-values regions (ISO 2.4.2.7, design decision 5): unlike
+// chooseRegions' exhaustive search, the region boundary is not a free
+// parameter here, because the decoder never reads region0_count/
+// region1_count for a window-switching granule at all
+// (internal/dec/sideinfo.go:119-124 hard-codes regionCount[0] to 7 for a
+// start/stop granule and 8 for a pure-short one, with regionCount[1]=255
+// swallowing everything else). Region 0 therefore covers coding bands
+// [0, a): a=8 for start/stop (the first 8 long sfb's, the long geometry
+// blockType!=blockShort still carries per bandLayout's doc comment) or
+// a=9 for short (the first 9 coding bands, i.e. the first 3 short sfb's
+// across all 3 windows). Region 1 covers the rest of big_values; there is
+// no region 2 (table_select[2] is never transmitted for a window-
+// switching granule, so it is filled in equal to table_select[1] here,
+// though writeSpectrum never actually reaches it once region1 is widened
+// to lay.nBands).
+//
+// The returned regionInfo's region0Count/region1Count are chosen so
+// regionBounds reproduces this exact split (region0Count=a-1, region1Count
+// wide enough to saturate the end at lay.nBands): they are cache-only,
+// consumed by writeSpectrum, and writeSideInfo's window-switching branch
+// never emits them to the bitstream.
+func chooseRegionsWS(ix *[576]int32, part spectrumPartition, lay *bandLayout, blockType int) regionInfo {
+	a := 8
+	if blockType == blockShort {
+		a = 9
+	}
+	a = min(a, lay.nBands)
+
+	pb := pairBoundaries(lay, part.bigValues)
+	prefixCost := bigValuesPrefixCost(ix, &pb, lay)
+
+	cost0, t0 := rangeCost(&prefixCost, &pb, 0, a)
+	cost1, t1 := rangeCost(&prefixCost, &pb, a, lay.nBands)
+
+	ri := regionInfo{
+		region0Count: a - 1,
+		region1Count: lay.nBands, // saturates regionBounds' c to lay.nBands: no region 2
+		tableSelect:  [3]uint8{t0, t1, t1},
+		bits:         cost0 + cost1,
+	}
+
+	c1Bits, c1Table := count1Cost(ix, part)
+	ri.count1Table = c1Table
+	ri.bits += c1Bits
+	return ri
+}
+
 // writeSpectrum emits the Huffman-coded spectrum (big values then count1)
 // exactly as counted by chooseRegions; returns bits written, which must
 // equal ri.bits.

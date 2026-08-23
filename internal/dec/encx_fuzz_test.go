@@ -174,6 +174,17 @@ func fuzzEncodeValidateSeeds() []fuzzEncSeed {
 		// every generator below indexes by frameIdx = i/(2*1152), a
 		// within-block offset in [0, 2*1152) that tells which channel half
 		// it is in, and sampleIdx = the offset mod 1152.
+		//
+		// Seed/scale provenance: the 0xC0FFEE/0.3 and 0x5EED1-0x5EED2/0.5
+		// pairs below mirror testsignal.IdenticalNoise and
+		// testsignal.DecorrelatedNoise, the canonical definitions of these
+		// programs. They stay hand-rolled here in int32/float64 form on
+		// purpose: these builders compute int32(LCGSigned*scale*(1<<31)) in
+		// float64 and convert once, whereas the helpers return float32;
+		// routing through them would insert a float64->float32->float64
+		// double rounding and change the seed corpus bytes. Keep the
+		// constants in sync with testsignal if they ever change (they must
+		// not: they are golden-pinned there).
 		{func() []byte { // identical channels: L==R every frame (noise), the cheapest M/S case (TestMsIdenticalChannels)
 			seed := uint64(0xC0FFEE)
 			noise := make([]int32, 1152)

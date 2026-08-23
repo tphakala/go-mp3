@@ -92,33 +92,21 @@ func compatEncodeStream(t *testing.T, sampleRate, nch, kbps int) ([]byte, mp3.St
 }
 
 // compatIdenticalNoise returns nSamples of low-level LCG noise intended to
-// be duplicated on both channels: identical L/R forces M/S every frame
-// (the side channel goes near-silent before quantization), matching
-// TestMsIdenticalChannels' construction (internal/dec/encx_mstereo_test.go),
-// reproduced here since that file's helper lives in a different,
-// non-importable package.
+// be duplicated on both channels: identical L/R forces M/S every frame (the
+// side channel goes near-silent before quantization). Thin wrapper over
+// testsignal.IdenticalNoise, the single source of truth for this program's
+// seed and scale (also consumed by TestMsIdenticalChannels in
+// internal/dec/encx_mstereo_test.go).
 func compatIdenticalNoise(nSamples int) []float32 {
-	seed := uint64(0xC0FFEE)
-	x := make([]float32, nSamples)
-	for i := range x {
-		x[i] = float32(testsignal.LCGSigned(&seed) * 0.3)
-	}
-	return x
+	return testsignal.IdenticalNoise(nSamples)
 }
 
-// compatDecorrelatedNoise returns two independent LCG noise channels with
-// no shared structure at all, matching TestMsChannelSeparation's
-// construction (internal/dec/encx_mstereo_test.go), reproduced here for the
-// same reason compatIdenticalNoise is.
+// compatDecorrelatedNoise returns two independent LCG noise channels with no
+// shared structure at all. Thin wrapper over testsignal.DecorrelatedNoise,
+// the single source of truth (also consumed by TestMsChannelSeparation in
+// internal/dec/encx_mstereo_test.go).
 func compatDecorrelatedNoise(nSamples int) (x, y []float32) {
-	seedX, seedY := uint64(0x5EED1), uint64(0x5EED2)
-	x = make([]float32, nSamples)
-	y = make([]float32, nSamples)
-	for i := range x {
-		x[i] = float32(testsignal.LCGSigned(&seedX) * 0.5)
-		y[i] = float32(testsignal.LCGSigned(&seedY) * 0.5)
-	}
-	return x, y
+	return testsignal.DecorrelatedNoise(nSamples)
 }
 
 // compatEncodeStereoStream encodes one second of precomputed stereo input

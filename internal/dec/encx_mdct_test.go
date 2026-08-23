@@ -10,6 +10,7 @@ package dec
 // trip rather than by byte comparison against a reference dump.
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -252,4 +253,268 @@ func TestEncMdctTDACRoundTrip(t *testing.T) {
 		}
 	}
 	t.Logf("measured chain gain (mdctScale folded in) = %v over %d samples", mean, len(granule2Gains))
+}
+
+// encBlockShort mirrors enc.blockShort (internal/enc/blocktypes.go), which
+// is unexported: this white-box test package can call enc.MDCTGranuleBlock
+// but cannot reference its unexported blockType constants, so the four
+// ISO 2.4.1.7 block_type values are re-declared here as plain literals with
+// this comment as the cross-reference. encBlockShort's value (2) is also
+// dec's own shortBlockType (types.go); encBlockLong/Start/Stop (0/1/3)
+// likewise match dec's own blockType field values (sideinfo.go,
+// imdct.go's stopBlockType).
+const (
+	encBlockLong  = 0
+	encBlockStart = 1
+	encBlockShort = 2
+	encBlockStop  = 3
+)
+
+// shortInterleaveInto reinterleaves one granule's short-block spectral
+// lines from enc.MDCTGranuleBlock's window-major layout
+// (xr[b*18+w*6+k], w = sub-window, k = spectral line) into the layout
+// l3ImdctShort (internal/dec/imdct.go) expects: grbuf[18b+3k+w] = xr[18b+6w+k].
+// This is the interleave Task A2's reorder + l3Reorder produce end to end
+// in the real decode pipeline; this test performs it directly since reorder
+// itself is out of scope for Task A1.
+func shortInterleaveInto(grbuf []float32, xr *[576]float64) {
+	for b := range 32 {
+		for w := range 3 {
+			for k := range 6 {
+				grbuf[b*18+3*k+w] = float32(xr[b*18+w*6+k])
+			}
+		}
+	}
+}
+
+// TestEncMdctShortTDACRoundTrip is the short-block twin of
+// TestEncMdctTDACRoundTrip: it streams granules of LCG-random subband data,
+// all as short blocks, through enc.MDCTGranuleBlock (no AliasReduce, since
+// the decoder's l3Decode skips l3Antialias for a pure short granule via
+// aaBands = nLongBands - 1 = -1) and l3ImdctGr's short-block path
+// (blockType = shortBlockType, nLongBands = 0), and requires TDAC.
+//
+// The chain-gain measurement mirrors TestEncMdctTDACRoundTrip's granule-2
+// procedure exactly, but pins mdctScaleShort rather than mdctScale: with
+// mdctScaleShort temporarily set to 1 in mdct.go, this test's t.Logf line
+// reports the measured gain (used to freeze the constant, then this
+// comment and mdct.go's doc comment record the measured value); with the
+// frozen constant in place, this test's tolerance assertions are the
+// ongoing regression gate.
+func TestEncMdctShortTDACRoundTrip(t *testing.T) {
+	const granules = 8
+
+	var seed uint64 = 1
+	raws := make([][18][32]float64, granules)
+	for g := range granules {
+		for tt := range 18 {
+			for b := range 32 {
+				raws[g][tt][b] = testsignal.LCGSigned(&seed)
+			}
+		}
+	}
+
+	flipped := make([][18][32]float64, granules)
+	for g := range granules {
+		flipped[g] = raws[g]
+		enc.FlipOddSubbands(&flipped[g])
+	}
+
+	var overlap [9 * 32]float32
+	var zero [18][32]float64
+
+	var granule2Gains []float64
+
+	for g := range granules {
+		var prev *[18][32]float64
+		if g == 0 {
+			prev = &zero
+		} else {
+			prev = &flipped[g-1]
+		}
+
+		var xr [576]float64
+		enc.MDCTGranuleBlock(prev, &flipped[g], &xr, encBlockShort)
+
+		var grbuf [576]float32
+		shortInterleaveInto(grbuf[:], &xr)
+
+		l3ImdctGr(grbuf[:], overlap[:], shortBlockType, 0)
+		l3ChangeSign(grbuf[:])
+
+		if g == 0 {
+			continue
+		}
+		want := &raws[g-1]
+
+		if g == 2 {
+			for tt := range 18 {
+				for b := range 32 {
+					w := want[tt][b]
+					if math.Abs(w) < 1e-6 {
+						continue
+					}
+					got := float64(grbuf[b*18+tt])
+					granule2Gains = append(granule2Gains, got/w)
+				}
+			}
+		}
+
+		var sumSq float64
+		for tt := range 18 {
+			for b := range 32 {
+				sumSq += float64(want[tt][b] * want[tt][b])
+			}
+		}
+		rms := math.Sqrt(sumSq / (18 * 32))
+
+		const maxRelErr = 1e-3
+		for tt := range 18 {
+			for b := range 32 {
+				got := float64(grbuf[b*18+tt])
+				diff := math.Abs(got - want[tt][b])
+				if diff > maxRelErr*rms {
+					t.Fatalf("granule %d (vs raw granule %d) t=%d b=%d: got %v, want %v, diff %v exceeds %v (%.1e * rms %v)",
+						g, g-1, tt, b, got, want[tt][b], diff, maxRelErr*rms, maxRelErr, rms)
+				}
+			}
+		}
+	}
+
+	if len(granule2Gains) == 0 {
+		t.Fatal("granule 2: no usable (want, got) pairs for gain measurement")
+	}
+	mean := 0.0
+	for _, g := range granule2Gains {
+		mean += g
+	}
+	mean /= float64(len(granule2Gains))
+	for _, g := range granule2Gains {
+		if math.Abs(g-mean) > math.Abs(mean)*0.01 {
+			t.Fatalf("granule 2 chain gain not constant: sample = %v, mean = %v, deviates more than 1%%", g, mean)
+		}
+	}
+	t.Logf("measured chain gain (mdctScaleShort folded in) = %v over %d samples", mean, len(granule2Gains))
+}
+
+// transitionGranule runs the encoder/decoder chain for one granule of
+// TestEncMdctTransitionTDAC: enc.MDCTGranuleBlock, enc.AliasReduce for
+// non-short block types, the short-block window-interleave or plain copy
+// into grbuf, l3Antialias (gated exactly as l3Decode gates it, aaBands = -1
+// skipping the loop entirely for a short granule), l3ImdctGr and
+// l3ChangeSign, with overlap persisted by the caller across granules.
+func transitionGranule(prev, cur *[18][32]float64, blockType int, overlap []float32) [576]float32 {
+	var xr [576]float64
+	enc.MDCTGranuleBlock(prev, cur, &xr, blockType)
+	if blockType != encBlockShort {
+		enc.AliasReduce(&xr)
+	}
+
+	var grbuf [576]float32
+	if blockType == encBlockShort {
+		shortInterleaveInto(grbuf[:], &xr)
+	} else {
+		for i := range xr {
+			grbuf[i] = float32(xr[i])
+		}
+	}
+
+	aaBands := 31
+	if blockType == encBlockShort {
+		aaBands = -1
+	}
+	l3Antialias(grbuf[:], aaBands)
+	l3ImdctGr(grbuf[:], overlap, uint8(blockType), 0)
+	l3ChangeSign(grbuf[:])
+
+	return grbuf
+}
+
+// checkGranuleReconstruction is TestEncMdctTransitionTDAC's per-granule TDAC
+// assertion: grbuf (granule g's decode) must match want (granule g-1's raw
+// subband data) within maxRelErr of want's RMS, the same tolerance rule as
+// TestEncMdctTDACRoundTrip and TestEncMdctShortTDACRoundTrip.
+func checkGranuleReconstruction(t *testing.T, grbuf *[576]float32, want *[18][32]float64, g, blockType, prevBlockType int) {
+	t.Helper()
+
+	var sumSq float64
+	for tt := range 18 {
+		for b := range 32 {
+			sumSq += float64(want[tt][b] * want[tt][b])
+		}
+	}
+	rms := math.Sqrt(sumSq / (18 * 32))
+
+	const maxRelErr = 1e-3
+	for tt := range 18 {
+		for b := range 32 {
+			got := float64(grbuf[b*18+tt])
+			diff := math.Abs(got - want[tt][b])
+			if diff > maxRelErr*rms {
+				t.Fatalf("granule %d (blockType %d, prev blockType %d, vs raw granule %d) t=%d b=%d: got %v, want %v, diff %v exceeds %v (%.1e * rms %v)",
+					g, blockType, prevBlockType, g-1, tt, b, got, want[tt][b], diff, maxRelErr*rms, maxRelErr, rms)
+			}
+		}
+	}
+}
+
+// TestEncMdctTransitionTDAC is the increment's transition-matrix arbiter:
+// it streams 10 granules per sequence through mixed block types (covering
+// every legal long/start/short/stop edge) with ONE persisted overlap array
+// across the whole sequence, and requires that granule g's decode matches
+// granule g-1's raw subband data, exactly as the single-block-type gates
+// do. This proves both the window shapes (MDCTWindowStart/Stop/Short) AND
+// the cross-boundary window-application convention: l3Imdct36 windows the
+// incoming (previous-granule) raw overlap tail using the CURRENT granule's
+// window array (imdct.go's l3ImdctGr doc comment), so TDAC across a
+// long/start or short/stop boundary only holds if the encoder's window
+// choice for each granule agrees with what the ISO windows guarantee at
+// that seam (decision 3's named convention risk).
+func TestEncMdctTransitionTDAC(t *testing.T) {
+	sequences := [][]int{
+		{0, 0, 1, 2, 2, 3, 0, 0, 1, 2},
+		{0, 1, 2, 3, 0, 1, 2, 2, 3, 0},
+		{0, 1, 2, 2, 2, 2, 3, 0, 0, 0},
+	}
+
+	for si, seq := range sequences {
+		t.Run(fmt.Sprintf("seq%d", si), func(t *testing.T) {
+			granules := len(seq)
+
+			seed := uint64(1 + si)
+			raws := make([][18][32]float64, granules)
+			for g := range granules {
+				for tt := range 18 {
+					for b := range 32 {
+						raws[g][tt][b] = testsignal.LCGSigned(&seed)
+					}
+				}
+			}
+
+			flipped := make([][18][32]float64, granules)
+			for g := range granules {
+				flipped[g] = raws[g]
+				enc.FlipOddSubbands(&flipped[g])
+			}
+
+			var overlap [9 * 32]float32
+			var zero [18][32]float64
+
+			for g := range granules {
+				blockType := seq[g]
+
+				prev := &zero
+				if g > 0 {
+					prev = &flipped[g-1]
+				}
+
+				grbuf := transitionGranule(prev, &flipped[g], blockType, overlap[:])
+
+				if g == 0 {
+					continue
+				}
+				checkGranuleReconstruction(t, &grbuf, &raws[g-1], g, blockType, seq[g-1])
+			}
+		})
+	}
 }

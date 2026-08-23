@@ -784,3 +784,230 @@ var AliasCA = [8]float64{
 	-0x1.d14239d59a7c1p-07, // i=6
 	-0x1.e4f68c708d3f4p-09, // i=7
 }
+
+// MDCTWindowStart holds the 36 coefficients of the start-block sine window
+// from ISO/IEC 11172-3:1993, section 2.4.3.4.10.3, block_type 1: long rise
+// (the same sin(pi/36*(i+0.5)) as MDCTWindow for i = 0..17, so that the
+// overlap with a preceding long block stays consistent), a flat plateau of
+// 1.0 for i = 18..23, a short fall of sin(pi/12*(i-18+0.5)) for i = 24..29
+// (the falling half of the 12-point short window, so the overlap with a
+// following short block stays consistent), and a zero tail for i = 30..35.
+// Each literal is the exact hex float64 encoding of the piecewise formula
+// above, computed by a throwaway generator (scratchpad, never committed;
+// see MDCTWindow's doc comment for the same pattern); the committed literal
+// is the runtime truth, no math.Sin call runs at package init or runtime.
+// The first 18 entries are bit-exact equal to MDCTWindow[:18] (both compute
+// the same formula); see TestMdctShortTablesRecompute.
+var MDCTWindowStart = [36]float64{
+	0x1.65547c4694e11p-05, // w[0]
+	0x1.0b5150f6da2dp-03,  // w[1]
+	0x1.bb44b13b62571p-03, // w[2]
+	0x1.33ec389a5a81ep-02, // w[3]
+	0x1.87de2a6aea963p-02, // w[4]
+	0x1.d8d4a0e345738p-02, // w[5]
+	0x1.1318ef2c01a5bp-01, // w[6]
+	0x1.37af93f9513eap-01, // w[7]
+	0x1.59e6f5ae6a0a6p-01, // w[8]
+	0x1.797c6a435ce84p-01, // w[9]
+	0x1.963268b572491p-01, // w[10]
+	0x1.afd100eafc28fp-01, // w[11]
+	0x1.c62648af6577p-01,  // w[12]
+	0x1.d906bcf328d46p-01, // w[13]
+	0x1.e84d9692357ep-01,  // w[14]
+	0x1.f3dd11fb974b6p-01, // w[15]
+	0x1.fb9ea92ec689bp-01, // w[16]
+	0x1.ff833f9da45f7p-01, // w[17]
+	0x1p+00,               // w[18]
+	0x1p+00,               // w[19]
+	0x1p+00,               // w[20]
+	0x1p+00,               // w[21]
+	0x1p+00,               // w[22]
+	0x1p+00,               // w[23]
+	0x1.fb9ea92ec689bp-01, // w[24]
+	0x1.d906bcf328d46p-01, // w[25]
+	0x1.963268b572492p-01, // w[26]
+	0x1.37af93f9513e8p-01, // w[27]
+	0x1.87de2a6aea95dp-02, // w[28]
+	0x1.0b5150f6da2bfp-03, // w[29]
+	0x0p+00,               // w[30]
+	0x0p+00,               // w[31]
+	0x0p+00,               // w[32]
+	0x0p+00,               // w[33]
+	0x0p+00,               // w[34]
+	0x0p+00,               // w[35]
+}
+
+// MDCTWindowStop holds the 36 coefficients of the stop-block sine window
+// from ISO/IEC 11172-3:1993, section 2.4.3.4.10.3, block_type 3: the exact
+// time reverse of MDCTWindowStart, i.e. MDCTWindowStop[i] =
+// MDCTWindowStart[35-i] (decision 3). This gives a zero head (i = 0..5), a
+// short rise of sin(pi/12*(i-6+0.5)) (i = 6..11, the mirror of
+// MDCTWindowStart's short fall), a flat plateau of 1.0 (i = 12..17), and a
+// long fall of sin(pi/36*(i+0.5)) (i = 18..35, the same formula as
+// MDCTWindow's own second half, bit-exact equal to it; both windows carry
+// the identical sin(pi-x) = sin(x) symmetry that MDCTWindow's own two
+// halves share). Each literal is the exact hex float64 encoding of
+// MDCTWindowStart[35-i] from the same throwaway generator as
+// MDCTWindowStart; the committed literal is the runtime truth. See
+// TestMdctShortTablesRecompute for the reverse-relationship check.
+var MDCTWindowStop = [36]float64{
+	0x0p+00,               // w[0]
+	0x0p+00,               // w[1]
+	0x0p+00,               // w[2]
+	0x0p+00,               // w[3]
+	0x0p+00,               // w[4]
+	0x0p+00,               // w[5]
+	0x1.0b5150f6da2bfp-03, // w[6]
+	0x1.87de2a6aea95dp-02, // w[7]
+	0x1.37af93f9513e8p-01, // w[8]
+	0x1.963268b572492p-01, // w[9]
+	0x1.d906bcf328d46p-01, // w[10]
+	0x1.fb9ea92ec689bp-01, // w[11]
+	0x1p+00,               // w[12]
+	0x1p+00,               // w[13]
+	0x1p+00,               // w[14]
+	0x1p+00,               // w[15]
+	0x1p+00,               // w[16]
+	0x1p+00,               // w[17]
+	0x1.ff833f9da45f7p-01, // w[18]
+	0x1.fb9ea92ec689bp-01, // w[19]
+	0x1.f3dd11fb974b6p-01, // w[20]
+	0x1.e84d9692357ep-01,  // w[21]
+	0x1.d906bcf328d46p-01, // w[22]
+	0x1.c62648af6577p-01,  // w[23]
+	0x1.afd100eafc28fp-01, // w[24]
+	0x1.963268b572491p-01, // w[25]
+	0x1.797c6a435ce84p-01, // w[26]
+	0x1.59e6f5ae6a0a6p-01, // w[27]
+	0x1.37af93f9513eap-01, // w[28]
+	0x1.1318ef2c01a5bp-01, // w[29]
+	0x1.d8d4a0e345738p-02, // w[30]
+	0x1.87de2a6aea963p-02, // w[31]
+	0x1.33ec389a5a81ep-02, // w[32]
+	0x1.bb44b13b62571p-03, // w[33]
+	0x1.0b5150f6da2dp-03,  // w[34]
+	0x1.65547c4694e11p-05, // w[35]
+}
+
+// MDCTWindowShort holds the 12 coefficients of the short-block sine window
+// from ISO/IEC 11172-3:1993, section 2.4.3.4.10.3, block_type 2:
+// w[j] = sin(pi/12 * (j + 0.5)) for j = 0..11, applied identically to each
+// of the three 12-point sub-windows a short-block granule computes per
+// subband (MDCTGranuleBlock, mdct.go). Each literal is the exact hex
+// float64 encoding of the formula, computed by the same throwaway generator
+// as MDCTWindow; the committed literal is the runtime truth, no math.Sin
+// call runs at package init or runtime.
+var MDCTWindowShort = [12]float64{
+	0x1.0b5150f6da2d1p-03, // w[0]
+	0x1.87de2a6aea964p-02, // w[1]
+	0x1.37af93f9513ebp-01, // w[2]
+	0x1.963268b572492p-01, // w[3]
+	0x1.d906bcf328d47p-01, // w[4]
+	0x1.fb9ea92ec689cp-01, // w[5]
+	0x1.fb9ea92ec689bp-01, // w[6]
+	0x1.d906bcf328d46p-01, // w[7]
+	0x1.963268b572492p-01, // w[8]
+	0x1.37af93f9513e8p-01, // w[9]
+	0x1.87de2a6aea95dp-02, // w[10]
+	0x1.0b5150f6da2bfp-03, // w[11]
+}
+
+// mdctCos12 holds the 6x12 forward-MDCT kernel for short blocks from
+// ISO/IEC 11172-3:1993, Annex C, section C.1.5.1, specialized to N = 12
+// (short blocks):
+//
+//	mdctCos12[k][j] = cos(pi/(2*N) * (2*j + 1 + N/2) * (2*k + 1))
+//	                = cos(pi/24 * (2*j + 7) * (2*k + 1))
+//
+// for k = 0..5 (spectral line) and j = 0..11 (windowed sample index), the
+// same general formula as mdctCos with N = 12 instead of N = 36. Each
+// literal is the exact hex float64 encoding of the corresponding
+// math.Cos(...) call, produced by the same throwaway generator as
+// mdctCos; the committed literal is the runtime truth, no math.Cos call
+// runs at package init or runtime.
+var mdctCos12 = [6][12]float64{
+	{ // k=0
+		0x1.37af93f9513eap-01,  // j=0
+		0x1.87de2a6aea96p-02,   // j=1
+		0x1.0b5150f6da2cdp-03,  // j=2
+		-0x1.0b5150f6da2d9p-03, // j=3
+		-0x1.87de2a6aea965p-02, // j=4
+		-0x1.37af93f9513eap-01, // j=5
+		-0x1.963268b572493p-01, // j=6
+		-0x1.d906bcf328d48p-01, // j=7
+		-0x1.fb9ea92ec689cp-01, // j=8
+		-0x1.fb9ea92ec689bp-01, // j=9
+		-0x1.d906bcf328d45p-01, // j=10
+		-0x1.963268b57249p-01,  // j=11
+	},
+	{ // k=1
+		-0x1.d906bcf328d48p-01, // j=0
+		-0x1.d906bcf328d45p-01, // j=1
+		-0x1.87de2a6aea95ep-02, // j=2
+		0x1.87de2a6aea967p-02,  // j=3
+		0x1.d906bcf328d47p-01,  // j=4
+		0x1.d906bcf328d46p-01,  // j=5
+		0x1.87de2a6aea952p-02,  // j=6
+		-0x1.87de2a6aea964p-02, // j=7
+		-0x1.d906bcf328d4ap-01, // j=8
+		-0x1.d906bcf328d46p-01, // j=9
+		-0x1.87de2a6aea954p-02, // j=10
+		0x1.87de2a6aea98p-02,   // j=11
+	},
+	{ // k=2
+		-0x1.0b5150f6da2d2p-03, // j=0
+		0x1.d906bcf328d4ap-01,  // j=1
+		0x1.37af93f9513e7p-01,  // j=2
+		-0x1.37af93f9513f5p-01, // j=3
+		-0x1.d906bcf328d46p-01, // j=4
+		0x1.0b5150f6da2dcp-03,  // j=5
+		0x1.fb9ea92ec689cp-01,  // j=6
+		0x1.87de2a6aea938p-02,  // j=7
+		-0x1.963268b5724a1p-01, // j=8
+		-0x1.963268b572495p-01, // j=9
+		0x1.87de2a6aea99ap-02,  // j=10
+		0x1.fb9ea92ec6897p-01,  // j=11
+	},
+	{ // k=3
+		0x1.fb9ea92ec689bp-01,  // j=0
+		-0x1.87de2a6aea982p-02, // j=1
+		-0x1.963268b572493p-01, // j=2
+		0x1.963268b572499p-01,  // j=3
+		0x1.87de2a6aea956p-02,  // j=4
+		-0x1.fb9ea92ec689cp-01, // j=5
+		0x1.0b5150f6da313p-03,  // j=6
+		0x1.d906bcf328d41p-01,  // j=7
+		-0x1.37af93f95140bp-01, // j=8
+		-0x1.37af93f9513e4p-01, // j=9
+		0x1.d906bcf328d48p-01,  // j=10
+		0x1.0b5150f6da252p-03,  // j=11
+	},
+	{ // k=4
+		-0x1.87de2a6aea964p-02, // j=0
+		-0x1.87de2a6aea954p-02, // j=1
+		0x1.d906bcf328d4p-01,   // j=2
+		-0x1.d906bcf328d4fp-01, // j=3
+		0x1.87de2a6aea95fp-02,  // j=4
+		0x1.87de2a6aea93cp-02,  // j=5
+		-0x1.d906bcf328d41p-01, // j=6
+		0x1.d906bcf328d54p-01,  // j=7
+		-0x1.87de2a6aea994p-02, // j=8
+		-0x1.87de2a6aea942p-02, // j=9
+		0x1.d906bcf328d36p-01,  // j=10
+		-0x1.d906bcf328d53p-01, // j=11
+	},
+	{ // k=5
+		-0x1.963268b572493p-01, // j=0
+		0x1.d906bcf328d4p-01,   // j=1
+		-0x1.fb9ea92ec689bp-01, // j=2
+		0x1.fb9ea92ec689ep-01,  // j=3
+		-0x1.d906bcf328d48p-01, // j=4
+		0x1.963268b57248cp-01,  // j=5
+		-0x1.37af93f9513fp-01,  // j=6
+		0x1.87de2a6aea992p-02,  // j=7
+		-0x1.0b5150f6da37cp-03, // j=8
+		-0x1.0b5150f6da2dep-03, // j=9
+		0x1.87de2a6aea949p-02,  // j=10
+		-0x1.37af93f9513d1p-01, // j=11
+	},
+}

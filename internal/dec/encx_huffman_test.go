@@ -34,6 +34,38 @@ func TestEncSfbWidthsMatchDec(t *testing.T) {
 	}
 }
 
+// TestEncSfbWidthsShortMatchDec confirms enc.SfbWidthsShortRow(rate)'s
+// three MPEG-1 short-block sfb width rows collapse-equal the decoder's
+// scfShortTable rows for the same three rates. scfShortTable stores each
+// short sfb width three times consecutively (once per window), so
+// collapsing takes every third entry starting at 0; this test also checks
+// that premise (the three repeats really are uniform) rather than just
+// comparing the sampled entries. Same srIdx mapping as
+// TestEncSfbWidthsMatchDec: rows 5/6/7 for MPEG-1 44.1/48/32 kHz.
+func TestEncSfbWidthsShortMatchDec(t *testing.T) {
+	decRows := [3]int{5, 6, 7}
+	for rate, decRow := range decRows {
+		got := enc.SfbWidthsShortRow(rate)
+		want := scfShortTable[decRow]
+		sum := 0
+		for i := range 13 {
+			collapsed := int(want[3*i])
+			if int(want[3*i+1]) != collapsed || int(want[3*i+2]) != collapsed {
+				t.Fatalf("rate %d: scfShortTable[%d][%d:%d] = %v, not a uniform triple",
+					rate, decRow, 3*i, 3*i+3, want[3*i:3*i+3])
+			}
+			if got[i] != collapsed {
+				t.Fatalf("rate %d: sfbWidthsShort[%d] = %d, want scfShortTable[%d] collapsed = %d",
+					rate, i, got[i], decRow, collapsed)
+			}
+			sum += got[i]
+		}
+		if sum != 192 {
+			t.Fatalf("rate %d: sfbWidthsShort sums to %d, want 192", rate, sum)
+		}
+	}
+}
+
 // TestEncLinbitsMatchDec confirms every enc.BigTableLinbits(t) equals the
 // decoder's linbitsTable[t], for all 32 table numbers (including the
 // invalid slots 4 and 14, where both sides are 0).

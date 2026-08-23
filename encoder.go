@@ -35,8 +35,8 @@ const EncoderDelay = enc.ChainDelay - standardDecoderDelay
 
 // TotalDelay is the total encoder-plus-standard-decoder algorithmic delay,
 // in samples per channel, carried as leading samples in the decoded output
-// of any stream this package produces. This Phase 3 encoder emits tagless
-// CBR streams, with no LAME gapless tag for a downstream decoder to trim
+// of any stream this package produces. This encoder emits tagless CBR
+// streams, with no LAME gapless tag for a downstream decoder to trim
 // automatically, so a caller that wants to align decoded audio back to the
 // original input must subtract TotalDelay itself (drop the first
 // TotalDelay samples per channel after decoding). EncoderDelay (528) is
@@ -199,8 +199,16 @@ func (e *Encoder) Reset(cfg EncoderConfig) error {
 }
 
 // EncodeFrame encodes the next frame of planar float32 PCM (one slice per
-// channel, up to FrameSize samples each) and appends the encoded MP3 frame
-// to dst, returning the extended slice. Finite samples are accepted at any
+// channel, up to FrameSize samples each) and appends zero or more complete
+// MP3 frames to dst, returning the extended slice. EncodeFrame is not
+// one-call-in-one-frame-out: the encoder holds a one-frame PCM lookahead for
+// attack detection and block switching, plus a bit reservoir that can carry
+// a coded frame across calls, so the first call typically appends none, and
+// frames for the audio passed to call n emerge no earlier than call n+1.
+// Drain (see below) flushes both the held frame and the final flush frame
+// in one call, so N non-nil calls plus drain always total exactly N+1
+// emitted frames; do not assume a fixed number of frames per call when
+// sizing dst or counting output. Finite samples are accepted at any
 // magnitude; any sample outside [-1, 1] is clamped to [-1, 1] before
 // encoding. A NaN or an Inf anywhere returns ErrInvalidAudio instead (see
 // its doc comment above). EncodeFrame is append-style, like
@@ -218,10 +226,12 @@ func (e *Encoder) Reset(cfg EncoderConfig) error {
 //
 // Pass a nil samples to drain: unless the encoder has been poisoned by
 // prior invalid audio (which makes every later call, including a drain,
-// return ErrInvalidAudio until Reset), a nil call appends the encoder's
-// final flush frame and is always legal, including right after a short
-// final frame; further nil calls append nothing more. Drained reports
-// whether the drain has already happened. Submitting non-nil audio after a
+// return ErrInvalidAudio until Reset), a nil call flushes the held frame
+// (the last real audio the encoder was still holding for its one-frame
+// lookahead, if any) plus the final silence flush frame, and is always
+// legal, including right after a short final frame; further nil calls
+// append nothing more. Drained reports whether the drain has already
+// happened. Submitting non-nil audio after a
 // drain also returns ErrEncoderFinalized.
 //
 // On an Encoder that has not been successfully initialized by NewEncoder
@@ -319,6 +329,11 @@ func (e *Encoder) Drained() bool {
 // in the future without an API break; today it does not vary, and returns
 // EncoderDelay even on a zero-value Encoder.
 func (e *Encoder) Delay() int { return EncoderDelay }
+
+// TotalDelay returns TotalDelay: a method mirror of the constant, like
+// Delay, so callers holding an Encoder need not import the constant and
+// the surface stays stable if the delay ever becomes config-dependent.
+func (e *Encoder) TotalDelay() int { return TotalDelay }
 
 // Stats returns the encoder's cumulative counters since NewEncoder or the
 // last Reset. It returns a zero Stats on a zero-value Encoder.

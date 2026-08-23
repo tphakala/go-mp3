@@ -462,7 +462,12 @@ func TestEncoderShortFrameInvalidAudio(t *testing.T) {
 
 // TestEncoderDelaySplit pins TotalDelay and EncoderDelay against a
 // ChainDelay change: TotalDelay must equal 1057, and EncoderDelay must
-// equal TotalDelay - 529 (the standard decoder's own contribution).
+// equal TotalDelay - 529 (the standard decoder's own contribution). It also
+// requires the Delay() and TotalDelay() methods (issue #31b's method
+// mirrors of the constants, so a caller holding an *Encoder need not import
+// the constants directly) to agree with those constants exactly, on both a
+// zero-value Encoder and a freshly constructed one, so the mirrors can
+// never silently drift from what they mirror.
 func TestEncoderDelaySplit(t *testing.T) {
 	if mp3.TotalDelay != 1057 {
 		t.Fatalf("TotalDelay = %d, want 1057", mp3.TotalDelay)
@@ -470,7 +475,34 @@ func TestEncoderDelaySplit(t *testing.T) {
 	if mp3.EncoderDelay != mp3.TotalDelay-529 {
 		t.Fatalf("EncoderDelay = %d, want TotalDelay-529 = %d", mp3.EncoderDelay, mp3.TotalDelay-529)
 	}
+
+	var zero mp3.Encoder
+	if got := zero.Delay(); got != mp3.EncoderDelay {
+		t.Fatalf("zero-value Encoder.Delay() = %d, want EncoderDelay = %d", got, mp3.EncoderDelay)
+	}
+	if got := zero.TotalDelay(); got != mp3.TotalDelay {
+		t.Fatalf("zero-value Encoder.TotalDelay() = %d, want TotalDelay = %d", got, mp3.TotalDelay)
+	}
+
+	e, err := mp3.NewEncoder(mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: 128000})
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	if got := e.Delay(); got != mp3.EncoderDelay {
+		t.Fatalf("Encoder.Delay() = %d, want EncoderDelay = %d", got, mp3.EncoderDelay)
+	}
+	if got := e.TotalDelay(); got != mp3.TotalDelay {
+		t.Fatalf("Encoder.TotalDelay() = %d, want TotalDelay = %d", got, mp3.TotalDelay)
+	}
+	if e.Delay()+standardDecoderDelayForTest != e.TotalDelay() {
+		t.Fatalf("Delay() + standard decoder delay (%d) = %d, want TotalDelay() = %d", standardDecoderDelayForTest, e.Delay()+standardDecoderDelayForTest, e.TotalDelay())
+	}
 }
+
+// standardDecoderDelayForTest mirrors the unexported standardDecoderDelay
+// constant so this external test package can check Delay()/TotalDelay()
+// consistency without exporting an internal implementation detail.
+const standardDecoderDelayForTest = 529
 
 // TestEncoderPcmDecoderRoundTrip encodes a 2-second 44.1kHz/128kbps/stereo
 // program with the public API, feeds the resulting stream to

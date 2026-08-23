@@ -1235,12 +1235,31 @@ func (e *Encoder) Stats() Stats {
 // needs the PRECEDING granule's subband samples before it emits the first
 // granule's true output) + 481
 // (the analysis+synthesis polyphase filterbank chain delay, frozen as
-// fbChainDelay in internal/dec/encx_filterbank_test.go:90). ChainDelay <
-// 1152 is asserted alongside the measurement: it is what makes the
-// one-silence-frame drain design correct, since a single flush frame
-// (1152 samples) covers more than the chain's total lag, so draining once
-// is enough to push every real sample through the pipeline and out the
-// decoder.
+// fbChainDelay in internal/dec/encx_filterbank_test.go:90).
+//
+// Re-measured (and reconfirmed at this same 1057) after the held-frame
+// one-frame PCM lookahead for attack detection and block switching landed
+// (design decision 11): EncodeFrame now needs one extra input call before a
+// frame's coding can even start (call 1 stashes into held and appends
+// nothing; call n codes the frame stashed since call n-1, once call n's
+// samples supply that frame's lookahead), so N input calls plus a drain
+// still total N+1 emitted frames, and the drain call itself now codes TWO
+// frames back to back (the held real frame, once next is zeroed to
+// silence, then the silence flush frame) instead of one. Both of those are
+// CALL-LATENCY and drain-shape facts about the EncodeFrame API contract,
+// not sample-domain delay: frame k of the emitted STREAM still codes input
+// samples [k*1152, (k+1)*1152) exactly as before the held-frame design,
+// so the decoded-output-vs-input lag this constant measures is unchanged.
+// A roadmap draft once proposed 1057 + 1152 = 2209 for this constant,
+// reasoning from the one-frame call latency; that conflates call latency
+// with stream alignment and was rejected (decision 12): migrating the
+// constant would falsely claim the bitstream carries an extra leading
+// silence frame, which would corrupt any downstream gapless-playback math
+// built on it. ChainDelay < 1152 is asserted alongside the measurement: it
+// is what makes the drain design correct regardless of how many frames the
+// drain call itself codes, since even the wider two-frame drain flush
+// covers more than the chain's total lag, so draining once is enough to
+// push every real sample through the pipeline and out the decoder.
 const ChainDelay = 1057
 
 // --- Test-only cross-package surface ---

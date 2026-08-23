@@ -241,6 +241,101 @@ func TestEncoderChainDelay(t *testing.T) {
 	t.Logf("measured chain delay = %d samples", delay)
 }
 
+// TestEncoderDrainCompleteness proves design decision 11's held-frame
+// N-calls-plus-drain-yields-N+1-frames invariant end to end through the
+// PUBLIC mp3.Decoder, not just via Stats() as internal/enc's
+// TestEncoderHeldFrameContract already does at the internal layer without
+// ever decoding: N input frames plus one drain call decode to exactly
+// (N+1)*1152 samples per channel and exactly N+1 frames (decodeStream's own
+// wantFrames check enforces both), the original input reappears in the
+// decoded stream at lag == enc.ChainDelay exactly, not merely "some" lag
+// (this ties the held-frame design to the SAME chain delay
+// TestEncoderChainDelay measures, proving the one-frame PCM lookahead added
+// for attack detection did not shift stream alignment, per decision 12), a
+// second nil call after the first drain appends nothing, a non-nil call
+// after drain still panics (encoder.go's drain-terminal contract), and
+// Reset fully restores the held-frame/lookahead state (pcmHist/held/
+// attackCarry/blockPrev, per Reset's `*e = Encoder{cfg: cfg}` doc comment)
+// so a second stream through the SAME *enc.Encoder round-trips exactly as
+// cleanly as the first.
+func TestEncoderDrainCompleteness(t *testing.T) {
+	const (
+		sampleRate = 44100
+		nch        = 1
+		kbps       = 128
+		nFrames    = 40 // comfortably above measureChainDelay's 4000-sample margin on each side
+	)
+
+	cfg := enc.Config{SampleRate: sampleRate, Channels: nch, BitrateKbps: kbps}
+	e, err := enc.New(cfg)
+	if err != nil {
+		t.Fatalf("enc.New: %v", err)
+	}
+
+	roundTrip := func(t *testing.T) {
+		t.Helper()
+		totalSamples := nFrames * 1152
+		input := buildMultiTone(sampleRate, totalSamples, 0)
+
+		var stream []byte
+		for f := range nFrames {
+			samples := make([]float32, 1152)
+			for i := range 1152 {
+				samples[i] = float32(input[f*1152+i])
+			}
+			var err error
+			stream, err = e.EncodeFrame(stream, [][]float32{samples})
+			if err != nil {
+				t.Fatalf("frame %d: EncodeFrame: %v", f, err)
+			}
+		}
+
+		drained, err := e.EncodeFrame(stream, nil)
+		if err != nil {
+			t.Fatalf("drain: EncodeFrame: %v", err)
+		}
+
+		// decodeStream itself requires exactly (nFrames+1)*1152 samples per
+		// channel and exactly nFrames+1 frames: the drain-completeness count
+		// check (N input frames + drain = N+1 stream frames).
+		decoded := decodeStream(t, drained, sampleRate, kbps, nch, nFrames+1)
+
+		if lag := measureChainDelay(input, decoded); lag != enc.ChainDelay {
+			t.Fatalf("measured lag = %d, want enc.ChainDelay = %d (held-frame design must not shift stream alignment)", lag, enc.ChainDelay)
+		}
+
+		// A second nil call after the first drain appends nothing.
+		again, err := e.EncodeFrame(drained, nil)
+		if err != nil {
+			t.Fatalf("second drain call: %v", err)
+		}
+		if len(again) != len(drained) {
+			t.Fatalf("second nil call after drain appended %d bytes, want 0", len(again)-len(drained))
+		}
+
+		// Drain is terminal: a non-nil call after drain panics.
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("EncodeFrame with real samples after drain: want panic")
+				}
+			}()
+			_, _ = e.EncodeFrame(nil, [][]float32{make([]float32, 1152)})
+		}()
+	}
+
+	t.Run("first stream", roundTrip)
+
+	// Reset must fully restore the held-frame/lookahead state: a second
+	// stream through the same *enc.Encoder round-trips exactly as cleanly
+	// (same N+1-frame count, same measured lag, same drain/panic contract)
+	// as the first.
+	if err := e.Reset(cfg); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	t.Run("second stream after Reset", roundTrip)
+}
+
 // roundTripSNRFloorsDB are the do-not-regress SNR floors per bitrate,
 // tightened to 3dB below the measured minimum across the whole grid (every
 // sample rate, both channel modes) for that bitrate, after the brief's

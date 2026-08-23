@@ -15,22 +15,23 @@ package enc
 // earlier.
 const outerLoopMaxIters = 150
 
-// worstViolator returns the fixable band with the maximum noise/xmin
-// ratio among bands where noise > xmin, or -1 if none; ties break toward
-// the LOWEST sfb index (deterministic). sfb 21 carries no scalefactor
-// (sf.scf only spans indices 0..20, len(sf.scf) == 21) so it is never a
-// candidate, independent of unfixable's contents. Pure function,
-// unit-tested directly (design decision 2).
-func worstViolator(noise, xmin *[22]float64, unfixable *[22]bool, sf *scfState) int {
+// worstViolator returns the fixable scalefactor-bearing band with the
+// maximum noise/xmin ratio among bands where noise > xmin, or -1 if none;
+// ties break toward the LOWEST band index (deterministic). Only bands
+// b < lay.nScf carry a scalefactor (long band 21, or the highest short
+// triple 36..38) so the loop never considers a band beyond lay.nScf,
+// independent of unfixable's contents. Pure function, unit-tested directly
+// (design decision 2).
+func worstViolator(noise, xmin *[39]float64, unfixable *[39]bool, sf *scfState, lay *bandLayout) int {
 	best := -1
 	bestRatio := 0.0
-	for sfb := range len(sf.scf) {
-		if unfixable[sfb] || noise[sfb] <= xmin[sfb] {
+	for b := range lay.nScf {
+		if unfixable[b] || noise[b] <= xmin[b] {
 			continue
 		}
-		if ratio := noise[sfb] / xmin[sfb]; ratio > bestRatio {
+		if ratio := noise[b] / xmin[b]; ratio > bestRatio {
 			bestRatio = ratio
-			best = sfb
+			best = b
 		}
 	}
 	return best
@@ -75,8 +76,8 @@ func betterPass(excess, ratio float64, over int, bestExcess, bestRatio float64, 
 // budget escalation (Task 3 Step 3) can compare codings produced at
 // different budget grants with the exact ordering outerLoop already
 // trusts within one budget.
-func maskingMetrics(noise, xmin *[22]float64) (excess, ratio float64, over int) {
-	for sfb := range 22 {
+func maskingMetrics(noise, xmin *[39]float64, lay *bandLayout) (excess, ratio float64, over int) {
+	for sfb := range lay.nBands {
 		if noise[sfb] <= xmin[sfb] {
 			continue
 		}
@@ -87,6 +88,33 @@ func maskingMetrics(noise, xmin *[22]float64) (excess, ratio float64, over int) 
 		}
 	}
 	return excess, ratio, over
+}
+
+// escalateSubblockGain performs one step of the short-granule subblock_gain
+// re-expression (design decision 7): raise band w's window by one
+// subblock_gain unit (8 quarter-steps, ISO's dequant formula) and give back
+// the equivalent scf units from every scf-bearing band in the SAME window,
+// so the window's total effective amplification is unchanged except for
+// the extra headroom the new ssg step buys band w. The give-back is
+// exactly 8/(2*(scalefacScale+1)) scf units per band (2 units at
+// scalefacScale 1, 4 at scalefacScale 0), floored at 0 (a band already
+// below the give-back keeps whatever headroom it has, it does not go
+// negative). Factored out of outerLoop's escalation switch (the
+// worstViolator/maskingMetrics precedent) so it can be unit-tested
+// directly, deterministically, without needing a full outerLoop run to
+// reach this exact state.
+func escalateSubblockGain(sf *scfState, lay *bandLayout, w int) {
+	win := lay.win[w]
+	sf.subblockGain[win]++
+	giveBack := 8 / (2 * (sf.scalefacScale + 1))
+	for b := range lay.nScf {
+		if lay.win[b] != win {
+			continue
+		}
+		if sf.scf[b] -= giveBack; sf.scf[b] < 0 {
+			sf.scf[b] = 0
+		}
+	}
 }
 
 // outerLoop runs the ISO distortion-control loop for one granule-channel:
@@ -128,19 +156,28 @@ func maskingMetrics(noise, xmin *[22]float64) (excess, ratio float64, over int) 
 // re-measuring identical noise forever (this fires precisely when an
 // amplification attempt only sets unfixable, touching no scf).
 //
+// Short granules (design decision 7) add one more escalation rung between
+// the scalefac_scale ceil re-expression and giving up on a band: when the
+// worst violator's window has spare subblock_gain headroom (< 7), ssg for
+// that window is raised by one unit and every scf-bearing band sharing the
+// window gives back the equivalent scf units, a pure re-expression of the
+// window's baseline amplification that buys the violating band more
+// individual headroom. preflag re-expression only applies to long granules
+// (a short granule's preflag is always 0).
+//
 // gc is caller-owned working state, overwritten every pass; best is
 // caller-owned scratch (the Encoder preallocates a single reusable buffer)
 // that the loop never allocates into, only copies gc's value in and back
 // out of. The returned iteration count feeds tests and diagnostics.
-func outerLoop(xr *[576]float64, xmin *[22]float64, budgetBits int, sfbWidths *[22]int, gc, best *granuleCoding) (iters int) {
+func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLayout, gc, best *granuleCoding) (iters int) {
 	var sf scfState
-	var unfixable [22]bool
+	var unfixable [39]bool
 
 	// prevExtra starts at an unreachable sentinel (bandExtraQuarters never
 	// returns negative) so the very first iteration's progress-guard check
 	// never trips: extra != prevExtra unconditionally on iteration 1.
-	var prevExtra [21]int
-	for s := range prevExtra {
+	var prevExtra [39]int
+	for s := range lay.nBands {
 		prevExtra[s] = -1
 	}
 
@@ -159,9 +196,9 @@ func outerLoop(xr *[576]float64, xmin *[22]float64, budgetBits int, sfbWidths *[
 	var pendingNoise float64
 
 	for iters = 1; iters <= outerLoopMaxIters; iters++ {
-		var extra [21]int
-		for s := range extra {
-			extra[s] = sf.bandExtraQuarters(s)
+		var extra [39]int
+		for s := range lay.nBands {
+			extra[s] = sf.bandExtraQuarters(s, lay)
 		}
 		if extra == prevExtra {
 			break // strict progress guard: last iteration changed nothing
@@ -169,7 +206,7 @@ func outerLoop(xr *[576]float64, xmin *[22]float64, budgetBits int, sfbWidths *[
 		prevExtra = extra
 
 		gc.sf = sf
-		idx, part2, ok := chooseScalefacCompress(&gc.sf, 0)
+		idx, part2, ok := chooseScalefacCompress(&gc.sf, 0, lay)
 		if !ok || part2 >= budgetBits {
 			break // part2 alone starves the Huffman budget
 		}
@@ -190,12 +227,12 @@ func outerLoop(xr *[576]float64, xmin *[22]float64, budgetBits int, sfbWidths *[
 		// internal min(...,maxPart23Length) can never bind on its own and
 		// part2+ri.bits <= maxPart23Length always holds.
 		huffBudget := min(budgetBits, maxPart23Length) - part2
-		codeGranule(xr, huffBudget, sfbWidths, gc)
+		codeGranule(xr, huffBudget, lay, gc)
 		gc.scfCompress, gc.part2Bits = idx, part2
 		gc.part23Length = part2 + gc.ri.bits
 
-		var noise [22]float64
-		noiseGranule(xr, &gc.ix, gc.globalGain, &gc.sf, sfbWidths, &noise)
+		var noise [39]float64
+		noiseGranule(xr, &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
 
 		if pendingBand >= 0 {
 			target := pendingBand
@@ -215,7 +252,7 @@ func outerLoop(xr *[576]float64, xmin *[22]float64, budgetBits int, sfbWidths *[
 
 		var excess, ratio float64
 		over := 0
-		for sfb := range 22 {
+		for sfb := range lay.nBands {
 			if noise[sfb] <= xmin[sfb] {
 				continue
 			}
@@ -236,13 +273,13 @@ func outerLoop(xr *[576]float64, xmin *[22]float64, budgetBits int, sfbWidths *[
 			return iters // gc already holds the winning (best) pass
 		}
 
-		w := worstViolator(&noise, xmin, &unfixable, &sf)
+		w := worstViolator(&noise, xmin, &unfixable, &sf, lay)
 		if w < 0 {
 			break // every remaining violator is unfixable
 		}
 
 		sfCap := sfMaxLo
-		if w >= slen1Bands {
+		if w >= lay.slen1End {
 			sfCap = sfMaxHi
 		}
 		switch {
@@ -251,15 +288,18 @@ func outerLoop(xr *[576]float64, xmin *[22]float64, budgetBits int, sfbWidths *[
 			pendingBand, pendingNoise = w, noise[w]
 		case sf.scalefacScale == 0:
 			sf.scalefacScale = 1
-			for s := range sf.scf {
+			for s := range lay.nScf {
 				sf.scf[s] = (sf.scf[s] + 1) >> 1
 			}
+			pendingBand, pendingNoise = w, noise[w]
+		case lay.short && sf.subblockGain[lay.win[w]] < 7:
+			escalateSubblockGain(&sf, lay, w)
 			pendingBand, pendingNoise = w, noise[w]
 		default:
 			unfixable[w] = true
 		}
 
-		if sf.preflag == 0 && preflagReady(&sf) {
+		if !lay.short && sf.preflag == 0 && preflagReady(&sf) {
 			sf.preflag = 1
 			for sfb := 11; sfb < 21; sfb++ {
 				sf.scf[sfb] -= pretabLong[sfb]

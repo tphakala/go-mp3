@@ -83,21 +83,20 @@ func pairCost(t huffTable, ax, ay int32) int {
 	return cost
 }
 
-// pairBoundaries returns, for sfbWidths and a big-values region of
-// bigValues pairs, the cumulative pair count through each of the 22
-// long-block scalefactor bands (pb[0] = 0, pb[22] = bigValues), clamped
-// so a region that runs out of big-values pairs mid-sfb never claims
-// pairs beyond what actually exists. This mirrors l3Huffman's walk
-// exactly: bigValCnt there stops the decode the moment it hits 0,
-// regardless of how many nominal sfb's a region's side-info count
-// implies (internal/dec/huffman.go:151, :199-204). chooseRegions and
-// writeSpectrum both call this so their region-boundary arithmetic can
-// never diverge.
-func pairBoundaries(sfbWidths *[22]int, bigValues int) [23]int {
-	var pb [23]int
+// pairBoundaries returns, for coding-band layout lay and a big-values
+// region of bigValues pairs, the cumulative pair count through each of
+// lay's coding bands (pb[0] = 0, pb[lay.nBands] = bigValues), clamped so a
+// region that runs out of big-values pairs mid-band never claims pairs
+// beyond what actually exists. This mirrors l3Huffman's walk exactly:
+// bigValCnt there stops the decode the moment it hits 0, regardless of how
+// many nominal sfb's a region's side-info count implies
+// (internal/dec/huffman.go:151, :199-204). chooseRegions and writeSpectrum
+// both call this so their region-boundary arithmetic can never diverge.
+func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
+	var pb [40]int
 	cum := 0
-	for k := range 22 {
-		cum += sfbWidths[k] / 2
+	for k := range lay.nBands {
+		cum += lay.width[k] / 2
 		if cum > bigValues {
 			cum = bigValues
 		}
@@ -108,14 +107,14 @@ func pairBoundaries(sfbWidths *[22]int, bigValues int) [23]int {
 
 // bigValuesPrefixCost returns prefixCost[t][k]: the bits needed to encode
 // pairs [0, pb[k]) of ix using table t, for every table t in
-// validBigTables and every sfb prefix k in [0,22].
-func bigValuesPrefixCost(ix *[576]int32, pb *[23]int) [32][23]int {
-	var prefixCost [32][23]int
+// validBigTables and every coding-band prefix k in [0,lay.nBands].
+func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout) [32][40]int {
+	var prefixCost [32][40]int
 	for _, t := range validBigTables {
 		bt := bigTables[t]
 		cost := 0
 		p := 0
-		for k := range 22 {
+		for k := range lay.nBands {
 			end := pb[k+1]
 			for ; p < end; p++ {
 				cost += pairCost(bt, abs32(ix[2*p]), abs32(ix[2*p+1]))
@@ -128,10 +127,10 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[23]int) [32][23]int {
 
 // rangeCost returns the cheapest single table (and its cost) for encoding
 // pairs [pb[a], pb[b]) of a big-values region, using prefixCost's
-// per-table per-sfb-prefix sums. An empty range (pb[a]==pb[b]) costs 0
+// per-table per-band-prefix sums. An empty range (pb[a]==pb[b]) costs 0
 // bits with table 0, the "region empty/all-zero" convention regionInfo
 // documents.
-func rangeCost(prefixCost *[32][23]int, pb *[23]int, a, b int) (cost int, table uint8) {
+func rangeCost(prefixCost *[32][40]int, pb *[40]int, a, b int) (cost int, table uint8) {
 	if pb[a] == pb[b] {
 		return 0, 0
 	}
@@ -202,12 +201,12 @@ func quadSignBits(v, w, x, y int32) int {
 }
 
 // regionBounds converts region0Count/region1Count (ISO side-info
-// scalefactor-band counts) into pair-boundary sfb indices a and c: a is the
-// end of region 0 (clamped to 22), c is the end of region 1 (clamped to 22,
-// computed from the already-clamped a).
-func regionBounds(region0Count, region1Count int) (a, c int) {
-	a = min(region0Count+1, 22)
-	c = min(a+region1Count+1, 22)
+// scalefactor-band counts) into pair-boundary band indices a and c: a is the
+// end of region 0 (clamped to nBands), c is the end of region 1 (clamped to
+// nBands, computed from the already-clamped a).
+func regionBounds(region0Count, region1Count, nBands int) (a, c int) {
+	a = min(region0Count+1, nBands)
+	c = min(a+region1Count+1, nBands)
 	return
 }
 
@@ -218,26 +217,26 @@ func regionBounds(region0Count, region1Count int) (a, c int) {
 // (guaranteed by iterating both ascending and only replacing the running
 // best on a strictly smaller total).
 //
-// The region0Count+region1Count+2<=22 bound (ISO 2.4.2.7's region0_count
-// and region1_count each contribute count+1 scalefactor bands) keeps
-// every explored split within the 22 real long-block sfb's; a wider
-// search would only reach nominal boundaries that already saturate to 22
-// via pairBoundaries' clamp, so nothing optimal is excluded.
-func chooseRegions(ix *[576]int32, part spectrumPartition, sfbWidths *[22]int) regionInfo {
-	pb := pairBoundaries(sfbWidths, part.bigValues)
-	prefixCost := bigValuesPrefixCost(ix, &pb)
+// The region0Count+region1Count+2<=lay.nBands bound (ISO 2.4.2.7's
+// region0_count and region1_count each contribute count+1 scalefactor
+// bands) keeps every explored split within lay's real coding bands; a
+// wider search would only reach nominal boundaries that already saturate to
+// lay.nBands via pairBoundaries' clamp, so nothing optimal is excluded.
+func chooseRegions(ix *[576]int32, part spectrumPartition, lay *bandLayout) regionInfo {
+	pb := pairBoundaries(lay, part.bigValues)
+	prefixCost := bigValuesPrefixCost(ix, &pb, lay)
 
 	bestBits := impossibleCost
 	var best regionInfo
 	for r0 := range 16 {
 		for r1 := range 8 {
-			if r0+r1+2 > 22 {
+			if r0+r1+2 > lay.nBands {
 				continue
 			}
-			a, c := regionBounds(r0, r1)
+			a, c := regionBounds(r0, r1, lay.nBands)
 			cost0, t0 := rangeCost(&prefixCost, &pb, 0, a)
 			cost1, t1 := rangeCost(&prefixCost, &pb, a, c)
-			cost2, t2 := rangeCost(&prefixCost, &pb, c, 22)
+			cost2, t2 := rangeCost(&prefixCost, &pb, c, lay.nBands)
 			total := cost0 + cost1 + cost2
 			if total < bestBits {
 				bestBits = total
@@ -261,18 +260,18 @@ func chooseRegions(ix *[576]int32, part spectrumPartition, sfbWidths *[22]int) r
 // exactly as counted by chooseRegions; returns bits written, which must
 // equal ri.bits.
 //
-// sfbWidths must be the same table chooseRegions was called with.
+// lay must be the same layout chooseRegions was called with.
 // region0Count/region1Count are ISO side-info scalefactor-band counts,
 // not pair positions (regionInfo's doc comment), so recovering which
-// pairs belong to which region needs the same sfb-width table
+// pairs belong to which region needs the same band-width table
 // chooseRegions used; this mirrors how l3Huffman derives the walk from
 // gr.sfbTab at decode time rather than from a precomputed boundary
 // (internal/dec/huffman.go:144-243). Deviates from the task-5 brief's
 // sketched 4-parameter signature for exactly this reason.
-func writeSpectrum(w *bits.Writer, ix *[576]int32, part spectrumPartition, ri regionInfo, sfbWidths *[22]int) int {
+func writeSpectrum(w *bits.Writer, ix *[576]int32, part spectrumPartition, ri regionInfo, lay *bandLayout) int {
 	before := w.BitsWritten()
-	pb := pairBoundaries(sfbWidths, part.bigValues)
-	a, c := regionBounds(ri.region0Count, ri.region1Count)
+	pb := pairBoundaries(lay, part.bigValues)
+	a, c := regionBounds(ri.region0Count, ri.region1Count, lay.nBands)
 	region0End, region1End := pb[a], pb[c]
 
 	for p := range part.bigValues {
@@ -406,7 +405,22 @@ func EncodeHuffmanPin(w *bits.Writer, ix *[576]int32, bigValues, count1 int, tab
 		tableSelect:  [3]uint8{table, table, table},
 		count1Table:  count1Table,
 	}
-	return writeSpectrum(w, ix, part, ri, sfbWidths)
+	// writeSpectrum now takes a *bandLayout rather than a raw sfb-width
+	// table; this exported pin's own signature stays fixed (internal/dec's
+	// encx_huffman_test.go calls it with a plain [22]int), so build a
+	// minimal long-block layout from sfbWidths locally. Only width/nBands
+	// matter to writeSpectrum's own walk (region/count1 emission never
+	// reads win/nScf/slen1End), but the whole struct is filled in for
+	// clarity.
+	var lay bandLayout
+	lay.nBands = 22
+	lay.nScf = 21
+	lay.slen1End = 11
+	for i := range 22 {
+		lay.width[i] = sfbWidths[i]
+		lay.win[i] = -1
+	}
+	return writeSpectrum(w, ix, part, ri, &lay)
 }
 
 // BigTableDim and BigTableLinbits expose bigTables[t]'s shape: the

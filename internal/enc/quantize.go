@@ -71,23 +71,35 @@ func invStep(gg int) float64 {
 // exactly Phase 3 behavior (no amplification, no preemphasis, half-step
 // scale), which is what keeps PR A behavior-preserving.
 type scfState struct {
-	scf           [21]int // integer scalefactors, sfbs 0..20
+	scf           [36]int // integer scalefactors: 21 long sfbs, or 36 short coding-order bands
+	subblockGain  [3]int  // short granules only: per-window subblock_gain, 0..7
 	scalefacScale int     // 0 or 1
-	preflag       int     // 0 or 1
+	preflag       int     // 0 or 1; always 0 for short granules
 }
 
-// bandExtraQuarters returns the amplification exponent for band sfb in
-// quarter-power-of-two steps: 2*(scalefacScale+1)*(scf+preflag*pretab). sfb
-// 21 (no scalefactor) returns 0.
-func (sf *scfState) bandExtraQuarters(sfb int) int {
-	if sfb >= 21 {
+// bandExtraQuarters returns the amplification exponent for coding band b
+// under layout lay, in quarter-power-of-two steps. Long bands b < lay.nScf:
+// 2*(scalefacScale+1)*(scf[b]+preflag*pretab[b]); the highest long band (b
+// == lay.nScf) carries no scalefactor and returns 0. Short bands b <
+// lay.nScf: 2*(scalefacScale+1)*scf[b] plus the window's subblock_gain
+// contribution (8 quarter-steps per unit, ISO's dequant formula); the
+// scalefactor-less highest short triple (b >= lay.nScf) gets only the
+// subblock_gain term, no scf.
+func (sf *scfState) bandExtraQuarters(b int, lay *bandLayout) int {
+	if lay.short {
+		if b < lay.nScf {
+			return 2*(sf.scalefacScale+1)*sf.scf[b] + 8*sf.subblockGain[lay.win[b]]
+		}
+		return 8 * sf.subblockGain[lay.win[b]]
+	}
+	if b >= lay.nScf {
 		return 0
 	}
 	pretab := 0
 	if sf.preflag != 0 {
-		pretab = pretabLong[sfb]
+		pretab = pretabLong[b]
 	}
-	return 2 * (sf.scalefacScale + 1) * (sf.scf[sfb] + pretab)
+	return 2 * (sf.scalefacScale + 1) * (sf.scf[b] + pretab)
 }
 
 // quantizeGranule quantizes xr at global gain gg (0..255) under the per-band
@@ -130,11 +142,11 @@ func (sf *scfState) bandExtraQuarters(sfb int) int {
 // once the value is known to be within [0, maxQuant], sidesteps that
 // entirely; the two forms agree on every line that would not have overflowed
 // anyway.
-func quantizeGranule(xr *[576]float64, gg int, sf *scfState, sfbWidths *[22]int, ix *[576]int32) {
+func quantizeGranule(xr *[576]float64, gg int, sf *scfState, lay *bandLayout, ix *[576]int32) {
 	i := 0
-	for sfb := range 22 {
-		is := stepQ((quantGainBase - gg) + sf.bandExtraQuarters(sfb))
-		end := i + sfbWidths[sfb]
+	for sfb := range lay.nBands {
+		is := stepQ((quantGainBase - gg) + sf.bandExtraQuarters(sfb, lay))
+		end := i + lay.width[sfb]
 		for ; i < end; i++ {
 			t := math.Abs(xr[i]) * is
 			v := math.Sqrt(t * math.Sqrt(t))
@@ -172,12 +184,12 @@ func quantizeGranule(xr *[576]float64, gg int, sf *scfState, sfbWidths *[22]int,
 //
 // Like quantizeGranule, the bound check compares in float64 before any
 // int32 conversion, for the same overflow-avoidance reason.
-func minGlobalGain(xr *[576]float64, sf *scfState, sfbWidths *[22]int) int {
-	var bandMax [22]float64
+func minGlobalGain(xr *[576]float64, sf *scfState, lay *bandLayout) int {
+	var bandMax [39]float64
 	i := 0
-	for sfb := range 22 {
+	for sfb := range lay.nBands {
 		m := 0.0
-		end := i + sfbWidths[sfb]
+		end := i + lay.width[sfb]
 		for ; i < end; i++ {
 			if a := math.Abs(xr[i]); a > m {
 				m = a
@@ -188,8 +200,8 @@ func minGlobalGain(xr *[576]float64, sf *scfState, sfbWidths *[22]int) int {
 
 	for gg := range 256 {
 		fits := true
-		for sfb := range 22 {
-			is := stepQ((quantGainBase - gg) + sf.bandExtraQuarters(sfb))
+		for sfb := range lay.nBands {
+			is := stepQ((quantGainBase - gg) + sf.bandExtraQuarters(sfb, lay))
 			t := bandMax[sfb] * is
 			v := math.Sqrt(t * math.Sqrt(t))
 			if v+0.4054 > float64(maxQuant) {
@@ -218,11 +230,11 @@ func minGlobalGain(xr *[576]float64, sf *scfState, sfbWidths *[22]int) int {
 // bit-identical on amd64 and arm64 regardless of whether the compiler would
 // otherwise fuse the multiply-add (see quantGainBase's doc comment, and the
 // package's determinism rule, for why this matters).
-func noiseGranule(xr *[576]float64, ix *[576]int32, gg int, sf *scfState, sfbWidths *[22]int, noise *[22]float64) {
+func noiseGranule(xr *[576]float64, ix *[576]int32, gg int, sf *scfState, lay *bandLayout, noise *[39]float64) {
 	i := 0
-	for sfb := range 22 {
-		inv := stepQ((gg - quantGainBase) - sf.bandExtraQuarters(sfb))
-		end := i + sfbWidths[sfb]
+	for sfb := range lay.nBands {
+		inv := stepQ((gg - quantGainBase) - sf.bandExtraQuarters(sfb, lay))
+		end := i + lay.width[sfb]
 		sum := 0.0
 		for ; i < end; i++ {
 			dequant := float64(pow43[abs32(ix[i])] * inv)

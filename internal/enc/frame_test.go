@@ -142,12 +142,12 @@ func fullScaleSpectrum(seed *uint64, amp float64) [576]float64 {
 func TestCodeGranuleFits(t *testing.T) {
 	var seed uint64 = 99
 	xr := fullScaleSpectrum(&seed, 30000)
-	sfbWidths := &sfbWidthsLong[0]
+	lay := &layoutLong[0]
 
 	budgets := []int{120, 300, 3000}
 	for _, budget := range budgets {
 		var gc granuleCoding
-		codeGranule(&xr, budget, sfbWidths, &gc)
+		codeGranule(&xr, budget, lay, &gc)
 		if gc.ri.bits > budget {
 			t.Fatalf("budget %d: ri.bits = %d, exceeds budget", budget, gc.ri.bits)
 		}
@@ -169,10 +169,10 @@ func TestCodeGranuleFits(t *testing.T) {
 func TestCodeGranuleBudgetCap(t *testing.T) {
 	var seed uint64 = 4095
 	xr := fullScaleSpectrum(&seed, 8000)
-	sfbWidths := &sfbWidthsLong[2] // 32000 Hz, matching the worked example's rate
+	lay := &layoutLong[2] // 32000 Hz, matching the worked example's rate
 
 	var gc granuleCoding
-	codeGranule(&xr, 5676, sfbWidths, &gc)
+	codeGranule(&xr, 5676, lay, &gc)
 	if gc.ri.bits > maxPart23Length {
 		t.Fatalf("budgetBits=5676: ri.bits = %d, want <= %d (the part_2_3_length field cap)", gc.ri.bits, maxPart23Length)
 	}
@@ -200,7 +200,7 @@ func TestAssembleFrameLength(t *testing.T) {
 	}
 
 	for sr := range 3 {
-		sfb := &sfbWidthsLong[sr]
+		lay := &layoutLong[sr]
 		for bitrateIndex := 1; bitrateIndex <= 14; bitrateIndex++ {
 			for _, m := range modes {
 				for _, padding := range []int{0, 1} {
@@ -209,7 +209,7 @@ func TestAssembleFrameLength(t *testing.T) {
 					var gr [2][2]granuleCoding
 					for g := range 2 {
 						for ch := range m.nch {
-							codeGranule(&xr, budget, sfb, &gr[g][ch])
+							codeGranule(&xr, budget, lay, &gr[g][ch])
 						}
 					}
 
@@ -337,14 +337,14 @@ func legacyAppendFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr 
 	header := frameHeader(bitrateIndex, srIndex, padding, mode, 0)
 	dst = append(dst, header[:]...)
 
-	sfb := &sfbWidthsLong[srIndex]
+	lay := &layoutLong[srIndex]
 	w := bits.NewWriter(dst)
 	writeSideInfo(&w, gr, nch, 0)
 	for g := range 2 {
 		for ch := range nch {
 			gc := &gr[g][ch]
 			part2 := writeScalefactors(&w, gc)
-			part3 := writeSpectrum(&w, &gc.ix, gc.part, gc.ri, sfb)
+			part3 := writeSpectrum(&w, &gc.ix, gc.part, gc.ri, lay)
 			if part2 != gc.part2Bits || part3 != gc.ri.bits || part2+part3 != gc.part23Length {
 				panic("enc: legacyAppendFrame: part2+part3 bit count diverged from codeGranule's recorded part23Length")
 			}
@@ -369,14 +369,14 @@ func legacyAppendFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr 
 // 1 is left at its zero value since nch=1 never reads it.
 func frameTestCodings(t *testing.T) *[2][2]granuleCoding {
 	t.Helper()
-	sfb := &sfbWidthsLong[0]
+	lay := &layoutLong[0]
 	budget := granuleBudgetBits(9, 0, 0, 1)
 
 	var gr [2][2]granuleCoding
 	seed := uint64(2026)
 	for g := range 2 {
 		xr := fullScaleSpectrum(&seed, 12000)
-		codeGranule(&xr, budget, sfb, &gr[g][0])
+		codeGranule(&xr, budget, lay, &gr[g][0])
 	}
 	return &gr
 }

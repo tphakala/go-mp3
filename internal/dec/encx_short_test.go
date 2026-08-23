@@ -332,11 +332,14 @@ func quantizeIxPin(absXr, is float64) int32 {
 // machinery). Requiring the recovered index to be within 1 of the
 // independently-computed expected index (allowing for the two
 // half-up/truncation roundings landing on either side of an integer
-// boundary) is a real, band-geometry-sensitive gate: a wrong sfbTab row,
-// a misplaced window-switching region boundary, or a subblock_gain
-// sign/shift bug would misalign which table decodes which line and
-// produce indices far outside this tolerance, not just a marginal
-// magnitude drift.
+// boundary) is a real, band-geometry-sensitive gate: a wrong sfbTab row or
+// a misplaced window-switching region boundary would misalign which table
+// decodes which line and produce indices far outside this tolerance, not
+// just a marginal magnitude drift. It does NOT exercise subblock_gain:
+// with looseShortXmin every granule-channel's subblock_gain is provably 0
+// (its own doc comment), so a subblock_gain sign/shift/window-index bug in
+// l3ReadScalefactors would go undetected here; TestEncShortSubblockGain-
+// Readback below is the gate for that mechanism.
 //
 // Both xr and dst are in CODING order (l3Huffman decodes against
 // gr.sfbTab, which for a window-switching granule is scfShortTable/
@@ -378,12 +381,15 @@ func checkSpectralRoundTrip(t *testing.T, gi, ch int, xr *[576]float64, dst []fl
 // bound. Because looseShortXmin pins every granule-channel to an
 // all-zero scalefactor state (bandExtraQuarters == 0 for every band,
 // looseShortXmin's own doc comment), a faithful round trip here directly
-// proves the decoder's per-band effective dequant step (its iscf
-// arithmetic, including the short-only subblock_gain contribution) agrees
-// with the encoder's intent band-for-band: any per-band scale error
-// (a wrong sfbTab row, a misplaced region boundary, a subblock_gain
-// sign/shift bug) would show up as a localized reconstruction failure
-// rather than a uniform, tolerable quantization residual.
+// proves the decoder's per-band effective dequant step agrees with the
+// encoder's intent band-for-band: a wrong sfbTab row or a misplaced
+// region boundary would show up as a localized reconstruction failure
+// rather than a uniform, tolerable quantization residual. It does NOT
+// cover the short-only subblock_gain term in that iscf arithmetic:
+// subblock_gain is provably 0 in every case here, so a sign/shift/
+// window-index bug in that term would produce byte-identical output and
+// go undetected; TestEncShortSubblockGainReadback below forces a known
+// nonzero subblock_gain to gate that mechanism instead.
 func TestEncShortSpectralReadback(t *testing.T) {
 	forEachShortCase(t, func(t *testing.T, rate, nch int, p shortPattern) {
 		t.Helper()
@@ -420,6 +426,146 @@ func TestEncShortSpectralReadback(t *testing.T) {
 				}
 
 				checkSpectralRoundTrip(t, gi, ch, &xr[gi][ch], dst[:], scf[0])
+				pos += int(g.part23Length)
+			}
+		}
+	})
+}
+
+// forcedSubblockGain is the per-window subblock_gain
+// TestEncShortSubblockGainReadback forces into every short granule-channel
+// it builds: [1,2,3] straight from the fix brief's own worked example,
+// nonzero on every window so a bug that misroutes a window's contribution
+// to the wrong band cannot hide behind a window that would decode to 0
+// regardless.
+var forcedSubblockGain = [3]int{1, 2, 3}
+
+// buildShortFrameSG is buildShortFrame's sibling for the nonzero
+// subblock_gain readback gate below: it drives enc.AppendFrameShortPinSG
+// instead of enc.AppendFrameShortPin, forcing every granule-channel's
+// subblock_gain to forcedSubblockGain regardless of block type. A
+// non-short granule ignores the value entirely (both bandExtraQuarters and
+// l3ReadScalefactors gate the term on the granule actually being short:
+// lay.short / gr.nShortSfb != 0), so forcing it uniformly is harmless
+// there and keeps one helper shape for every pattern in shortPatterns.
+func buildShortFrameSG(rate, nch int, p shortPattern, ampSeed uint64) (frame []byte, xr [2][2][576]float64) {
+	var bt [2][2]int
+	for ch := range nch {
+		bt[0][ch] = p.gr0
+		bt[1][ch] = p.gr1
+	}
+	seed := ampSeed
+	for g := range 2 {
+		for ch := range nch {
+			xr[g][ch] = buildShortXr(&seed, 4096)
+		}
+	}
+	var sg [2][2][3]int
+	for g := range 2 {
+		for ch := range nch {
+			sg[g][ch] = forcedSubblockGain
+		}
+	}
+	frame = enc.AppendFrameShortPinSG(nil, 9, rate, nch, &bt, &xr, &sg)
+	return frame, xr
+}
+
+// ldexpQ2Pin reproduces l3LdexpQ2's exact mathematical behavior (scalefac-
+// tors.go: y * 2^(-expQ2/4), computed there via an iterative shift-based
+// construction to stay in int32 range) directly via math.Exp2, for the
+// non-negative expQ2 domain every call below uses. This is the
+// checkSpectralRoundTrip/quantizeIxPin precedent (an independent
+// reimplementation of a decoder formula, not a call into the code under
+// test) applied to the scalefactor/dequant side instead of the quantizer
+// side.
+func ldexpQ2Pin(y float64, expQ2 int) float64 {
+	return y * math.Exp2(-float64(expQ2)/4)
+}
+
+// expectScfForSubblockGain independently predicts one short granule-
+// channel's scf[i] for coding band i from the decoded global_gain alone,
+// reproducing l3ReadScalefactors' own gain/scfShift arithmetic
+// (scalefactors.go) but computing the subblock_gain contribution to iscf
+// INDEPENDENTLY of that function's own `iscf[base+i] += gr.subblockGain[i]
+// << sh` line: bandExtraQuarters (internal/enc/quantize.go) documents
+// subblock_gain as contributing exactly 8 quarter-power-of-two steps per
+// unit, so this reproduces that fact directly instead of reading it back
+// off the line under test. A pure short granule-channel (nLongSfb == 0)
+// packs its 39 bands as 13 groups of 3 windows, so band i belongs to
+// window i%3 (l3ReadScalefactors' own base+0/base+1/base+2 grouping with
+// nLongSfb == 0). scalefacScale, preflag, and the granule's own scf[] are
+// all 0 here (buildShortFrameSG/AppendFrameShortPinSG never set them), so
+// iscf's only nonzero contribution for a pure short granule-channel is the
+// subblock_gain term itself: msAdj is also always 0 for these frames (mode
+// is always single_channel or plain stereo, never joint stereo, so
+// hdrIsMsStereo is always false).
+func expectScfForSubblockGain(gg int, sg [3]int, i int) float32 {
+	gainExp := gg + bitsDequantizerOut*4 - 210
+	gain := ldexpQ2Pin(float64(1<<(maxScfi/4)), maxScfi-gainExp)
+	extraQuarters := 8 * sg[i%3]
+	return float32(ldexpQ2Pin(gain, extraQuarters))
+}
+
+// TestEncShortSubblockGainReadback is Task A4's fix-round-1 gate for the
+// decoder's short-only subblock_gain dequant term (iscf[base+i] +=
+// gr.subblockGain[i] << sh, internal/dec/scalefactors.go): TestEncShort-
+// SpectralReadback's looseShortXmin fixture never drives outerLoop's
+// escalateSubblockGain, so subblock_gain was 0 in every one of that test's
+// 24 grid cases and this arithmetic went completely uncovered (a sign
+// flip, a wrong shift amount, or a misrouted window index would have
+// produced byte-identical output in every case). Rather than trying to
+// make outerLoop's real escalation fire (a separate, already-flagged
+// design concern: escalateSubblockGain is largely a no-op as integrated
+// there; see enc.AppendFrameShortPinSG's doc comment), this bypasses the
+// escalation POLICY entirely and forces forcedSubblockGain=[1,2,3]
+// directly through that test-only pin, then decodes side info and
+// scalefactors and checks the decoded scf[] against
+// expectScfForSubblockGain's independent prediction for every band of
+// every short granule-channel in the grid.
+func TestEncShortSubblockGainReadback(t *testing.T) {
+	forEachShortCase(t, func(t *testing.T, rate, nch int, p shortPattern) {
+		t.Helper()
+		want := [2]int{p.gr0, p.gr1}
+		if want[0] != blkShort && want[1] != blkShort {
+			t.Skip("no short granule in this pattern: subblock_gain has no functional effect on start/stop/long geometry")
+		}
+
+		seed := uint64(rate)<<40 | uint64(nch)<<24 | uint64(p.id)<<8 | 5
+		frame, _ := buildShortFrameSG(rate, nch, p, seed)
+
+		hdr := frame[:4]
+		rd := bits.NewReader(frame[4:])
+		gr := make([]grInfo, 2*nch)
+		if mdb := l3ReadSideInfo(&rd, gr, hdr, len(frame)-4); mdb != 0 {
+			t.Fatalf("l3ReadSideInfo = %d, want 0", mdb)
+		}
+
+		mainData := frame[4+sideInfoBitsFor(nch)/8:]
+		main := bits.NewReader(mainData)
+		var istPos [2][40]uint8
+		var scf [40]float32
+		pos := 0
+		for gi := range 2 {
+			for ch := range nch {
+				g := &gr[gi*nch+ch]
+				if want[gi] != blkShort {
+					pos += int(g.part23Length)
+					continue
+				}
+
+				main.SetPos(pos)
+				l3ReadScalefactors(hdr, scf[:], istPos[ch][:], g, &main, ch)
+
+				for i := range 39 {
+					wantScf := expectScfForSubblockGain(int(g.globalGain), forcedSubblockGain, i)
+					if wantScf == 0 {
+						t.Fatalf("gr %d ch %d band %d: expectScfForSubblockGain = 0, test setup bug", gi, ch, i)
+					}
+					if relErr := math.Abs(float64(scf[i]-wantScf)) / float64(wantScf); relErr > 1e-4 {
+						t.Fatalf("gr %d ch %d band %d (window %d, subblock_gain=%d): scf = %v, want %v (relative error %v)",
+							gi, ch, i, i%3, forcedSubblockGain[i%3], scf[i], wantScf, relErr)
+					}
+				}
 				pos += int(g.part23Length)
 			}
 		}

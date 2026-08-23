@@ -536,3 +536,49 @@ func AppendFrameShortPin(dst []byte, bitrateIndex, srIndex, nch int, blockTypes 
 	}
 	return assembleFrame(dst, bitrateIndex, srIndex, 0, mode, &gr, nch)
 }
+
+// AppendFrameShortPinSG is AppendFrameShortPin's sibling for driving
+// subblock_gain directly: instead of letting outerLoop's masking escalation
+// (escalateSubblockGain) pick subblock_gain, each granule-channel's value is
+// FORCED from subblockGain and the inner rate loop alone (codeGranule) codes
+// the granule against it, the AppendFrameScfPin precedent for scf/
+// scalefacScale/preflag applied here to subblock_gain instead.
+//
+// This exists because escalateSubblockGain, as integrated into outerLoop, is
+// largely a no-op in practice (a separate, already-flagged concern): driving
+// a nonzero subblock_gain through the real outer loop is unreliable, but the
+// decoder-readback gate for the iscf += subblockGain[i] << sh dequant term
+// (internal/dec/scalefactors.go) needs a known nonzero value regardless of
+// whether the escalation policy would ever choose one. blockTypes must pick
+// blockShort/blockStart/blockStop for any granule-channel given a nonzero
+// subblockGain; a long granule ignores it entirely (ISO 2.4.1.7, no
+// subblock_gain field).
+func AppendFrameShortPinSG(dst []byte, bitrateIndex, srIndex, nch int, blockTypes *[2][2]int, xr *[2][2][576]float64, subblockGain *[2][2][3]int) []byte {
+	budget := granuleBudgetBits(bitrateIndex, srIndex, 0, nch)
+
+	var gr [2][2]granuleCoding
+	for g := range 2 {
+		for ch := range nch {
+			bt := blockTypes[g][ch]
+			lay := layoutFor(bt, srIndex)
+			gc := &gr[g][ch]
+			gc.blockType = bt
+			gc.sf.subblockGain = subblockGain[g][ch]
+
+			idx, part2, ok := chooseScalefacCompress(&gc.sf, 0, lay)
+			if !ok {
+				panic("enc: AppendFrameShortPinSG: pinned scalefactors not coverable by any scalefac_compress index")
+			}
+			gc.scfCompress = idx
+			gc.part2Bits = part2
+
+			codeGranule(&xr[g][ch], budget-part2, lay, gc)
+		}
+	}
+
+	mode := 0
+	if nch == 1 {
+		mode = 3
+	}
+	return assembleFrame(dst, bitrateIndex, srIndex, 0, mode, &gr, nch)
+}

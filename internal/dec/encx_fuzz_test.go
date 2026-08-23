@@ -349,7 +349,10 @@ func fuzzPerChannelClicksSeed() []byte {
 // switch-decision flapping across the whole reachable stream (every
 // granule wants short).
 func fuzzBurstEveryGranuleSeed() []byte {
-	return fuzzSeedSamples(4*1152, func(i int) uint32 {
+	// Stereo seed (chSel 1): fuzzBuildFrames consumes 2*1152 samples per
+	// frame, so all four frames need 4*2*1152 samples. Supplying only 4*1152
+	// would build just two frames and lose half the flapping coverage.
+	return fuzzSeedSamples(4*2*1152, func(i int) uint32 {
 		within := i % 576
 		if within >= 4 {
 			return 0

@@ -677,29 +677,31 @@ func TestEncoderReservoirDeterminism(t *testing.T) {
 // call 4's own content (that frame stays held, never coded within these 4
 // calls). This is the expected, documented consequence of "N calls (no
 // drain) emit N-1 frames" for the held-frame design, not a coding-path
-// regression. All four cases also genuinely exercise block switching at
-// their own cold start: full-scale broadband LCG noise beginning from
-// pcmHist's all-zero initial state is exactly the "any sound is an attack
-// relative to true silence" case decision 9's own rationale names, so
-// granule 0 (and often more, since these are LOUD, wideband programs)
-// switches to short/start/stop before the encoder settles into steady
-// state (measured non-long granule counts across the 4-frame stream: 4,
-// 2, 4, 4 for the four cases in order above). This re-freeze is therefore
-// NOT block-switching-blind the way the doc text of an earlier draft of
-// this comment assumed; TestEncodeGolden's cross-arch byte-for-byte
-// determinism now covers the switch/DSP/render path along with everything
-// else. A NEW transient-program case (44100_2ch_64kbps_transient) is added
-// below for decision-path coverage that isolates the switch machinery on
-// its own, deliberately confined to a single controlled burst rather than
-// riding on this incidental cold-start effect. Confirmed stable across two
-// consecutive amd64 runs before freezing; the arm64 CI leg (task B4) is
-// the cross-arch confirmation.
+// regression.
+//
+// Re-frozen ONCE MORE in Phase 4 increment 7's stream-start grammar fix
+// (the attackNoPrior seed plus blockTypeFor opening a short run with a
+// start block). An earlier draft of this comment claimed these four cases
+// "genuinely exercise block switching at cold start" because full-scale
+// broadband noise from pcmHist's all-zero initial state tripped attackDetect
+// at granule 0. That cold-start switch was a BUG, not coverage: the zero
+// attack carry fabricated a false stream-start attack and the state machine
+// emitted an illegal 0->2 transition. The fix gives the very first sub-block
+// no prior energy to ratio against, so these steady programs (broadband
+// noise and tones, with no real transient) now stay long from the first
+// granule, and their bytes changed a final time. TestEncodeGolden is
+// therefore again block-switching-blind by design: dedicated switch-machinery
+// coverage lives in TestEncodeGoldenTransient (a controlled mid-stream
+// burst), which this fix left byte-identical because it opens on silence.
+// Confirmed stable across two consecutive amd64 runs before freezing; the
+// arm64 CI leg is the cross-arch confirmation.
+
 // transientGoldenSHA freezes sha256(full encoded stream) for a controlled
 // transient program (design decisions 9/10/11's decision-path coverage,
 // Phase 4 increment 7 Task B2): silence, one loud stored-LCG click, then
-// silence again, mono, drained. Unlike TestEncodeGolden's cases (which
-// only exercise block switching incidentally at their cold start), this
-// program isolates the switch machinery on a single controlled burst well
+// silence again, mono, drained. Unlike TestEncodeGolden's cases (steady
+// programs that no longer switch at all after the stream-start grammar
+// fix), this isolates the switch machinery on a single controlled burst well
 // after stream start, deliberately including the drain so the run's
 // closing long-block tail is covered too. Never re-freeze on an
 // arm64/amd64 mismatch (a determinism bug to fix); the arm64 CI leg (task

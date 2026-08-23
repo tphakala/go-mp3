@@ -80,9 +80,12 @@ func attackDetect(pcm []float64, prevE float64) (attack bool, lastE float64) {
 //
 // The cases, in priority order:
 //
-//   - want: this granule itself is attacking, so it is short regardless of
-//     what came before (a cascading run of attacks stays short granule
-//     after granule).
+//   - prev == blockStart: start's only legal successor is short (ISO
+//     2.4.1.7's 1->{2}), so this granule is short whatever want says.
+//   - want (prev not blockStart): this granule itself is attacking. It is
+//     short only when prev is already short (a cascading run of attacks
+//     stays short granule after granule); from long or stop the run must
+//     open with a start block first, since 0->2 and 3->2 are illegal.
 //   - prev == blockShort (and not want): the run cannot legally jump
 //     straight to start (ISO 2.4.1.7's window-compatibility grammar has no
 //     2 -> 1 edge: entering a short run always passes through start

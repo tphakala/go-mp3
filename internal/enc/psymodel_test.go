@@ -243,10 +243,10 @@ func TestPsyTablesChecksum(t *testing.T) {
 }
 
 // tstFLineShort is tstFLine's short-path sibling: FFT line i of the
-// 256-point transform maps to frequency i*sr/256 (half of tstFLine's
-// i*sr/1024, since the short window is a quarter of the long one's length
-// but still spans the full 0..sr/2 Nyquist range in 129 bins instead of
-// 513), with the same half-bin floor at DC.
+// 256-point transform maps to frequency i*sr/256 (four times the spacing
+// of tstFLine's i*sr/1024, since the short window is a quarter of the long
+// one's length but still spans the full 0..sr/2 Nyquist range in 129 bins
+// instead of 513), with the same half-bin floor at DC.
 func tstFLineShort(i, sr int) float64 {
 	x := float64(i)
 	if i == 0 {

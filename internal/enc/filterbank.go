@@ -68,10 +68,12 @@ func (fb *Filterbank) Reset() {
 // Accumulation in matrixStep runs left to right in index order, fixing the
 // association order for determinism across amd64 and arm64.
 func (fb *Filterbank) AnalyzeGranule(in []float64, out *[18][32]float64) {
+	var z [512]float64
+	var y [64]float64
 	for t := range 18 {
 		fb.shiftIn(in[t*32 : t*32+32])
-		z := fb.window()
-		y := partialSums(&z)
+		fb.window(&z)
+		partialSums(&z, &y)
 		matrixStep(&y, &out[t])
 	}
 }
@@ -89,19 +91,16 @@ func (fb *Filterbank) shiftIn(in []float64) {
 }
 
 // window multiplies the shift register by the analysis window, one product
-// per sample.
-func (fb *Filterbank) window() [512]float64 {
-	var z [512]float64
+// per sample, into z (out-pointer form, matching matrixStep; issue #31).
+func (fb *Filterbank) window(z *[512]float64) {
 	for i := range 512 {
 		z[i] = float64(fb.x[i] * fbWindow[i])
 	}
-	return z
 }
 
 // partialSums implements the ISO C.1.3 "partial calculation" step: 64 sums,
-// each of 8 windowed samples spaced 64 apart.
-func partialSums(z *[512]float64) [64]float64 {
-	var y [64]float64
+// each of 8 windowed samples spaced 64 apart, into y (out-pointer form).
+func partialSums(z *[512]float64, y *[64]float64) {
 	for j := range 64 {
 		sum := 0.0
 		for k := range 8 {
@@ -109,7 +108,6 @@ func partialSums(z *[512]float64) [64]float64 {
 		}
 		y[j] = sum
 	}
-	return y
 }
 
 // matrixStep implements the ISO C.1.3 matrixing step: each of the 32

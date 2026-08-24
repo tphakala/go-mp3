@@ -266,3 +266,31 @@ func TestFBGolden(t *testing.T) {
 		t.Fatalf("TestFBGolden checksum = %s, want %s", got, wantHex)
 	}
 }
+
+// BenchmarkAnalyzeGranule measures the polyphase analysis filterbank's
+// per-granule cost in isolation (18 shiftIn+window+partialSums+matrixStep
+// iterations over 576 input samples). It exists to decide issue #31 item
+// (a): whether converting window() and partialSums() from by-value array
+// returns to out-pointer form removes real per-iteration copies, or whether
+// inlining already elides them. LCG noise input; the shift register carries
+// state across iterations exactly as in streaming use. Must report 0
+// allocs/op (Global Constraint: zero-allocation steady state).
+func BenchmarkAnalyzeGranule(b *testing.B) {
+	const samplesPerGranule = 18 * 32
+	var fb Filterbank
+	in := make([]float64, samplesPerGranule)
+	seed := uint64(1)
+	for i := range in {
+		in[i] = (testsignal.LCG(&seed)*2 - 1) * PCMScale
+	}
+	var out [18][32]float64
+	b.ReportAllocs()
+	for b.Loop() {
+		fb.AnalyzeGranule(in, &out)
+	}
+	benchFBSink = out // escape the result so it cannot be dead-code-eliminated
+}
+
+// benchFBSink is a package-level sink that keeps BenchmarkAnalyzeGranule's
+// output live, so a future compiler cannot DCE the whole filterbank call.
+var benchFBSink [18][32]float64

@@ -286,7 +286,14 @@ type Encoder struct {
 // truncation the frame is not at fixpoint and TestEncoderMaskingContract
 // may legitimately fire, which is the cost tripwire working as intended,
 // not a false positive.
-const maskEscalationMaxCalls = 128
+//
+// Sized 2026-08-24 (issue #37): with the per-frame (granule-channel,
+// budget) memo collapsing redundant escTryBudget calls, the measured
+// per-frame maximum across the escalation-heavy survey configurations
+// (TestEscalationCallSurvey) was 25 (32 kHz stereo broadband); 64 keeps
+// well over 2x headroom above that while halving the pathological-input
+// cost ceiling. Raise it again only with fresh survey numbers.
+const maskEscalationMaxCalls = 64
 
 // escState is codeFrame's per-frame Stage 2 scratch, preallocated in the
 // Encoder value and re-seeded at the start of every masking-driven
@@ -353,8 +360,8 @@ type escMemoEntry struct {
 const escMemoCap = maskEscalationMaxCalls + 2
 
 // memoGet returns the cached (i, budget) result seen earlier this frame, or
-// (nil, false). Linear scan over memo[:memoN]: memoN is at most ~129, so the
-// worst-case scan cost is trivial next to even one 150-iteration outerLoop.
+// (nil, false). Linear scan over memo[:memoN]: memoN is at most escMemoCap, so
+// the worst-case scan cost is trivial next to even one 150-iteration outerLoop.
 func (s *escState) memoGet(i, budget int) (*escMemoEntry, bool) {
 	for k := range s.memoN {
 		if s.memo[k].i == i && s.memo[k].budget == budget {

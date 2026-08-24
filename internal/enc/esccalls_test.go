@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-// escSurveyEnv gates TestEscalationCallSurvey. The survey encodes 30 slow
-// low-bitrate broadband frames across seven configurations (~575s), which
-// is exactly the kind of runtime issue #37 is trying to shrink, so it must
-// not run in the default suite or CI. Set MP3_ESC_SURVEY=1 (with an
-// extended -timeout) to run it on demand when re-sizing the cap, mirroring
+// escSurveyEnv gates TestEscalationCallSurvey. The survey encodes 30 frames
+// in each of seven escalation-heavy configurations (~575s total), which is
+// exactly the kind of runtime issue #37 is trying to shrink, so it must not
+// run in the default suite or CI. Set MP3_ESC_SURVEY=1 (with an extended
+// -timeout) to run it on demand when re-sizing the cap, mirroring
 // MP3_MASKING_FULLGRID.
 const escSurveyEnv = "MP3_ESC_SURVEY"
 

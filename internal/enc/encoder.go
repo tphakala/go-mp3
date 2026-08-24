@@ -360,8 +360,8 @@ type escMemoEntry struct {
 const escMemoCap = maskEscalationMaxCalls + 2
 
 // memoGet returns the cached (i, budget) result seen earlier this frame, or
-// (nil, false). Linear scan over memo[:memoN]: memoN is at most ~129, so the
-// worst-case scan cost is trivial next to even one 150-iteration outerLoop.
+// (nil, false). Linear scan over memo[:memoN]: memoN is at most escMemoCap, so
+// the worst-case scan cost is trivial next to even one 150-iteration outerLoop.
 func (s *escState) memoGet(i, budget int) (*escMemoEntry, bool) {
 	for k := range s.memoN {
 		if s.memo[k].i == i && s.memo[k].budget == budget {

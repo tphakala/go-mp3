@@ -276,8 +276,9 @@ func TestFBGolden(t *testing.T) {
 // state across iterations exactly as in streaming use. Must report 0
 // allocs/op (Global Constraint: zero-allocation steady state).
 func BenchmarkAnalyzeGranule(b *testing.B) {
+	const samplesPerGranule = 18 * 32
 	var fb Filterbank
-	in := make([]float64, 576)
+	in := make([]float64, samplesPerGranule)
 	seed := uint64(1)
 	for i := range in {
 		in[i] = (testsignal.LCG(&seed)*2 - 1) * PCMScale

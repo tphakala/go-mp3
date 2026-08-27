@@ -314,7 +314,7 @@ func TestBigValuesPrefixCostEquivalence(t *testing.T) {
 	// boundary values are pinned deterministically in the companion test.
 	scales := []int32{1, 2, 15, 16, 255, maxQuant}
 
-	for _, lay := range layouts {
+	for li, lay := range layouts {
 		for _, scale := range scales {
 			for trial := range 40 {
 				var ix [576]int32
@@ -335,11 +335,92 @@ func TestBigValuesPrefixCostEquivalence(t *testing.T) {
 				bigValuesPrefixCost(&ix, &pb, lay, &got)
 				bigValuesPrefixCostRef(&ix, &pb, lay, &want)
 				if got != want {
-					t.Fatalf("lay=%v scale=%d trial=%d: bigValuesPrefixCost diverged from frozen reference", lay.short, scale, trial)
+					t.Fatalf("layout=%d (short=%v) scale=%d trial=%d: bigValuesPrefixCost diverged from frozen reference", li, lay.short, scale, trial)
 				}
 			}
 		}
 	}
+}
+
+// TestEscFamilyTablePartition asserts the hand-written big-value table
+// partitions in huffman.go stay in lockstep with the canonical bigTables /
+// validBigTables definitions in hufftables.go. nonEscBigTables, escFam16Tables/
+// escFam16Linbits, and escFam24Tables/escFam24Linbits are hand-maintained
+// copies with no compiler-enforced link to their sources, so a future reorder
+// or edit could silently desync them; today that is only covered indirectly by
+// TestBigValuesPrefixCostEquivalence. This pins the link directly.
+func TestEscFamilyTablePartition(t *testing.T) {
+	// The three partitions must sum to the ISO split: 14 non-escape + 8 + 8.
+	if got := len(nonEscBigTables) + len(escFam16Tables) + len(escFam24Tables); got != len(validBigTables) {
+		// Errorf, not Fatalf: the checks below iterate fixed-size arrays and
+		// cannot panic, so on a size desync they still surface which member
+		// dropped or duplicated instead of masking it behind the count.
+		t.Errorf("partition sizes sum to %d, want %d (len(validBigTables))", got, len(validBigTables))
+	}
+
+	// They must form a set-partition of validBigTables: every member appears
+	// exactly once, with no drops and no duplicates.
+	valid := make(map[uint8]bool, len(validBigTables))
+	for _, tbl := range validBigTables {
+		valid[tbl] = true
+	}
+	seen := make(map[uint8]bool, len(validBigTables))
+	add := func(tbl uint8) {
+		switch {
+		case !valid[tbl]:
+			t.Errorf("partition contains table %d not in validBigTables", tbl)
+		case seen[tbl]:
+			t.Errorf("partition contains duplicate table %d", tbl)
+		}
+		seen[tbl] = true
+	}
+	for _, tbl := range nonEscBigTables {
+		add(tbl)
+	}
+	for _, tbl := range escFam16Tables {
+		add(tbl)
+	}
+	for _, tbl := range escFam24Tables {
+		add(tbl)
+	}
+	for _, tbl := range validBigTables {
+		if !seen[tbl] {
+			t.Errorf("validBigTables member %d missing from the partition", tbl)
+		}
+	}
+
+	// Non-escape members must be genuine non-escape codebooks: zero linbits and
+	// a populated codes slice (which also rejects the invalid slots 4 and 14,
+	// whose codes are nil).
+	for _, tbl := range nonEscBigTables {
+		bt := bigTables[tbl]
+		if bt.linbits != 0 {
+			t.Errorf("nonEscBigTables table %d: linbits=%d, want 0", tbl, bt.linbits)
+		}
+		if len(bt.codes) == 0 {
+			t.Errorf("nonEscBigTables table %d: empty codes slice", tbl)
+		}
+	}
+
+	// Escape families: each escFam*Linbits entry must equal the linbits of the
+	// matching bigTables entry, every member must share one backing codes array
+	// (table16Codes / table24Codes), and every escape table is dim escTableDim.
+	checkFamily := func(name string, tables *[8]uint8, linbits *[8]int, shared []codeEntry) {
+		for j, tbl := range tables {
+			bt := bigTables[tbl]
+			if bt.linbits != linbits[j] {
+				t.Errorf("%s[%d] (table %d): linbits=%d, want %d", name, j, tbl, bt.linbits, linbits[j])
+			}
+			if bt.dim != escTableDim {
+				t.Errorf("%s[%d] (table %d): dim=%d, want %d", name, j, tbl, bt.dim, escTableDim)
+			}
+			if len(bt.codes) != len(shared) || &bt.codes[0] != &shared[0] {
+				t.Errorf("%s[%d] (table %d): codes is not the shared backing array", name, j, tbl)
+			}
+		}
+	}
+	checkFamily("escFam16", &escFam16Tables, &escFam16Linbits, table16Codes)
+	checkFamily("escFam24", &escFam24Tables, &escFam24Linbits, table24Codes)
 }
 
 // TestBigValuesPrefixCostEscapeBoundary deterministically exercises the

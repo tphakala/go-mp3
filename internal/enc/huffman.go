@@ -41,6 +41,17 @@ var (
 	escFam24Linbits = [8]int{4, 5, 6, 7, 8, 9, 11, 13}
 )
 
+// Escape codebooks 16-31 share a common 16x16 geometry: the codeword table is
+// indexed by the clamped magnitudes with stride escTableDim, and any magnitude
+// at or above escMaxDirect is coded via the linbits escape rather than a direct
+// codeword. Named here so accumEscFamilyCost documents intent instead of
+// repeating the bare 15/16 literals (pairCost derives the same bound as
+// t.dim-1 for the general case).
+const (
+	escTableDim  = 16              // dim of every escape codebook (16x16)
+	escMaxDirect = escTableDim - 1 // 15: magnitudes 0..14 direct, >=15 escaped
+)
+
 // regionInfo is a coded big-values region layout: boundaries expressed as
 // side-info counts, chosen tables, and the exact part3 bit cost.
 type regionInfo struct {
@@ -138,14 +149,14 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 // beyond 15 + (1<<linbits) - 1 makes the pair unrepresentable (impossibleCost).
 func accumEscFamilyCost(acc, linb *[8]int, codes []codeEntry, ax, ay int32) {
 	ix, iy := ax, ay
-	escA, escB := ax >= 15, ay >= 15
-	if ix > 15 {
-		ix = 15
+	escX, escY := ax >= escMaxDirect, ay >= escMaxDirect
+	if ix > escMaxDirect {
+		ix = escMaxDirect
 	}
-	if iy > 15 {
-		iy = 15
+	if iy > escMaxDirect {
+		iy = escMaxDirect
 	}
-	base := int(codes[int(ix)*16+int(iy)].len)
+	base := int(codes[int(ix)*escTableDim+int(iy)].len)
 	if ax != 0 {
 		base++
 	}
@@ -154,16 +165,16 @@ func accumEscFamilyCost(acc, linb *[8]int, codes []codeEntry, ax, ay int32) {
 	}
 	for j := range linb {
 		l := linb[j]
-		maxVal := 15 + (int32(1) << uint(l)) - 1
+		maxVal := escMaxDirect + (int32(1) << uint(l)) - 1
 		if ax > maxVal || ay > maxVal {
 			acc[j] += impossibleCost
 			continue
 		}
 		c := base
-		if escA {
+		if escX {
 			c += l
 		}
-		if escB {
+		if escY {
 			c += l
 		}
 		acc[j] += c

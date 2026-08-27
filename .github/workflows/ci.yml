@@ -33,11 +33,13 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       # Longer than the 10m per-package default: the Phase 4 encoder's
-      # masking-driven budget escalation makes the internal/enc suite
-      # compute-heavy on the low-bitrate broadband test content (a known
-      # Phase 5 throughput follow-up), so the default timeout is too tight
-      # on shared CI runners, on both amd64 and arm64.
-      - run: go test ./... -timeout 25m
+      # masking-driven budget escalation still makes the internal/enc suite
+      # compute-heavy on low-bitrate broadband test content, so headroom is
+      # kept on shared CI runners, on both amd64 and arm64. Issue #37's
+      # bigValuesPrefixCost/rangeCost optimization cut the full `go test
+      # ./...` wall time to about 323s locally, so the previous 25m no
+      # longer reflects the real cost; 15m keeps roughly 2x headroom.
+      - run: go test ./... -timeout 15m
 
   lint:
     name: Lint
@@ -77,11 +79,12 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg mpg123
       # Longer than the 10m per-binary default: this job's total runtime is
       # the base compat grid across all sample rates plus the joint-stereo
-      # and short-block matrices, all run through ffmpeg and mpg123, made
-      # compute-heavy by the encoder's masking-driven budget escalation and
-      # by short-block coding (known Phase 5 throughput follow-ups), so the
-      # default timeout is too tight on shared CI runners, on both amd64
-      # and arm64.
-      - run: go test ./ -run Compat -v -timeout 25m
+      # and short-block matrices, all run through ffmpeg and mpg123, still
+      # made compute-heavy by short-block coding, so headroom is kept on
+      # shared CI runners, on both amd64 and arm64. Issue #37's
+      # bigValuesPrefixCost/rangeCost optimization cut this job to about
+      # 109s locally, well under the shared 15m budget used across all four
+      # timeout sites.
+      - run: go test ./ -run Compat -v -timeout 15m
         env:
           MP3_REQUIRE_COMPAT: '1'

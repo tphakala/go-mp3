@@ -88,7 +88,8 @@ type regionInfo struct {
 // dispatcher (issue #48). bigValuesPrefixCost's per-pair loop therefore
 // calls pairCostDirect, not pairCost: it costs only nonEscBigTables, every
 // one of which has linbits == 0 (TestEscFamilyTablePartition pins that), and
-// the escape families reach their costs through accumEscFamilyCost instead.
+// the escape families reach their costs through accumEscFamilyFlat and
+// accumEscFamilyCost instead.
 //
 // pairCost itself therefore has no production caller left. It is not dead:
 // it stays the one entry point that is correct for an arbitrary table, and
@@ -178,6 +179,31 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 	return pb
 }
 
+// accumEscFamilyFlat is accumEscFamilyCost's non-escaping case, split out so
+// it can inline: with neither magnitude at or above escMaxDirect, no table in
+// the family applies a linbits addend and none can find the pair
+// unrepresentable, so every one of the eight costs is the same shared
+// codeword-plus-sign total.
+//
+// Callers must test that themselves; this half does not re-check it, and
+// the way it fails is worth knowing before adding a caller. At exactly
+// escMaxDirect the index stays inside codes, so it returns a cost that
+// silently omits every linbits addend, which is the cheap direction and so
+// the one that would change table selection. Only a magnitude at or above
+// escTableDim is out of range and panics.
+func accumEscFamilyFlat(acc *[8]int, codes []codeEntry, ax, ay int32) {
+	base := int(codes[int(ax)*escTableDim+int(ay)].len)
+	if ax != 0 {
+		base++
+	}
+	if ay != 0 {
+		base++
+	}
+	for j := range acc {
+		acc[j] += base
+	}
+}
+
 // accumEscFamilyCost adds, into the per-family running-cost accumulator acc,
 // the cost of encoding pair (ax, ay) under every table of a dim-16 escape
 // family sharing codes slice codes and linbits list linb. It is the exact
@@ -190,13 +216,14 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 // addend linbits (index 15 is the escape marker, ISO 2.4.2.7), and a value
 // beyond 15 + (1<<linbits) - 1 makes the pair unrepresentable (impossibleCost).
 //
-// Neither magnitude escaping is the common case at ordinary quantization,
-// and it makes every per-table test statically true: no linbits addend
-// applies, and no table can find the pair unrepresentable, since maxVal is
-// at least escMaxDirect for any linbits. That case therefore short-circuits
-// to a flat "add base to all eight" loop, skipping a per-table shift and
-// two comparisons apiece (issue #48). Only the escaping case runs the full
-// per-table loop below.
+// This function stays correct for any pair, but bigValuesPrefixCost routes
+// only ESCAPING pairs here (issue #48). Neither magnitude escaping is the
+// common case at ordinary quantization and it makes every per-table test
+// statically true, so that case goes to accumEscFamilyFlat, which the
+// compiler can inline, instead of paying a call plus a per-table shift and
+// two comparisons here. The loop below still computes the same answer for
+// such a pair, just more slowly, so a caller that does not pre-check is
+// correct rather than wrong.
 func accumEscFamilyCost(acc, linb *[8]int, codes []codeEntry, ax, ay int32) {
 	ix, iy := ax, ay
 	if ix > escMaxDirect {
@@ -212,13 +239,6 @@ func accumEscFamilyCost(acc, linb *[8]int, codes []codeEntry, ax, ay int32) {
 	if ay != 0 {
 		base++
 	}
-	if ax < escMaxDirect && ay < escMaxDirect {
-		for j := range acc {
-			acc[j] += base
-		}
-		return
-	}
-
 	escX, escY := ax >= escMaxDirect, ay >= escMaxDirect
 	for j := range linb {
 		l := linb[j]
@@ -281,8 +301,14 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 	for k := range lay.nBands {
 		end := pb[k+1]
 		for ; p < end; p++ {
-			accumEscFamilyCost(&acc16, &escFam16Linbits, table16Codes, ax[p], ay[p])
-			accumEscFamilyCost(&acc24, &escFam24Linbits, table24Codes, ax[p], ay[p])
+			x, y := ax[p], ay[p]
+			if x < escMaxDirect && y < escMaxDirect {
+				accumEscFamilyFlat(&acc16, table16Codes, x, y)
+				accumEscFamilyFlat(&acc24, table24Codes, x, y)
+				continue
+			}
+			accumEscFamilyCost(&acc16, &escFam16Linbits, table16Codes, x, y)
+			accumEscFamilyCost(&acc24, &escFam24Linbits, table24Codes, x, y)
 		}
 		for j, t := range escFam16Tables {
 			prefixCost[t][k+1] = acc16[j]

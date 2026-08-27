@@ -154,7 +154,7 @@ func accumEscFamilyCost(acc *[8]int, linb *[8]int, codes []codeEntry, ax, ay int
 	}
 	for j := range linb {
 		l := linb[j]
-		maxVal := int32(15 + (int32(1)<<uint(l)) - 1)
+		maxVal := int32(15 + (int32(1) << uint(l)) - 1)
 		if ax > maxVal || ay > maxVal {
 			acc[j] += impossibleCost
 			continue

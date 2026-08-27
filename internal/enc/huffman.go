@@ -389,9 +389,22 @@ func chooseRegions(ix *[576]int32, part spectrumPartition, lay *bandLayout) regi
 	// rangeCost is re-evaluated for every (r0, r1) combo below, but a and c
 	// (regionBounds' clamped band-boundary pair) each repeat across many
 	// combos, so memoize the cost by (a, b) to cost each distinct range
-	// once. Both arrays are fixed-size and stack-allocated (a, b are always
-	// in [0, lay.nBands] <= [0, 22], so [40][40] is safely oversized);
-	// zero-alloc is preserved.
+	// once. Both arrays are fixed-size and stack-allocated; zero-alloc is
+	// preserved.
+	//
+	// The dimensions MUST stay [40][40]. The production long-block path
+	// keeps a and b within [0, 22], but chooseRegions is also reachable with
+	// lay.nBands up to 39 (a blockLong-typed granule over a short layout, as
+	// TestOuterLoopShortConverges exercises), where rc(c, lay.nBands) indexes
+	// b = 39. Any smaller dimension truncates the memo and panics.
+	//
+	// The memo deliberately keeps the cost alone and discards rangeCost's
+	// table, even though that means re-costing the three winning ranges after
+	// the search. Discarding it is what lets the compiler strip the
+	// best-table tracking out of rangeCost's 30-table search loop, which runs
+	// per distinct range; carrying the table through the memo instead was
+	// measured at +6% per frame (issue #48), far more than the three
+	// recomputes below cost.
 	var rcCost [40][40]int
 	var rcSeen [40][40]bool
 	rc := func(a, b int) int {

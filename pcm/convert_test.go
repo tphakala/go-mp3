@@ -1,6 +1,9 @@
 package pcm
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
 
 func TestConvertF32toS16(t *testing.T) {
 	cases := []struct {
@@ -37,6 +40,28 @@ func TestConvertF32toS16RoundHalfAwayFromZero(t *testing.T) {
 	for i := range want {
 		if dst[i] != want[i] {
 			t.Errorf("convertF32toS16[%d] = %d, want %d", i, dst[i], want[i])
+		}
+	}
+}
+
+func TestS16Float32ConversionRoundTripIdentity(t *testing.T) {
+	// deinterleaveS16 (encode direction) composed with convertF32toS16 (decode
+	// direction) must be the identity on every representable int16, proving the
+	// two scales are exact inverses independent of the MP3 codec.
+	src := make([]byte, 65536*2)
+	for i := range 65536 {
+		binary.LittleEndian.PutUint16(src[i*2:], uint16(int16(i-32768)))
+	}
+	planar := make([][]float32, 1)
+	planar[0] = make([]float32, 65536)
+	deinterleaveS16(planar, src, 65536, 1)
+
+	got := make([]int16, 65536)
+	convertF32toS16(got, planar[0])
+	for i := range 65536 {
+		want := int16(i - 32768)
+		if got[i] != want {
+			t.Fatalf("round trip mismatch at %d: got %d want %d", i, got[i], want)
 		}
 	}
 }

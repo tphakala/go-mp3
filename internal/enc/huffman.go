@@ -136,7 +136,7 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 // so the codeword index is min(val, 15); a value >= 15 takes the escape
 // addend linbits (index 15 is the escape marker, ISO 2.4.2.7), and a value
 // beyond 15 + (1<<linbits) - 1 makes the pair unrepresentable (impossibleCost).
-func accumEscFamilyCost(acc *[8]int, linb *[8]int, codes []codeEntry, ax, ay int32) {
+func accumEscFamilyCost(acc, linb *[8]int, codes []codeEntry, ax, ay int32) {
 	ix, iy := ax, ay
 	escA, escB := ax >= 15, ay >= 15
 	if ix > 15 {
@@ -154,7 +154,7 @@ func accumEscFamilyCost(acc *[8]int, linb *[8]int, codes []codeEntry, ax, ay int
 	}
 	for j := range linb {
 		l := linb[j]
-		maxVal := int32(15 + (int32(1) << uint(l)) - 1)
+		maxVal := 15 + (int32(1) << uint(l)) - 1
 		if ax > maxVal || ay > maxVal {
 			acc[j] += impossibleCost
 			continue

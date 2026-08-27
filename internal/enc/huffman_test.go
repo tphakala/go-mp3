@@ -291,12 +291,14 @@ func bigValuesPrefixCostRef(ix *[576]int32, pb *[40]int, lay *bandLayout, prefix
 }
 
 // TestBigValuesPrefixCostEquivalence fuzzes ix across every long and short
-// layout and every magnitude regime (all-zero, mid, the escape boundary at
-// 15, just over it at 16, and the maxQuant ceiling) and requires the
-// production bigValuesPrefixCost to equal the frozen reference for the full
-// [32][40] table. This is the bit-exact proof for issue #37's abs-hoist and
-// escape-family-factor refactors: it catches any divergence long before the
-// sha256 stream goldens would.
+// layout and a spread of magnitude scales, requiring the production
+// bigValuesPrefixCost to equal the frozen reference for the full [32][40]
+// table. The high scales (255, maxQuant) sweep magnitudes continuously
+// through and past the escape threshold, so this catches most divergences.
+// Deterministic coverage of the exact escape boundary and the impossibleCost
+// branch lives in TestBigValuesPrefixCostEscapeBoundary; together they are
+// the bit-exact proof for issue #37's abs-hoist and escape-family-factor
+// refactors, well before the sha256 stream goldens would show a divergence.
 func TestBigValuesPrefixCostEquivalence(t *testing.T) {
 	layouts := []*bandLayout{
 		&layoutLong[0], &layoutLong[1], &layoutLong[2],
@@ -305,9 +307,11 @@ func TestBigValuesPrefixCostEquivalence(t *testing.T) {
 	var seed uint64 = 20260827
 	next := func() float64 { return testsignal.LCG(&seed) }
 
-	// Magnitude regimes: force coverage of the escape-table boundary (15,
-	// 16) and the maxQuant clamp, not just uniform noise, since the
-	// escape-family factoring hinges on values at and beyond 15.
+	// A spread of scales. testsignal.LCG returns [0,1) and the frac*frac
+	// taper is <= 1, so int32(next()*scale*frac*frac) is strictly below
+	// scale: the low scales stay under the escape threshold and only the high
+	// scales (255, maxQuant) sweep magnitudes through and past it. The exact
+	// boundary values are pinned deterministically in the companion test.
 	scales := []int32{1, 2, 15, 16, 255, maxQuant}
 
 	for _, lay := range layouts {
@@ -334,6 +338,58 @@ func TestBigValuesPrefixCostEquivalence(t *testing.T) {
 					t.Fatalf("lay=%v scale=%d trial=%d: bigValuesPrefixCost diverged from frozen reference", lay.short, scale, trial)
 				}
 			}
+		}
+	}
+}
+
+// TestBigValuesPrefixCostEscapeBoundary deterministically exercises the
+// escape-table code paths that the fuzz test above only reaches incidentally.
+// testsignal.LCG returns [0,1), so the fuzz draws magnitudes strictly below
+// its scale and its scale=15/16 regimes top out at 14/15, never reliably
+// tripping the escape flag or the impossibleCost branch. This test pins exact
+// magnitudes that straddle every relevant boundary so the escape-family
+// factoring is proven bit-identical to the frozen reference on the values it
+// actually hinges on:
+//
+//	14           below the escape threshold: direct codeword, no linbits addend
+//	15           the boundary: index clamped to 15 AND the linbits addend applies
+//	16, 17, 18   at and just over escFam16 linbits=1 maxVal (16): representable, then impossibleCost
+//	30, 31, 32   straddle the linbits=4 maxVal (30) for both families
+//	255, 256     representable only by the higher-linbits members
+//	maxQuant     exactly the linbits=13 maxVal (8206): the representability ceiling
+func TestBigValuesPrefixCostEscapeBoundary(t *testing.T) {
+	mags := []int32{14, 15, 16, 17, 18, 30, 31, 32, 63, 255, 256, maxQuant}
+
+	var ix [576]int32
+	for i, m := range mags {
+		// Alternate the sign of the first slot to also exercise the sign-bit
+		// additions; both slots of the pair carry a boundary magnitude.
+		v := m
+		if i%2 == 1 {
+			v = -v
+		}
+		ix[2*i] = v
+		ix[2*i+1] = m
+	}
+	// The tail stays zero, so partitionSpectrum classifies these magnitudes
+	// (all > 1) as big values rather than count1/rzero. Guard that setup
+	// assumption so this test fails loudly if it ever stops covering them.
+	part := partitionSpectrum(&ix)
+	if part.bigValues < len(mags) {
+		t.Fatalf("setup: bigValues %d < %d, boundary pairs not all in the big-values region", part.bigValues, len(mags))
+	}
+
+	layouts := []*bandLayout{
+		&layoutLong[0], &layoutLong[1], &layoutLong[2],
+		&layoutShort[0], &layoutShort[1], &layoutShort[2],
+	}
+	for _, lay := range layouts {
+		pb := pairBoundaries(lay, part.bigValues)
+		var got, want [32][40]int
+		bigValuesPrefixCost(&ix, &pb, lay, &got)
+		bigValuesPrefixCostRef(&ix, &pb, lay, &want)
+		if got != want {
+			t.Fatalf("lay.short=%v: bigValuesPrefixCost diverged from frozen reference on escape-boundary magnitudes", lay.short)
 		}
 	}
 }

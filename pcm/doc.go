@@ -27,6 +27,25 @@
 // interleaved little-endian signed 16-bit PCM (2 bytes per sample), matching
 // go-aac and go-wav.
 //
+// # Encoding
+//
+// NewEncoder wraps the root mp3.Encoder as an io.WriteCloser that consumes
+// interleaved little-endian signed 16-bit PCM and writes a CBR MP3 stream:
+//
+//	e, err := mp3pcm.NewEncoder(w, mp3pcm.Config{
+//	    SampleRate: 44100,
+//	    Channels:   2,
+//	    Bitrate:    128000, // zero selects the 128 kb/s default
+//	})
+//	// e.Write(interleavedS16); e.Close()
+//
+// Write accepts any chunk size, buffering across calls; Close flushes the final
+// partial frame and drains the encoder's one-frame lookahead. EncodeInterleaved
+// is the one-shot form for a caller that already holds the whole buffer. The
+// stream is tagless CBR (no LAME gapless tag), so a decoder does not trim the
+// encoder's algorithmic delay: decoded output carries mp3.TotalDelay leading
+// samples per channel, which a caller aligning back to the original input drops.
+//
 // # Reuse
 //
 // Decoder.Reset rebinds an existing Decoder to a new source, reusing its

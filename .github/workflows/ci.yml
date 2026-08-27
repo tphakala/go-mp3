@@ -32,12 +32,15 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
       - run: go build ./...
       - run: go vet ./...
-      # Longer than the 10m per-package default: the Phase 4 encoder's
-      # masking-driven budget escalation makes the internal/enc suite
-      # compute-heavy on the low-bitrate broadband test content (a known
-      # Phase 5 throughput follow-up), so the default timeout is too tight
-      # on shared CI runners, on both amd64 and arm64.
-      - run: go test ./... -timeout 25m
+      # Longer than the 10m per-package default: the full `go test ./...`
+      # suite is compute-heavy (the Phase 4 encoder's masking-driven
+      # escalation in internal/enc, plus internal/dec), so headroom is kept on
+      # shared CI runners across amd64 and arm64. Issue #37's
+      # bigValuesPrefixCost/rangeCost optimization cut the internal/enc
+      # escalation cost, but the suite total is dominated by packages it does
+      # not touch, so the slower shared amd64 runner still measures about
+      # 10-11 min here; 20m (down from 25m) keeps roughly 2x headroom over that.
+      - run: go test ./... -timeout 20m
 
   lint:
     name: Lint
@@ -77,11 +80,10 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg mpg123
       # Longer than the 10m per-binary default: this job's total runtime is
       # the base compat grid across all sample rates plus the joint-stereo
-      # and short-block matrices, all run through ffmpeg and mpg123, made
-      # compute-heavy by the encoder's masking-driven budget escalation and
-      # by short-block coding (known Phase 5 throughput follow-ups), so the
-      # default timeout is too tight on shared CI runners, on both amd64
-      # and arm64.
-      - run: go test ./ -run Compat -v -timeout 25m
+      # and short-block matrices, all run through ffmpeg and mpg123, still
+      # made compute-heavy by short-block coding, so headroom is kept on
+      # shared CI runners, on both amd64 and arm64. This job runs a few
+      # minutes; it shares the 20m budget used across all four timeout sites.
+      - run: go test ./ -run Compat -v -timeout 20m
         env:
           MP3_REQUIRE_COMPAT: '1'

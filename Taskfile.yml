@@ -6,11 +6,15 @@ tasks:
   vet:
     cmds: [go vet ./...]
   test:
-    # -timeout 25m matches ci.yml's test job: the encoder's masking-driven
-    # budget escalation makes internal/enc's suite compute-heavy on
-    # low-bitrate broadband content (a known Phase 5 throughput follow-up),
-    # so the default 600s go test timeout is too tight under load.
-    cmds: [go test ./... -timeout 25m]
+    # -timeout 20m matches ci.yml's test job. The default 600s go test
+    # timeout is too tight for the encoder's masking-driven budget
+    # escalation on low-bitrate broadband content, so headroom is still
+    # needed. Issue #37's bigValuesPrefixCost/rangeCost optimization cut the
+    # internal/enc escalation cost (the suite runs about 330s locally), but
+    # the full suite is dominated by other packages and the slower shared CI
+    # runner measures about 10-11 min, so 25m is lowered to 20m rather than
+    # further; 20m keeps roughly 2x headroom over the observed CI runtime.
+    cmds: [go test ./... -timeout 20m]
   lint:
     desc: Run golangci-lint (same config as go-flac/go-aac/go-wav)
     cmds: [golangci-lint run ./...]
@@ -39,4 +43,4 @@ tasks:
       - go test ./... -run 'Oracle|Conformance'
   compat:
     desc: Encode the compat grid and verify with ffmpeg/mpg123 black-box binaries (fails if either is missing)
-    cmds: [MP3_REQUIRE_COMPAT=1 go test ./ -run Compat -v -timeout 25m]
+    cmds: [MP3_REQUIRE_COMPAT=1 go test ./ -run Compat -v -timeout 20m]

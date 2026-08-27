@@ -21,6 +21,26 @@ var validBigTables = [30]uint8{
 	16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
 }
 
+// nonEscBigTables is validBigTables minus the two escape families (16-31):
+// the tables bigValuesPrefixCost still costs one at a time, since each has
+// its own codes slice. Tables 4 and 14 stay excluded (invalid slots).
+var nonEscBigTables = [14]uint8{0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15}
+
+// escFam16Tables / escFam16Linbits describe ISO escape tables 16-23, which
+// all share table16Codes (dim 16, maxDirect 15) and differ only in linbits.
+// escFam24* describe tables 24-31, sharing table24Codes. These let
+// bigValuesPrefixCost compute the shared codeword+sign cost once per family
+// per pair (the expensive codes[] lookup) and add only the per-table
+// linbits escape term, algebraically identical to a pairCost call per table
+// (issue #37). linbits values copied verbatim from bigTables in
+// hufftables.go.
+var (
+	escFam16Tables  = [8]uint8{16, 17, 18, 19, 20, 21, 22, 23}
+	escFam16Linbits = [8]int{1, 2, 3, 4, 6, 8, 10, 13}
+	escFam24Tables  = [8]uint8{24, 25, 26, 27, 28, 29, 30, 31}
+	escFam24Linbits = [8]int{4, 5, 6, 7, 8, 9, 11, 13}
+)
+
 // regionInfo is a coded big-values region layout: boundaries expressed as
 // side-info counts, chosen tables, and the exact part3 bit cost.
 type regionInfo struct {
@@ -105,6 +125,51 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 	return pb
 }
 
+// accumEscFamilyCost adds, into the per-family running-cost accumulator acc,
+// the cost of encoding pair (ax, ay) under every table of a dim-16 escape
+// family sharing codes slice codes and linbits list linb. It is the exact
+// per-table result of pairCost, computed with the shared codeword lookup and
+// sign bits done once (issue #37's escape-family factoring). ax, ay are
+// already-absolute magnitudes. acc[j] corresponds to family table j.
+//
+// pairCost semantics reproduced exactly: maxDirect is 15 for these tables,
+// so the codeword index is min(val, 15); a value >= 15 takes the escape
+// addend linbits (index 15 is the escape marker, ISO 2.4.2.7), and a value
+// beyond 15 + (1<<linbits) - 1 makes the pair unrepresentable (impossibleCost).
+func accumEscFamilyCost(acc, linb *[8]int, codes []codeEntry, ax, ay int32) {
+	ix, iy := ax, ay
+	escA, escB := ax >= 15, ay >= 15
+	if ix > 15 {
+		ix = 15
+	}
+	if iy > 15 {
+		iy = 15
+	}
+	base := int(codes[int(ix)*16+int(iy)].len)
+	if ax != 0 {
+		base++
+	}
+	if ay != 0 {
+		base++
+	}
+	for j := range linb {
+		l := linb[j]
+		maxVal := 15 + (int32(1) << uint(l)) - 1
+		if ax > maxVal || ay > maxVal {
+			acc[j] += impossibleCost
+			continue
+		}
+		c := base
+		if escA {
+			c += l
+		}
+		if escB {
+			c += l
+		}
+		acc[j] += c
+	}
+}
+
 // bigValuesPrefixCost fills prefixCost[t][k]: the bits needed to encode
 // pairs [0, pb[k]) of ix using table t, for every table t in
 // validBigTables and every coding-band prefix k in [0,lay.nBands]. Fills a
@@ -113,16 +178,49 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 // [32][40]int result is large enough that a by-value return costs a
 // measurable copy on every call.
 func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCost *[32][40]int) {
-	for _, t := range validBigTables {
+	// Pre-hoist the per-pair absolute values once (issue #37): the per-table
+	// loop below otherwise recomputes abs32 of the same two int32s 30 times
+	// per pair. ax/ay are fixed-size local arrays, stack-allocated, so this
+	// stays zero-alloc. nPairs is pb's last (already-clamped) boundary, at
+	// most 288 (partitionSpectrum caps bigValues there).
+	nPairs := pb[lay.nBands]
+	var ax, ay [288]int32
+	for p := range nPairs {
+		ax[p] = abs32(ix[2*p])
+		ay[p] = abs32(ix[2*p+1])
+	}
+
+	// Non-escape tables: each has its own codes slice, so cost them
+	// individually (abs already hoisted).
+	for _, t := range nonEscBigTables {
 		bt := bigTables[t]
 		cost := 0
 		p := 0
 		for k := range lay.nBands {
 			end := pb[k+1]
 			for ; p < end; p++ {
-				cost += pairCost(bt, abs32(ix[2*p]), abs32(ix[2*p+1]))
+				cost += pairCost(bt, ax[p], ay[p])
 			}
 			prefixCost[t][k+1] = cost
+		}
+	}
+
+	// Escape families 16-23 and 24-31: the codes lookup and sign bits are
+	// shared across each family, so compute them once per pair and fold in
+	// only each table's linbits term (issue #37).
+	var acc16, acc24 [8]int
+	p := 0
+	for k := range lay.nBands {
+		end := pb[k+1]
+		for ; p < end; p++ {
+			accumEscFamilyCost(&acc16, &escFam16Linbits, table16Codes, ax[p], ay[p])
+			accumEscFamilyCost(&acc24, &escFam24Linbits, table24Codes, ax[p], ay[p])
+		}
+		for j, t := range escFam16Tables {
+			prefixCost[t][k+1] = acc16[j]
+		}
+		for j, t := range escFam24Tables {
+			prefixCost[t][k+1] = acc24[j]
 		}
 	}
 }
@@ -229,28 +327,47 @@ func chooseRegions(ix *[576]int32, part spectrumPartition, lay *bandLayout) regi
 	var prefixCost [32][40]int
 	bigValuesPrefixCost(ix, &pb, lay, &prefixCost)
 
+	// rangeCost is re-evaluated for every (r0, r1) combo below, but a and c
+	// (regionBounds' clamped band-boundary pair) each repeat across many
+	// combos, so memoize the cost by (a, b) to cost each distinct range
+	// once. Both arrays are fixed-size and stack-allocated (a, b are always
+	// in [0, lay.nBands] <= [0, 22], so [40][40] is safely oversized);
+	// zero-alloc is preserved.
+	var rcCost [40][40]int
+	var rcSeen [40][40]bool
+	rc := func(a, b int) int {
+		if rcSeen[a][b] {
+			return rcCost[a][b]
+		}
+		c, _ := rangeCost(&prefixCost, &pb, a, b)
+		rcCost[a][b], rcSeen[a][b] = c, true
+		return c
+	}
+
 	bestBits := impossibleCost
-	var best regionInfo
+	var bestR0, bestR1, bestA, bestC int
 	for r0 := range 16 {
 		for r1 := range 8 {
 			if r0+r1+2 > lay.nBands {
 				continue
 			}
 			a, c := regionBounds(r0, r1, lay.nBands)
-			cost0, t0 := rangeCost(&prefixCost, &pb, 0, a)
-			cost1, t1 := rangeCost(&prefixCost, &pb, a, c)
-			cost2, t2 := rangeCost(&prefixCost, &pb, c, lay.nBands)
-			total := cost0 + cost1 + cost2
+			total := rc(0, a) + rc(a, c) + rc(c, lay.nBands)
 			if total < bestBits {
 				bestBits = total
-				best = regionInfo{
-					region0Count: r0,
-					region1Count: r1,
-					tableSelect:  [3]uint8{t0, t1, t2},
-					bits:         total,
-				}
+				bestR0, bestR1, bestA, bestC = r0, r1, a, c
 			}
 		}
+	}
+
+	cost0, t0 := rangeCost(&prefixCost, &pb, 0, bestA)
+	cost1, t1 := rangeCost(&prefixCost, &pb, bestA, bestC)
+	cost2, t2 := rangeCost(&prefixCost, &pb, bestC, lay.nBands)
+	best := regionInfo{
+		region0Count: bestR0,
+		region1Count: bestR1,
+		tableSelect:  [3]uint8{t0, t1, t2},
+		bits:         cost0 + cost1 + cost2,
 	}
 
 	c1Bits, c1Table := count1Cost(ix, part)

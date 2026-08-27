@@ -22,18 +22,6 @@ func genSineS16(nSamplesPerCh, channels, freq, sampleRate int) []byte {
 	return out
 }
 
-// rmsS16 is the root-mean-square level of x, treated as int16 PCM.
-func rmsS16(x []int16) float64 {
-	if len(x) == 0 {
-		return 0
-	}
-	var sum float64
-	for _, s := range x {
-		sum += float64(s) * float64(s)
-	}
-	return math.Sqrt(sum / float64(len(x)))
-}
-
 // snrDB is the signal-to-noise ratio in decibels between reference ref and
 // measured got over their overlapping length, treating the sample-by-sample
 // difference as noise. It returns math.Inf(1) when the overlap is silent-noise

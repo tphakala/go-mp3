@@ -70,10 +70,11 @@ func TestRoundTripSNR(t *testing.T) {
 	}
 }
 
-// TestRoundTripDecodedLengthStructure checks the decoded per-channel sample count
-// is the input length plus the encoder's algorithmic delay, rounded up to a whole
-// number of frames, within one frame. This pins the framing/drain accounting
-// independently of fidelity.
+// TestRoundTripDecodedLengthStructure pins the framing/drain accounting
+// independently of fidelity: the decoded per-channel sample count must be at
+// least the input length (no samples are lost) and at most two frames beyond
+// ceil(input / FrameSize) frames (the encoder delay plus the drain/flush frames,
+// allowing for CBR estimation trimming the final frames).
 func TestRoundTripDecodedLengthStructure(t *testing.T) {
 	cfg := Config{SampleRate: 44100, Channels: 2, Bitrate: 128000}
 	const nSamplesPerCh = mp3.FrameSize * 8
@@ -89,7 +90,7 @@ func TestRoundTripDecodedLengthStructure(t *testing.T) {
 	}
 	gotPerCh := len(bytesToS16(decoded)) / cfg.Channels
 	// Encoded frames: ceil(nSamplesPerCh / FrameSize) non-nil calls + 1 drain,
-	// each decoding to FrameSize samples. gotPerCh must be within one frame of
+	// each decoding to FrameSize samples. gotPerCh must be within two frames of
 	// that, allowing for CBR estimation trimming the final frames.
 	minPerCh := nSamplesPerCh // at least the input length must survive
 	if gotPerCh < minPerCh {

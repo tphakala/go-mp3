@@ -107,7 +107,10 @@ func (e *Encoder) Reset(w io.Writer, cfg Config) error {
 // by the sample stride. The produced stream depends only on the byte sequence,
 // never on how it was chunked. Write returns len(p) on success; on a mid-write
 // sink error it returns the number of bytes of p that were durably consumed
-// (io.Writer contract). After Close, Write returns ErrEncoderClosed.
+// (io.Writer contract). A sink error is terminal for the stream: the frame that
+// failed to write has already advanced the encoder's internal state, so the
+// caller must abandon the stream rather than resume it by retrying the same
+// bytes. After Close, Write returns ErrEncoderClosed.
 func (e *Encoder) Write(p []byte) (int, error) {
 	if e.closed {
 		return 0, ErrEncoderClosed

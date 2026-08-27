@@ -327,28 +327,47 @@ func chooseRegions(ix *[576]int32, part spectrumPartition, lay *bandLayout) regi
 	var prefixCost [32][40]int
 	bigValuesPrefixCost(ix, &pb, lay, &prefixCost)
 
+	// rangeCost is re-evaluated for every (r0, r1) combo below, but a and c
+	// (regionBounds' clamped band-boundary pair) each repeat across many
+	// combos, so memoize the cost by (a, b) to cost each distinct range
+	// once. Both arrays are fixed-size and stack-allocated (a, b are always
+	// in [0, lay.nBands] <= [0, 22], so [40][40] is safely oversized);
+	// zero-alloc is preserved.
+	var rcCost [40][40]int
+	var rcSeen [40][40]bool
+	rc := func(a, b int) int {
+		if rcSeen[a][b] {
+			return rcCost[a][b]
+		}
+		c, _ := rangeCost(&prefixCost, &pb, a, b)
+		rcCost[a][b], rcSeen[a][b] = c, true
+		return c
+	}
+
 	bestBits := impossibleCost
-	var best regionInfo
+	var bestR0, bestR1, bestA, bestC int
 	for r0 := range 16 {
 		for r1 := range 8 {
 			if r0+r1+2 > lay.nBands {
 				continue
 			}
 			a, c := regionBounds(r0, r1, lay.nBands)
-			cost0, t0 := rangeCost(&prefixCost, &pb, 0, a)
-			cost1, t1 := rangeCost(&prefixCost, &pb, a, c)
-			cost2, t2 := rangeCost(&prefixCost, &pb, c, lay.nBands)
-			total := cost0 + cost1 + cost2
+			total := rc(0, a) + rc(a, c) + rc(c, lay.nBands)
 			if total < bestBits {
 				bestBits = total
-				best = regionInfo{
-					region0Count: r0,
-					region1Count: r1,
-					tableSelect:  [3]uint8{t0, t1, t2},
-					bits:         total,
-				}
+				bestR0, bestR1, bestA, bestC = r0, r1, a, c
 			}
 		}
+	}
+
+	cost0, t0 := rangeCost(&prefixCost, &pb, 0, bestA)
+	cost1, t1 := rangeCost(&prefixCost, &pb, bestA, bestC)
+	cost2, t2 := rangeCost(&prefixCost, &pb, bestC, lay.nBands)
+	best := regionInfo{
+		region0Count: bestR0,
+		region1Count: bestR1,
+		tableSelect:  [3]uint8{t0, t1, t2},
+		bits:         cost0 + cost1 + cost2,
 	}
 
 	c1Bits, c1Table := count1Cost(ix, part)

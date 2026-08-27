@@ -1,113 +1,92 @@
 # go-mp3
 
-Pure-Go MP3 (MPEG Layer III) codec library, `github.com/tphakala/go-mp3`,
-MIT licensed. Sibling of go-flac, go-opus, go-aac, go-wav.
+Pure-Go MP3 (MPEG-1/2/2.5 Layer III decoder, MPEG-1 Layer III encoder)
+implemented without cgo, `github.com/tphakala/go-mp3`, MIT licensed. Sibling of
+go-flac, go-opus, go-aac, go-wav.
 
-**Status: Phase 0+1 COMPLETE, all 13 of 13 tasks done and merged (as of
-2026-08-07). The pure-Go MPEG-1 Layer III decoder produces full-frame float
-PCM bit-exact with the pinned minimp3 oracle on amd64 AND arm64, across every
-fixture and the ISO conformance vector corpus: frame sync, side info,
-scalefactors, Huffman and dequantization, stereo/reorder/antialias, hybrid
-IMDCT with overlap, synthesis filterbank, and full-frame decode
-(mp3dec_decode_frame). It is fuzzed, resync-tested, zero-alloc in steady
-state, and exposed through the public package `mp3` (NewDecoder / DecodeFrame
-returning (n, FrameInfo, error) / Reset, sibling-faithful to
-go-flac/go-aac/go-wav). Phase 2 (pcm container) is COMPLETE (as of 2026-08-08,
-PRs 8-11 merged): the streaming `pcm.Decoder` (io.Reader + io.WriterTo) adds
-ID3v2 skip + ID3v1 trailer, S16 default plus a WithF32 option,
-Xing/Info/VBRI/LAME tag parsing, gapless trim, bounded resync with
-mp3.ErrCorruptStream, clean-end/truncation detection, SeekToSample (bit-exact
-via exact-frame-index recovery + reservoir/MDCT priming), and a fuzz +
-streaming conformance suite the CI Oracle job runs bit-exact on amd64 + arm64
-(pcm coverage ~91%). The T7 fuzz surfaced two pre-existing decoder bugs, both
-now FIXED and merged: an intensity/MS-stereo panic on a malformed mono frame
-(PR12 cc81f9d, an l3Decode nch==2 guard); and the l3-nonstandard-big-iscf
-wholesale-construction failure, where an oversized leading FrameOffset pushed
-the first frame's FrameBytes past maxFrameBytes and DecodeFrame locked onto a
-spurious sub-window sync (GitHub PR #13, 6ca0494, a wide decodeWindow until the
-first audio frame sets SampleRate). The two deferred test fast-follows also
-merged (GitHub PR #14, 7928a8c: a black-box seek-overflow reachability test and
-a strict fuzz fixture guard). Phase 2 is fully wrapped; the remaining pcm
-refactor/perf/coverage cleanups are deferred and tracked in GitHub issue #15.
-Next: those cleanups (when the CodeRabbit review budget allows), then Phases 3-5
-(encoder). No encoder exists yet.**
+**Status (as of 2026-08-27, main HEAD 96162e7): decoder, streaming `pcm`
+container, and CBR encoder are all COMPLETE and merged.**
+
+- **Decoder** (public package `mp3`: `NewDecoder` / `DecodeFrame` returning
+  `(n, FrameInfo, error)` / `Reset`, sentinels `ErrCorruptStream`,
+  `ErrUnsupported`): a full MPEG-1/2/2.5 Layer III decoder, a port of the
+  pinned minimp3 oracle (CC0-1.0). Bit-exact float PCM against that oracle on
+  amd64 AND arm64 across every fixture and the ISO conformance corpus, fuzzed,
+  resync-tested, zero-alloc in steady state.
+- **Streaming container** (public package `pcm`: `NewDecoder` / `Read` /
+  `WriteTo` / `SeekToSample` / `Reset` / `Info`, plus a `WithF32` option): an
+  `io.Reader` + `io.WriterTo` over the frame decoder. ID3v2 skip + ID3v1
+  trailer, S16 default plus float32 via `WithF32`, Xing/Info/VBRI/LAME tag
+  parsing, gapless trim, bounded resync surfacing `mp3.ErrCorruptStream`,
+  clean-end/truncation detection, and bit-exact `SeekToSample`. Fuzz +
+  streaming conformance run bit-exact on amd64 + arm64 in the CI Oracle job.
+- **Encoder** (public package `mp3`: `NewEncoder` / `EncodeFrame` / `Reset` /
+  `Drained` / `Delay` / `TotalDelay` / `Stats` / `EncoderConfig`; constants
+  `FrameSize`=1152, `DefaultBitrate`=128000, `EncoderDelay`=528,
+  `TotalDelay`=1057; sentinels `ErrEncoderNotInitialized`,
+  `ErrEncoderFinalized`): a fixed-bitrate CBR MPEG-1 Layer III encoder,
+  32/44.1/48 kHz, mono or L/R stereo, the 14 legal CBR bitrates. It carries a
+  full pipeline: analysis filterbank + forward MDCT + alias reduction,
+  power-law quantizer + ISO B.7 Huffman, framing + inner rate control + a bit
+  reservoir, psychoacoustic model 2 (deterministic FFT) driving a perceptual
+  outer loop, per-frame M/S joint stereo, and attack-driven short blocks
+  (block switching). Output is bit-exact cross-arch, round-trip SNR gated, and
+  accepted by ffmpeg + mpg123 in CI. The stream is tagless (no Xing/LAME
+  header). VBR is NOT planned (dropped; `EncoderConfig.Quality` is a dead field
+  pending removal). Quality at a given bitrate still lags a fully tuned encoder
+  like LAME; further tuning is the main open work.
+
+The encoder was built across Phases 3-5 (skeleton, psychoacoustic model + rate
+control, tuning), each an agy-reviewed plan derived only from ISO/IEC 11172-3
+and published papers per PROVENANCE.md. All merged.
 
 ## Start here (fresh session)
 
 1. Recall project memories from the Hindsight bank `go-mp3`
    (`mcp__hindsight-memory-go-mp3__recall`), query "resume". The bank holds
-   the authoritative resume state: merged commits, conventions, and the
-   carry-forward items below.
-2. The completed Phase 2 plan (pcm container, now fully wrapped) is:
-   `docs/superpowers/plans/2026-08-07-go-mp3-phase2-pcm-container.md`
-   (agy-reviewed), ledger
-   `.superpowers/sdd/2026-08-07-go-mp3-phase2-pcm-container/progress.md`
-   (local, gitignored), which records each task's status, commit range, the
-   review findings folded in, and the authoritative carry-forward list. The
-   completed Phase 0+1 plan/ledger (dated 2026-08-06) remain for history.
-3. Phase 0+1 (PRs 1-7) and Phase 2 (pcm container, PRs 8-11 + fix PR12) are
-   DONE; the big-iscf construction fix (GitHub PR #13, 6ca0494) and the two
-   test fast-follows (GitHub PR #14, 7928a8c) are now MERGED too. Main HEAD
-   7928a8c. Phase 2 is fully wrapped. NEXT: the remaining pcm cleanups are
-   DEFERRED and tracked in GitHub issue #15 (src/seekable consolidation;
-   truncatedFrame binary-trailer false-reject; frameOffsets O(n)/TOC/cache
-   perf; a low-value frameLength-vs-internal/dec helper that turned out not
-   worth sharing since the two are not arithmetically identical; test-coverage
-   minors). Do them on fresh branches when the CodeRabbit review budget allows.
-   THEN the main work: Phases 3-5 (encoder: skeleton, psychoacoustic model +
-   rate control, tuning), each with its own agy-reviewed plan, derived only
-   from ISO/IEC 11172-3 and published papers per PROVENANCE.md. Execute each the
-   same way: plan, branch, implement, review, gate, watch-pr, merge.
-4. Execute task by task with superpowers:subagent-driven-development (a fresh
-   implementer subagent per task, then a task review, following the ledger's
-   established pattern).
-5. Phases 2-5 (pcm container, encoder skeleton, psymodel + rate control,
-   tuning) each get their own plan when reached; write it with
-   superpowers:writing-plans and have agy review it first.
+   the authoritative resume state: merged commits, conventions, gotchas, and
+   the current carry-forward items. Prefer it over this file for the latest
+   fine-grained state; this file is the durable overview.
+2. Completed phase plans and their SDD ledgers live under `docs/` and
+   `.superpowers/` (both gitignored, local only): Phase 0+1 (decoder) and
+   Phase 2 (pcm) dated 2026-08-06/07, Phase 3 (encoder skeleton) dated
+   2026-08-12, Phases 4-5 (psymodel, rate control, tuning) in the encoder-era
+   plans. They remain for history.
+3. NEXT work: encoder quality tuning (it still lags LAME at a given bitrate),
+   and the remaining low-severity items in GitHub issue #48 (the only open
+   issue): `pairCost`/`accumEscFamilyCost` inliner fast-path, the abs-hoist
+   bounds-check hint in `bigValuesPrefixCost`, the `rangeCost` re-cache in
+   `chooseRegions`, and a comment-only doc nit in `internal/enc/encoder.go`
+   (the `clamp` doc around line 629). All benchmark-gated micro-perf plus the
+   doc nit; do them on fresh branches when the CodeRabbit review budget allows.
 
 ## Workflow conventions (established this project)
 
-- Cut a feature branch from `main`, one PR per grouped unit (PR1 = T2+T3,
-  PR2 = T4+T5, PR3 = T6+T7, PR4 = T8+T9, PR5 = T10+T11, PR6 = T12+T13).
-  Scaffolding and rules (this file, linter config, CI, README) commit
-  straight to `main` with no PR.
-- Squash-merge each PR with a conventional subject and the PR number
-  appended (matches go-flac/go-aac/go-wav); no merge commits. The process is
-  plan, branch, implement, test, then the pre-push gate and PR watch.
+- Cut a feature branch from `main`, one PR per grouped unit. Scaffolding and
+  rules (this file, linter config, CI, README) commit straight to `main` with
+  no PR (they have no plausible reviewer objection). Everything that changes
+  behavior or a public symbol goes through a PR.
+- Squash-merge each PR with a conventional subject and the PR number appended
+  (matches go-flac/go-aac/go-wav); no merge commits. The process is plan,
+  branch, implement, test, then the pre-push gate (`/gate`), `/watch-pr`, and
+  `/wrapup`.
 - `task check` runs build + vet + golangci-lint + test and must be green
   before every commit. golangci-lint uses the shared sibling config
   (`.golangci.yaml` + `rules/*.go` + the ruleguard dsl anchored by
   `tools/tools.go`). Write idiomatic Go (range-over-int for counting loops,
   etc.); a faithful port that is genuinely complex may carry a justified
   `//nolint:gocognit,gocyclo`.
-- Each decoder unit lands with an oracle dump hook (patch-based, in
+- Decoder units land with an oracle dump hook (patch-based, in
   `tools/oracle/hooks.patch`, never editing the pristine `minimp3.h`) plus a
   differential test that byte-compares Go output against the oracle. Run
   `task oracle:build` then `task oracle:dump` to regenerate dumps
   (gitignored); differential tests skip without them, or fail loudly under
-  `MP3_REQUIRE_DUMPS=1`. Replay tests iterate `replayFixtures` (all fixtures
-  except `corrupt_bitflip.mp3`).
-
-## Carry-forward items for the remaining tasks
-
-- T10 (stateful decoder): replicate mp3dec_decode_frame's fast-path header
-  cache and re-include `corrupt_bitflip.mp3` in its full-stream PCM
-  differential; port L3_change_sign here (it sits after the IMDCT dump hook).
-- T11 (conformance): the LAME fixture corpus emits no intensity stereo and no
-  mixed blocks, so those faithfully-ported paths stay untested until the ISO
-  vectors run here; also add the arm64 oracle differential CI job.
-- T12 (robustness): do NOT expect bit-exact oracle parity on a deliberately
-  truncated stream at a reservoir-boundary tail. bits.Reader returns
-  deterministic 0 past its limit while upstream reads raw scratch bytes; the
-  Go behaviour is the correct, safer one.
-- T13 (public API): follow the sibling conventions across go-flac, go-aac,
-  go-wav (constructor naming, streaming vs frame model, io.Reader usage,
-  error handling); reconcile the plan's proposed API against the actual
-  sibling decoder surfaces.
-- Deferred minors (see the ledger): extend the scalefactor table-checksum
-  test to all 8 tables; consolidate the duplicated test helpers flagged on
-  PR4; note that the diff-based `hooks.patch` churns its mtime header lines
-  on regeneration (harmless, the patch body is stable).
+  `MP3_REQUIRE_DUMPS=1`.
+- Encoder units land with a bit-exact cross-arch golden gate, a round-trip
+  SNR gate, a zero-alloc `EncodeFrame` gate, and structural validation, plus
+  the ffmpeg/mpg123 decode-compatibility gate in CI. The encoder is
+  GOLDEN-NEUTRAL: any change to production encoder code must keep output
+  bit-exact against the committed goldens on amd64 AND arm64.
 
 ## Hard rules
 
@@ -119,14 +98,21 @@ Next: those cleanups (when the CodeRabbit review budget allows), then Phases 3-5
 - `docs/` is private planning material: gitignored, never committed, never
   pushed. The SDD ledger under `.superpowers/` is likewise local only.
 - ISO conformance vectors are never committed; fetch scripts only.
-- Bit-exactness discipline for all ported DSP code: follow the plan's Global
-  Constraints (FMA blocking on arm64, C double-promotion matching, upstream
-  operation order). The oracle builds with `-ffp-contract=off`, so the arm64
-  anti-fusion discipline is load-bearing. IMPORTANT: block FMA fusion with an
-  explicit `float32(a*b)` conversion on any product feeding a `+`/`-`; a bare
-  two-statement local (`t := a*b; t + c`) does NOT block fusion in Go 1.26
-  (the compiler fuses across statements, verified via `GOARCH=arm64 go build
-  -gcflags=-S`). amd64 default `GOAMD64=v1` has no FMA instruction, so fusion
-  bugs are invisible there and only the arm64 differential (CI) catches them.
+- Bit-exactness discipline for all DSP code (decoder and encoder): follow the
+  plans' Global Constraints (FMA blocking on arm64, C double-promotion
+  matching, upstream operation order). The oracle builds with
+  `-ffp-contract=off`, so the arm64 anti-fusion discipline is load-bearing.
+  IMPORTANT: block FMA fusion with an explicit `float32(a*b)` conversion on
+  any product feeding a `+`/`-`; a bare two-statement local (`t := a*b;
+  t + c`) does NOT block fusion in Go 1.26 (the compiler fuses across
+  statements, verified via `GOARCH=arm64 go build -gcflags=-S`). amd64 default
+  `GOAMD64=v1` has no FMA instruction, so fusion bugs are invisible there and
+  only the arm64 differential (CI) catches them.
+- Gotcha: `internal/enc/huffman.go` `chooseRegions`' `rcCost`/`rcSeen` memo
+  arrays MUST stay `[40][40]`; do NOT shrink them. `chooseRegions` is
+  reachable with `lay.nBands` up to 39 (a `blockLong`-typed granule over a
+  short layout, as in `TestOuterLoopShortConverges`), so any smaller dimension
+  truncates the memo and panics. The "a,b <= 22" comment holds only for the
+  production long-block path.
 - Peer review partner: agy (Gemini 3.1 Pro High for design and code review,
   Flash for research); review every phase plan before executing it.

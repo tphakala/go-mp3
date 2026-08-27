@@ -3,6 +3,7 @@ package pcm
 import (
 	"bytes"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	mp3 "github.com/tphakala/go-mp3"
@@ -88,5 +89,40 @@ func TestDecodeInterleavedNoFrame(t *testing.T) {
 	// Non-MP3 garbage must return a construction error, not a panic or empty ok.
 	if _, _, err := DecodeInterleaved(bytes.NewReader([]byte("not an mp3 stream at all"))); err == nil {
 		t.Fatal("expected error for non-MP3 input")
+	}
+}
+
+// TestDecodeInterleavedMatchesStreamingOracle ties the one-shot decode to the
+// streaming pcm.Decoder, which CI verifies bit-exact against the pinned minimp3
+// oracle (see the Oracle differential job and the streaming conformance suite).
+// DecodeInterleaved adds no decode logic; it accumulates the streaming decoder's
+// output under a byte ceiling. So decoding a real MP3 fixture through the one-shot
+// must be byte-identical to draining the streaming decoder, which transitively
+// gives the one-shot the same oracle guarantee without a redundant decoder dump
+// hook (the coding guideline reserves those hooks for actual decoder units, and
+// this is a thin wrapper over one). The fixtures are committed, so this runs in
+// CI on both amd64 and arm64.
+func TestDecodeInterleavedMatchesStreamingOracle(t *testing.T) {
+	fixtures := []string{
+		fixturesDir + "/sine48m_128.mp3",  // 48 kHz mono
+		fixturesDir + "/sine44s_128.mp3",  // 44.1 kHz stereo
+		fixturesDir + "/chirp44m_128.mp3", // 44.1 kHz mono chirp
+	}
+	for _, fx := range fixtures {
+		t.Run(filepath.Base(fx), func(t *testing.T) {
+			raw := readFixture(t, fx)
+			// Reference: the streaming decoder's full S16 output, oracle-verified in CI.
+			want := decodeAllBytes(t, bytes.NewReader(raw))
+			got, info, err := DecodeInterleaved(bytes.NewReader(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("one-shot S16 output differs from the streaming (oracle-verified) decoder: got %d bytes, want %d", len(got), len(want))
+			}
+			if info.SampleRate == 0 || info.Channels == 0 {
+				t.Fatalf("Info not populated: %+v", info)
+			}
+		})
 	}
 }

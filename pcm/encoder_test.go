@@ -144,6 +144,34 @@ func TestEncoderClosePartialSampleErrors(t *testing.T) {
 	}
 }
 
+// TestEncoderCloseDrainsDespiteTrailingPartialSample proves the mandatory drain
+// still runs when Close errors on a trailing partial sample: the held lookahead
+// frame must be flushed (buffer grows) rather than abandoned, even though Close
+// returns the partial-sample error.
+func TestEncoderCloseDrainsDespiteTrailingPartialSample(t *testing.T) {
+	cfg := Config{SampleRate: 44100, Channels: 2, Bitrate: 128000}
+	var buf bytes.Buffer
+	e, err := NewEncoder(&buf, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Several whole frames so the encoder lookahead holds real audio to drain.
+	if _, err := e.Write(genSineS16(mp3.FrameSize*3, 2, 1000, 44100)); err != nil {
+		t.Fatal(err)
+	}
+	// A trailing partial sample: 2 bytes is less than the 4-byte stereo stride.
+	if _, err := e.Write([]byte{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	preClose := buf.Len()
+	if cerr := e.Close(); cerr == nil {
+		t.Fatal("expected Close to error on the trailing partial sample")
+	}
+	if buf.Len() <= preClose {
+		t.Fatalf("drain was skipped: buffer did not grow on Close (pre=%d post=%d)", preClose, buf.Len())
+	}
+}
+
 func TestEncoderEmptyInputProducesFlushFrame(t *testing.T) {
 	// N=0 non-nil calls plus the drain yields exactly one flush frame: empty in,
 	// one valid frame out (the documented root-encoder contract).

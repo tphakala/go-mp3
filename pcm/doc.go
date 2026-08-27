@@ -27,6 +27,9 @@
 // interleaved little-endian signed 16-bit PCM (2 bytes per sample), matching
 // go-aac and go-wav.
 //
+// Pass WithF32 to NewDecoder (or to the DecodeInterleaved one-shots) to emit
+// interleaved little-endian float32 (4 bytes per sample) instead.
+//
 // # Encoding
 //
 // NewEncoder wraps the root mp3.Encoder as an io.WriteCloser that consumes

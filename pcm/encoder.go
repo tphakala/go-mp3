@@ -189,27 +189,35 @@ func (e *Encoder) Close() error {
 	}
 	e.closed = true
 
+	// Capture the first error but always run the drain below. The root encoder
+	// holds a one-frame lookahead, so skipping the drain would abandon the last
+	// real frame of audio and leave the stream unfinalized (a retry Close is a
+	// no-op once closed is latched), which contradicts this method's mandatory-
+	// drain contract.
+	var firstErr error
 	if len(e.carry) > 0 {
 		if len(e.carry)%e.stride != 0 {
-			return fmt.Errorf("go-mp3/pcm: Close: %d trailing bytes are not a whole sample", len(e.carry))
-		}
-		n := len(e.carry) / e.stride
-		if err := e.emitFrame(e.carry, n); err != nil {
-			return err
+			firstErr = fmt.Errorf("go-mp3/pcm: Close: %d trailing bytes are not a whole sample", len(e.carry))
+		} else if err := e.emitFrame(e.carry, len(e.carry)/e.stride); err != nil {
+			firstErr = err
 		}
 	}
 	e.carry = e.carry[:0]
 
-	// Drain: a nil EncodeFrame flushes the held frame plus the final flush frame.
-	var err error
-	e.out, err = e.enc.EncodeFrame(e.out[:0], nil)
-	if err != nil {
-		return err
-	}
-	if len(e.out) > 0 {
-		if _, werr := e.w.Write(e.out); werr != nil {
-			return werr
+	// Mandatory drain: a nil EncodeFrame flushes the held frame plus the final
+	// flush frame. It runs even after a carry error so the stream is finalized;
+	// the first error is returned.
+	out, derr := e.enc.EncodeFrame(e.out[:0], nil)
+	e.out = out
+	switch {
+	case derr != nil:
+		if firstErr == nil {
+			firstErr = derr
+		}
+	case len(e.out) > 0:
+		if _, werr := e.w.Write(e.out); werr != nil && firstErr == nil {
+			firstErr = werr
 		}
 	}
-	return nil
+	return firstErr
 }

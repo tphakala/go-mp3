@@ -270,3 +270,70 @@ func sha256Sum(b []byte) []byte {
 	sum := sha256.Sum256(b)
 	return sum[:]
 }
+
+// bigValuesPrefixCostRef is a frozen, never-optimized copy of
+// bigValuesPrefixCost as it stood before issue #37's inner-cost work. It is
+// the golden-neutral oracle for TestBigValuesPrefixCostEquivalence: every
+// optimization of the production function must reproduce this byte for byte.
+func bigValuesPrefixCostRef(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCost *[32][40]int) {
+	for _, t := range validBigTables {
+		bt := bigTables[t]
+		cost := 0
+		p := 0
+		for k := range lay.nBands {
+			end := pb[k+1]
+			for ; p < end; p++ {
+				cost += pairCost(bt, abs32(ix[2*p]), abs32(ix[2*p+1]))
+			}
+			prefixCost[t][k+1] = cost
+		}
+	}
+}
+
+// TestBigValuesPrefixCostEquivalence fuzzes ix across every long and short
+// layout and every magnitude regime (all-zero, mid, the escape boundary at
+// 15, just over it at 16, and the maxQuant ceiling) and requires the
+// production bigValuesPrefixCost to equal the frozen reference for the full
+// [32][40] table. This is the bit-exact proof for issue #37's abs-hoist and
+// escape-family-factor refactors: it catches any divergence long before the
+// sha256 stream goldens would.
+func TestBigValuesPrefixCostEquivalence(t *testing.T) {
+	layouts := []*bandLayout{
+		&layoutLong[0], &layoutLong[1], &layoutLong[2],
+		&layoutShort[0], &layoutShort[1], &layoutShort[2],
+	}
+	var seed uint64 = 20260827
+	next := func() float64 { return testsignal.LCG(&seed) }
+
+	// Magnitude regimes: force coverage of the escape-table boundary (15,
+	// 16) and the maxQuant clamp, not just uniform noise, since the
+	// escape-family factoring hinges on values at and beyond 15.
+	scales := []int32{1, 2, 15, 16, 255, maxQuant}
+
+	for _, lay := range layouts {
+		for _, scale := range scales {
+			for trial := range 40 {
+				var ix [576]int32
+				for i := range ix {
+					// Concentrate magnitude low, empty the tail, so
+					// partitionSpectrum yields varied bigValues counts.
+					frac := float64(576-i) / 576
+					v := int32(next() * float64(scale) * frac * frac)
+					if next() < 0.5 {
+						v = -v
+					}
+					ix[i] = v
+				}
+				part := partitionSpectrum(&ix)
+				pb := pairBoundaries(lay, part.bigValues)
+
+				var got, want [32][40]int
+				bigValuesPrefixCost(&ix, &pb, lay, &got)
+				bigValuesPrefixCostRef(&ix, &pb, lay, &want)
+				if got != want {
+					t.Fatalf("lay=%v scale=%d trial=%d: bigValuesPrefixCost diverged from frozen reference", lay.short, scale, trial)
+				}
+			}
+		}
+	}
+}

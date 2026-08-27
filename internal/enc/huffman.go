@@ -113,6 +113,18 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 // [32][40]int result is large enough that a by-value return costs a
 // measurable copy on every call.
 func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCost *[32][40]int) {
+	// Pre-hoist the per-pair absolute values once (issue #37): the per-table
+	// loop below otherwise recomputes abs32 of the same two int32s 30 times
+	// per pair. ax/ay are fixed-size local arrays, stack-allocated, so this
+	// stays zero-alloc. nPairs is pb's last (already-clamped) boundary, at
+	// most 288 (partitionSpectrum caps bigValues there).
+	nPairs := pb[lay.nBands]
+	var ax, ay [288]int32
+	for p := range nPairs {
+		ax[p] = abs32(ix[2*p])
+		ay[p] = abs32(ix[2*p+1])
+	}
+
 	for _, t := range validBigTables {
 		bt := bigTables[t]
 		cost := 0
@@ -120,7 +132,7 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 		for k := range lay.nBands {
 			end := pb[k+1]
 			for ; p < end; p++ {
-				cost += pairCost(bt, abs32(ix[2*p]), abs32(ix[2*p+1]))
+				cost += pairCost(bt, ax[p], ay[p])
 			}
 			prefixCost[t][k+1] = cost
 		}

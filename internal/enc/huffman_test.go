@@ -349,6 +349,55 @@ func TestBigValuesPrefixCostEquivalence(t *testing.T) {
 // copies with no compiler-enforced link to their sources, so a future reorder
 // or edit could silently desync them; today that is only covered indirectly by
 // TestBigValuesPrefixCostEquivalence. This pins the link directly.
+// TestNonEscTablesAreDirect pins the precondition bigValuesPrefixCost's
+// non-escape loop relies on when it calls pairCostDirect instead of the
+// general pairCost: every nonEscBigTables member must be a real table with
+// linbits == 0, since pairCostDirect has no escape handling at all and would
+// silently misprice a table that grew one. A dim of 0 would equally break it
+// (maxDirect would go negative), so that is asserted here too.
+func TestNonEscTablesAreDirect(t *testing.T) {
+	for _, ti := range nonEscBigTables {
+		bt := bigTables[ti]
+		if bt.codes == nil {
+			t.Errorf("table %d: codes is nil, not a usable direct table", ti)
+		}
+		if bt.linbits != 0 {
+			t.Errorf("table %d: linbits = %d, want 0 (pairCostDirect cannot escape)", ti, bt.linbits)
+		}
+		if bt.dim < 1 {
+			t.Errorf("table %d: dim = %d, want >= 1", ti, bt.dim)
+		}
+	}
+}
+
+// TestPairCostHalvesMatchDispatch cross-checks the pairCost split: for every
+// valid big table and a magnitude sweep spanning the direct range, the escape
+// marker, the escape range and the representability ceiling, the half that
+// pairCost dispatches to must return exactly what pairCost returns. This is
+// the direct guard on the issue #48 restructuring being bit-exact; the
+// encoder goldens would catch a production divergence, but only for the
+// magnitudes a golden stream happens to contain.
+func TestPairCostHalvesMatchDispatch(t *testing.T) {
+	mags := []int32{0, 1, 2, 14, 15, 16, 17, 255, 256, 8205, 8206, 8207}
+	for _, ti := range validBigTables {
+		bt := bigTables[ti]
+		for _, ax := range mags {
+			for _, ay := range mags {
+				want := pairCost(bt, ax, ay)
+				var got int
+				if bt.linbits > 0 {
+					got = pairCostEsc(bt, ax, ay)
+				} else {
+					got = pairCostDirect(bt, ax, ay)
+				}
+				if got != want {
+					t.Fatalf("table %d, pair (%d,%d): half = %d, pairCost = %d", ti, ax, ay, got, want)
+				}
+			}
+		}
+	}
+}
+
 func TestEscFamilyTablePartition(t *testing.T) {
 	// The three partitions must sum to the ISO split: 14 non-escape + 8 + 8.
 	if got := len(nonEscBigTables) + len(escFam16Tables) + len(escFam24Tables); got != len(validBigTables) {

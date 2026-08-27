@@ -75,35 +75,68 @@ type regionInfo struct {
 // even a magnitude of 15 costs an extra t.linbits bits (with an escape
 // value of 0), mirroring l3Huffman's `if lsb == 15` branch
 // (internal/dec/huffman.go:171) rather than checking ax > 15.
+//
+// pairCost is the general entry point, a two-way dispatch over the halves
+// below; the halves themselves exist because Go charges a flat 57 for any
+// call to a non-inlinable function, so a hot loop that wants an inlined
+// per-pair cost has to call the half it needs directly rather than the
+// dispatcher (issue #48). bigValuesPrefixCost's per-pair loop therefore
+// calls pairCostDirect, not pairCost: it costs only nonEscBigTables, every
+// one of which has linbits == 0 (TestNonEscTablesAreDirect pins that), and
+// the escape families reach their costs through accumEscFamilyCost instead.
 func pairCost(t huffTable, ax, ay int32) int {
+	if t.linbits > 0 {
+		return pairCostEsc(t, ax, ay)
+	}
+	return pairCostDirect(t, ax, ay)
+}
+
+// pairCostDirect is pairCost's linbits == 0 half: with no escape available,
+// a magnitude beyond dim-1 is simply unrepresentable, and the codeword index
+// is the magnitude itself. Small enough to inline, which is the point.
+func pairCostDirect(t huffTable, ax, ay int32) int {
 	if t.codes == nil {
 		return impossibleCost
 	}
 	maxDirect := int32(t.dim - 1)
-	ix, iy := ax, ay
-	if t.linbits > 0 {
-		maxVal := maxDirect + (int32(1)<<uint(t.linbits) - 1)
-		if ax > maxVal || ay > maxVal {
-			return impossibleCost
-		}
-		if ix > maxDirect {
-			ix = maxDirect
-		}
-		if iy > maxDirect {
-			iy = maxDirect
-		}
-	} else if ax > maxDirect || ay > maxDirect {
+	if ax > maxDirect || ay > maxDirect {
 		return impossibleCost
 	}
+	cost := int(t.codes[int(ax)*t.dim+int(ay)].len)
+	if ax != 0 {
+		cost++
+	}
+	if ay != 0 {
+		cost++
+	}
+	return cost
+}
 
+// pairCostEsc is pairCost's linbits > 0 half: a magnitude beyond
+// dim-1 + (1<<linbits - 1) is unrepresentable, the codeword index saturates
+// at dim-1, and every magnitude at or above dim-1 pays the linbits escape.
+func pairCostEsc(t huffTable, ax, ay int32) int {
+	if t.codes == nil {
+		return impossibleCost
+	}
+	maxDirect := int32(t.dim - 1)
+	maxVal := maxDirect + (int32(1)<<uint(t.linbits) - 1)
+	if ax > maxVal || ay > maxVal {
+		return impossibleCost
+	}
+	ix, iy := ax, ay
+	if ix > maxDirect {
+		ix = maxDirect
+	}
+	if iy > maxDirect {
+		iy = maxDirect
+	}
 	cost := int(t.codes[int(ix)*t.dim+int(iy)].len)
-	if t.linbits > 0 {
-		if ax >= maxDirect {
-			cost += t.linbits
-		}
-		if ay >= maxDirect {
-			cost += t.linbits
-		}
+	if ax >= maxDirect {
+		cost += t.linbits
+	}
+	if ay >= maxDirect {
+		cost += t.linbits
 	}
 	if ax != 0 {
 		cost++
@@ -147,9 +180,16 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 // so the codeword index is min(val, 15); a value >= 15 takes the escape
 // addend linbits (index 15 is the escape marker, ISO 2.4.2.7), and a value
 // beyond 15 + (1<<linbits) - 1 makes the pair unrepresentable (impossibleCost).
+//
+// Neither magnitude escaping is the common case at ordinary quantization,
+// and it makes every per-table test statically true: no linbits addend
+// applies, and no table can find the pair unrepresentable, since maxVal is
+// at least escMaxDirect for any linbits. That case therefore short-circuits
+// to a flat "add base to all eight" loop, skipping a per-table shift and
+// two comparisons apiece (issue #48). Only the escaping case runs the full
+// per-table loop below.
 func accumEscFamilyCost(acc, linb *[8]int, codes []codeEntry, ax, ay int32) {
 	ix, iy := ax, ay
-	escX, escY := ax >= escMaxDirect, ay >= escMaxDirect
 	if ix > escMaxDirect {
 		ix = escMaxDirect
 	}
@@ -163,6 +203,14 @@ func accumEscFamilyCost(acc, linb *[8]int, codes []codeEntry, ax, ay int32) {
 	if ay != 0 {
 		base++
 	}
+	if ax < escMaxDirect && ay < escMaxDirect {
+		for j := range acc {
+			acc[j] += base
+		}
+		return
+	}
+
+	escX, escY := ax >= escMaxDirect, ay >= escMaxDirect
 	for j := range linb {
 		l := linb[j]
 		maxVal := escMaxDirect + (int32(1) << uint(l)) - 1
@@ -210,7 +258,7 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 		for k := range lay.nBands {
 			end := pb[k+1]
 			for ; p < end; p++ {
-				cost += pairCost(bt, ax[p], ay[p])
+				cost += pairCostDirect(bt, ax[p], ay[p])
 			}
 			prefixCost[t][k+1] = cost
 		}

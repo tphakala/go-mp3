@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"slices"
 	"testing"
 
 	"github.com/tphakala/go-mp3/internal/bits"
@@ -349,55 +350,6 @@ func TestBigValuesPrefixCostEquivalence(t *testing.T) {
 // copies with no compiler-enforced link to their sources, so a future reorder
 // or edit could silently desync them; today that is only covered indirectly by
 // TestBigValuesPrefixCostEquivalence. This pins the link directly.
-// TestNonEscTablesAreDirect pins the precondition bigValuesPrefixCost's
-// non-escape loop relies on when it calls pairCostDirect instead of the
-// general pairCost: every nonEscBigTables member must be a real table with
-// linbits == 0, since pairCostDirect has no escape handling at all and would
-// silently misprice a table that grew one. A dim of 0 would equally break it
-// (maxDirect would go negative), so that is asserted here too.
-func TestNonEscTablesAreDirect(t *testing.T) {
-	for _, ti := range nonEscBigTables {
-		bt := bigTables[ti]
-		if bt.codes == nil {
-			t.Errorf("table %d: codes is nil, not a usable direct table", ti)
-		}
-		if bt.linbits != 0 {
-			t.Errorf("table %d: linbits = %d, want 0 (pairCostDirect cannot escape)", ti, bt.linbits)
-		}
-		if bt.dim < 1 {
-			t.Errorf("table %d: dim = %d, want >= 1", ti, bt.dim)
-		}
-	}
-}
-
-// TestPairCostHalvesMatchDispatch cross-checks the pairCost split: for every
-// valid big table and a magnitude sweep spanning the direct range, the escape
-// marker, the escape range and the representability ceiling, the half that
-// pairCost dispatches to must return exactly what pairCost returns. This is
-// the direct guard on the issue #48 restructuring being bit-exact; the
-// encoder goldens would catch a production divergence, but only for the
-// magnitudes a golden stream happens to contain.
-func TestPairCostHalvesMatchDispatch(t *testing.T) {
-	mags := []int32{0, 1, 2, 14, 15, 16, 17, 255, 256, 8205, 8206, 8207}
-	for _, ti := range validBigTables {
-		bt := bigTables[ti]
-		for _, ax := range mags {
-			for _, ay := range mags {
-				want := pairCost(bt, ax, ay)
-				var got int
-				if bt.linbits > 0 {
-					got = pairCostEsc(bt, ax, ay)
-				} else {
-					got = pairCostDirect(bt, ax, ay)
-				}
-				if got != want {
-					t.Fatalf("table %d, pair (%d,%d): half = %d, pairCost = %d", ti, ax, ay, got, want)
-				}
-			}
-		}
-	}
-}
-
 func TestEscFamilyTablePartition(t *testing.T) {
 	// The three partitions must sum to the ISO split: 14 non-escape + 8 + 8.
 	if got := len(nonEscBigTables) + len(escFam16Tables) + len(escFam24Tables); got != len(validBigTables) {
@@ -441,13 +393,20 @@ func TestEscFamilyTablePartition(t *testing.T) {
 	// Non-escape members must be genuine non-escape codebooks: zero linbits and
 	// a populated codes slice (which also rejects the invalid slots 4 and 14,
 	// whose codes are nil).
+	// These three are also bigValuesPrefixCost's precondition for calling
+	// pairCostDirect rather than the general pairCost: that half has no escape
+	// handling at all, so a member that grew linbits would be mispriced
+	// silently, and dim < 1 would make its maxDirect negative.
 	for _, tbl := range nonEscBigTables {
 		bt := bigTables[tbl]
 		if bt.linbits != 0 {
-			t.Errorf("nonEscBigTables table %d: linbits=%d, want 0", tbl, bt.linbits)
+			t.Errorf("nonEscBigTables table %d: linbits=%d, want 0 (pairCostDirect cannot escape)", tbl, bt.linbits)
 		}
 		if len(bt.codes) == 0 {
 			t.Errorf("nonEscBigTables table %d: empty codes slice", tbl)
+		}
+		if bt.dim < 1 {
+			t.Errorf("nonEscBigTables table %d: dim=%d, want >= 1", tbl, bt.dim)
 		}
 	}
 
@@ -470,6 +429,148 @@ func TestEscFamilyTablePartition(t *testing.T) {
 	}
 	checkFamily("escFam16", &escFam16Tables, &escFam16Linbits, table16Codes)
 	checkFamily("escFam24", &escFam24Tables, &escFam24Linbits, table24Codes)
+}
+
+// pairCostRef is pairCost as it stood before the issue #48 split, transcribed
+// verbatim from main at 8944a7d: one function branching internally on linbits.
+// It exists so the split can be checked against an INDEPENDENT implementation.
+//
+// Checking the halves against pairCost instead would be tautological, because
+// pairCost is now defined as exactly that dispatch and would agree with them
+// however wrong their arithmetic became. The package's other frozen oracle,
+// bigValuesPrefixCostRef, cannot stand in either: it reaches the direct half
+// through pairCost, so production and reference now share that code and a
+// defect inside pairCostDirect cancels out of the comparison.
+//
+// Frozen on purpose. Never edit this to match a future pairCost.
+func pairCostRef(t huffTable, ax, ay int32) int {
+	if t.codes == nil {
+		return impossibleCost
+	}
+	maxDirect := int32(t.dim - 1)
+	ix, iy := ax, ay
+	if t.linbits > 0 {
+		maxVal := maxDirect + (int32(1)<<uint(t.linbits) - 1)
+		if ax > maxVal || ay > maxVal {
+			return impossibleCost
+		}
+		if ix > maxDirect {
+			ix = maxDirect
+		}
+		if iy > maxDirect {
+			iy = maxDirect
+		}
+	} else if ax > maxDirect || ay > maxDirect {
+		return impossibleCost
+	}
+
+	cost := int(t.codes[int(ix)*t.dim+int(iy)].len)
+	if t.linbits > 0 {
+		if ax >= maxDirect {
+			cost += t.linbits
+		}
+		if ay >= maxDirect {
+			cost += t.linbits
+		}
+	}
+	if ax != 0 {
+		cost++
+	}
+	if ay != 0 {
+		cost++
+	}
+	return cost
+}
+
+// pairCostSweep returns the magnitudes TestPairCostMatchesPreSplitReference
+// compares over. A hand-written list cannot do this job, because the
+// interesting magnitudes are per-table and a fixed list misses most of them
+// silently: bigTables carries dims 1, 2, 3, 4, 6, 8 and 16, so the
+// direct/escape boundary dim-1 sits at seven different magnitudes, and the
+// linbits in use put the representability ceiling maxVal anywhere from 16 to
+// maxQuant. The sweep is therefore DERIVED from the table data, straddling
+// every table's dim boundary and every escape table's maxVal, so a table
+// added later cannot slip through with its boundaries untested.
+func pairCostSweep() []int32 {
+	seen := make(map[int32]bool)
+	var out []int32
+	add := func(v int32) {
+		if v >= 0 && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	add(0)
+	add(1)
+	add(maxQuant)
+	add(maxQuant + 1)
+	for i := range bigTables {
+		d := int32(bigTables[i].dim)
+		add(d - 2)
+		add(d - 1) // the escape marker / last direct index
+		add(d)
+		if l := bigTables[i].linbits; l > 0 {
+			maxVal := d - 1 + (int32(1)<<uint(l) - 1)
+			add(maxVal - 1)
+			add(maxVal)
+			add(maxVal + 1)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// TestPairCostMatchesPreSplitReference is the bit-exactness guard on the
+// issue #48 split. For every entry of bigTables, including the invalid
+// zero-value slots 4 and 14 that carry nil codes, and every magnitude pair
+// drawn from the derived sweep, the dispatcher and the half it dispatches to
+// must both return exactly what the pre-split implementation returned.
+//
+// The halves are exercised directly, not only through pairCost, because
+// production reaches pairCostDirect without going through the dispatcher at
+// all. Covering all 32 slots is also what reaches each half's nil-codes
+// guard, which no other test in the package can touch: every other caller
+// iterates validBigTables or nonEscBigTables, and both exclude slots 4 and 14.
+func TestPairCostMatchesPreSplitReference(t *testing.T) {
+	mags := pairCostSweep()
+	for ti := range bigTables {
+		bt := bigTables[ti]
+		for _, ax := range mags {
+			for _, ay := range mags {
+				want := pairCostRef(bt, ax, ay)
+				if got := pairCost(bt, ax, ay); got != want {
+					t.Fatalf("table %d, pair (%d,%d): pairCost = %d, pre-split reference = %d", ti, ax, ay, got, want)
+				}
+				got := pairCostDirect(bt, ax, ay)
+				if bt.linbits > 0 {
+					got = pairCostEsc(bt, ax, ay)
+				}
+				if got != want {
+					t.Fatalf("table %d, pair (%d,%d): half = %d, pre-split reference = %d", ti, ax, ay, got, want)
+				}
+			}
+		}
+	}
+
+	// Each half's nil-codes guard is unreachable through bigTables, and not
+	// because no slot has nil codes: slots 4 and 14 do, but they are zero
+	// values, so dim == 0 makes maxDirect -1 and the magnitude test returns
+	// impossibleCost before the nil test is ever consulted. Deleting either
+	// guard therefore leaves the whole package green, which reads as dead
+	// code and invites exactly that deletion. Reach them here with synthetic
+	// tables that pair nil codes with a usable dim, so each guard is pinned
+	// to the total contract pairCostRef states rather than to today's data.
+	nilDirect := huffTable{dim: 1}
+	if got := pairCostDirect(nilDirect, 0, 0); got != impossibleCost {
+		t.Errorf("pairCostDirect(nil codes, 0, 0) = %d, want impossibleCost %d", got, impossibleCost)
+	}
+	nilEsc := huffTable{dim: escTableDim, linbits: 5}
+	if got := pairCostEsc(nilEsc, 0, 0); got != impossibleCost {
+		t.Errorf("pairCostEsc(nil codes, 0, 0) = %d, want impossibleCost %d", got, impossibleCost)
+	}
+	if got := pairCost(nilEsc, 0, 0); got != impossibleCost {
+		t.Errorf("pairCost(nil codes, 0, 0) = %d, want impossibleCost %d", got, impossibleCost)
+	}
 }
 
 // TestBigValuesPrefixCostEscapeBoundary deterministically exercises the
@@ -501,12 +602,25 @@ func TestBigValuesPrefixCostEscapeBoundary(t *testing.T) {
 		ix[2*i] = v
 		ix[2*i+1] = m
 	}
+	// Symmetric pairs alone cannot discriminate accumEscFamilyCost's
+	// "neither magnitude escapes" conjunction from a disjunction: with both
+	// slots equal, `ax < 15 && ay < 15` and `ax < 15 || ay < 15` agree on
+	// every pair. Append MIXED pairs, one slot below the escape marker and
+	// one at or above it, in both orders, so a conjunction silently weakened
+	// to a disjunction prices the escaping slot's linbits at zero and
+	// diverges from the frozen reference.
+	mixed := [][2]int32{{14, 15}, {15, 14}, {14, maxQuant}, {-maxQuant, 14}}
+	for j, mp := range mixed {
+		ix[2*(len(mags)+j)] = mp[0]
+		ix[2*(len(mags)+j)+1] = mp[1]
+	}
+	nPairs := len(mags) + len(mixed)
 	// The tail stays zero, so partitionSpectrum classifies these magnitudes
 	// (all > 1) as big values rather than count1/rzero. Guard that setup
 	// assumption so this test fails loudly if it ever stops covering them.
 	part := partitionSpectrum(&ix)
-	if part.bigValues < len(mags) {
-		t.Fatalf("setup: bigValues %d < %d, boundary pairs not all in the big-values region", part.bigValues, len(mags))
+	if part.bigValues < nPairs {
+		t.Fatalf("setup: bigValues %d < %d, boundary pairs not all in the big-values region", part.bigValues, nPairs)
 	}
 
 	layouts := []*bandLayout{

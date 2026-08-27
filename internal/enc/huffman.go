@@ -24,6 +24,11 @@ var validBigTables = [30]uint8{
 // nonEscBigTables is validBigTables minus the two escape families (16-31):
 // the tables bigValuesPrefixCost still costs one at a time, since each has
 // its own codes slice. Tables 4 and 14 stay excluded (invalid slots).
+// Every member must have linbits == 0 and dim >= 1: bigValuesPrefixCost costs
+// them with pairCostDirect, which has no escape handling at all, so a member
+// that grew linbits would be mispriced with no escape addend and no runtime
+// complaint. TestEscFamilyTablePartition pins both properties against
+// bigTables. Move such a table into an escape family instead of adding it here.
 var nonEscBigTables = [14]uint8{0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15}
 
 // escFam16Tables / escFam16Linbits describe ISO escape tables 16-23, which
@@ -82,8 +87,12 @@ type regionInfo struct {
 // per-pair cost has to call the half it needs directly rather than the
 // dispatcher (issue #48). bigValuesPrefixCost's per-pair loop therefore
 // calls pairCostDirect, not pairCost: it costs only nonEscBigTables, every
-// one of which has linbits == 0 (TestNonEscTablesAreDirect pins that), and
+// one of which has linbits == 0 (TestEscFamilyTablePartition pins that), and
 // the escape families reach their costs through accumEscFamilyCost instead.
+//
+// pairCost itself therefore has no production caller left. It is not dead:
+// it stays the one entry point that is correct for an arbitrary table, and
+// the tests use it as the oracle that both halves are checked against.
 func pairCost(t huffTable, ax, ay int32) int {
 	if t.linbits > 0 {
 		return pairCostEsc(t, ax, ay)
@@ -402,9 +411,10 @@ func chooseRegions(ix *[576]int32, part spectrumPartition, lay *bandLayout) regi
 	// table, even though that means re-costing the three winning ranges after
 	// the search. Discarding it is what lets the compiler strip the
 	// best-table tracking out of rangeCost's 30-table search loop, which runs
-	// per distinct range; carrying the table through the memo instead was
-	// measured at +6% per frame (issue #48), far more than the three
-	// recomputes below cost.
+	// per distinct range, and that loop costs far more than three recomputes.
+	// Issue #48 proposed carrying the table through the memo instead, judging
+	// it negligible; measured on the frame benchmarks it is a 6% per-frame
+	// REGRESSION, so the proposal was dropped rather than applied.
 	var rcCost [40][40]int
 	var rcSeen [40][40]bool
 	rc := func(a, b int) int {

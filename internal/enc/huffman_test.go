@@ -552,14 +552,16 @@ func TestPairCostMatchesPreSplitReference(t *testing.T) {
 		}
 	}
 
-	// Each half's nil-codes guard is unreachable through bigTables, and not
-	// because no slot has nil codes: slots 4 and 14 do, but they are zero
-	// values, so dim == 0 makes maxDirect -1 and the magnitude test returns
-	// impossibleCost before the nil test is ever consulted. Deleting either
-	// guard therefore leaves the whole package green, which reads as dead
-	// code and invites exactly that deletion. Reach them here with synthetic
-	// tables that pair nil codes with a usable dim, so each guard is pinned
-	// to the total contract pairCostRef states rather than to today's data.
+	// Each half's nil-codes guard IS reached through bigTables, since it is
+	// the first statement of both halves and slots 4 and 14 carry nil codes.
+	// What no bigTables pair can do is DETECT its removal: those slots are
+	// zero values, so with the guard gone dim == 0 makes maxDirect -1 and the
+	// magnitude test returns impossibleCost for every magnitude anyway.
+	// Deleting either guard therefore leaves the whole package green, which
+	// reads as dead code and invites exactly that deletion. Pin them here
+	// with synthetic tables that pair nil codes with a usable dim, where the
+	// magnitude test would pass, so each guard answers for the total contract
+	// pairCostRef states rather than for today's table data.
 	nilDirect := huffTable{dim: 1}
 	if got := pairCostDirect(nilDirect, 0, 0); got != impossibleCost {
 		t.Errorf("pairCostDirect(nil codes, 0, 0) = %d, want impossibleCost %d", got, impossibleCost)

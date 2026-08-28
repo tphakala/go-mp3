@@ -626,8 +626,9 @@ func (e *Encoder) layFor(i int) *bandLayout {
 
 // clamp restricts x to [-1, 1], the documented input domain: it bounds
 // |xr| so minGlobalGain plus quantizeGranule's maxQuant clamp guarantee
-// every |ix| <= 8206, which linbits 13 and 15 (both + 8191 = 8206) can
-// always represent, regardless of how loud the finite input was.
+// every |ix| <= 8206, which the two linbits-13 escape tables (23 and 31)
+// can always represent (maxDirect 15 + 2^13 - 1 = 8206), regardless of how
+// loud the finite input was.
 func clamp(x float64) float64 {
 	if x > 1 {
 		return 1

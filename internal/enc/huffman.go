@@ -24,6 +24,11 @@ var validBigTables = [30]uint8{
 // nonEscBigTables is validBigTables minus the two escape families (16-31):
 // the tables bigValuesPrefixCost still costs one at a time, since each has
 // its own codes slice. Tables 4 and 14 stay excluded (invalid slots).
+// Every member must have linbits == 0 and dim >= 1: bigValuesPrefixCost costs
+// them with pairCostDirect, which has no escape handling at all, so a member
+// that grew linbits would be mispriced with no escape addend and no runtime
+// complaint. TestEscFamilyTablePartition pins both properties against
+// bigTables. Move such a table into an escape family instead of adding it here.
 var nonEscBigTables = [14]uint8{0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15}
 
 // escFam16Tables / escFam16Linbits describe ISO escape tables 16-23, which
@@ -75,35 +80,73 @@ type regionInfo struct {
 // even a magnitude of 15 costs an extra t.linbits bits (with an escape
 // value of 0), mirroring l3Huffman's `if lsb == 15` branch
 // (internal/dec/huffman.go:171) rather than checking ax > 15.
+//
+// pairCost is the general entry point, a two-way dispatch over the halves
+// below; the halves themselves exist because Go charges a flat 57 for any
+// call to a non-inlinable function, so a hot loop that wants an inlined
+// per-pair cost has to call the half it needs directly rather than the
+// dispatcher (issue #48). bigValuesPrefixCost's per-pair loop therefore
+// calls pairCostDirect, not pairCost: it costs only nonEscBigTables, every
+// one of which has linbits == 0 (TestEscFamilyTablePartition pins that), and
+// the escape families reach their costs through accumEscFamilyFlat and
+// accumEscFamilyCost instead.
+//
+// pairCost itself therefore has no production caller left. It is not dead:
+// it stays the one entry point that is correct for an arbitrary table, and
+// the tests use it as the oracle that both halves are checked against.
 func pairCost(t huffTable, ax, ay int32) int {
+	if t.linbits > 0 {
+		return pairCostEsc(t, ax, ay)
+	}
+	return pairCostDirect(t, ax, ay)
+}
+
+// pairCostDirect is pairCost's linbits == 0 half: with no escape available,
+// a magnitude beyond dim-1 is simply unrepresentable, and the codeword index
+// is the magnitude itself. Small enough to inline, which is the point.
+func pairCostDirect(t huffTable, ax, ay int32) int {
 	if t.codes == nil {
 		return impossibleCost
 	}
 	maxDirect := int32(t.dim - 1)
-	ix, iy := ax, ay
-	if t.linbits > 0 {
-		maxVal := maxDirect + (int32(1)<<uint(t.linbits) - 1)
-		if ax > maxVal || ay > maxVal {
-			return impossibleCost
-		}
-		if ix > maxDirect {
-			ix = maxDirect
-		}
-		if iy > maxDirect {
-			iy = maxDirect
-		}
-	} else if ax > maxDirect || ay > maxDirect {
+	if ax > maxDirect || ay > maxDirect {
 		return impossibleCost
 	}
+	cost := int(t.codes[int(ax)*t.dim+int(ay)].len)
+	if ax != 0 {
+		cost++
+	}
+	if ay != 0 {
+		cost++
+	}
+	return cost
+}
 
+// pairCostEsc is pairCost's linbits > 0 half: a magnitude beyond
+// dim-1 + (1<<linbits - 1) is unrepresentable, the codeword index saturates
+// at dim-1, and every magnitude at or above dim-1 pays the linbits escape.
+func pairCostEsc(t huffTable, ax, ay int32) int {
+	if t.codes == nil {
+		return impossibleCost
+	}
+	maxDirect := int32(t.dim - 1)
+	maxVal := maxDirect + (int32(1)<<uint(t.linbits) - 1)
+	if ax > maxVal || ay > maxVal {
+		return impossibleCost
+	}
+	ix, iy := ax, ay
+	if ix > maxDirect {
+		ix = maxDirect
+	}
+	if iy > maxDirect {
+		iy = maxDirect
+	}
 	cost := int(t.codes[int(ix)*t.dim+int(iy)].len)
-	if t.linbits > 0 {
-		if ax >= maxDirect {
-			cost += t.linbits
-		}
-		if ay >= maxDirect {
-			cost += t.linbits
-		}
+	if ax >= maxDirect {
+		cost += t.linbits
+	}
+	if ay >= maxDirect {
+		cost += t.linbits
 	}
 	if ax != 0 {
 		cost++
@@ -136,6 +179,31 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 	return pb
 }
 
+// accumEscFamilyFlat is accumEscFamilyCost's non-escaping case, split out so
+// it can inline: with neither magnitude at or above escMaxDirect, no table in
+// the family applies a linbits addend and none can find the pair
+// unrepresentable, so every one of the eight costs is the same shared
+// codeword-plus-sign total.
+//
+// Callers must test that themselves; this half does not re-check it, and
+// the way it fails is worth knowing before adding a caller. At exactly
+// escMaxDirect the index stays inside codes, so it returns a cost that
+// silently omits every linbits addend, which is the cheap direction and so
+// the one that would change table selection. Only a magnitude at or above
+// escTableDim is out of range and panics.
+func accumEscFamilyFlat(acc *[8]int, codes []codeEntry, ax, ay int32) {
+	base := int(codes[int(ax)*escTableDim+int(ay)].len)
+	if ax != 0 {
+		base++
+	}
+	if ay != 0 {
+		base++
+	}
+	for j := range acc {
+		acc[j] += base
+	}
+}
+
 // accumEscFamilyCost adds, into the per-family running-cost accumulator acc,
 // the cost of encoding pair (ax, ay) under every table of a dim-16 escape
 // family sharing codes slice codes and linbits list linb. It is the exact
@@ -147,9 +215,17 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 // so the codeword index is min(val, 15); a value >= 15 takes the escape
 // addend linbits (index 15 is the escape marker, ISO 2.4.2.7), and a value
 // beyond 15 + (1<<linbits) - 1 makes the pair unrepresentable (impossibleCost).
+//
+// This function stays correct for any pair, but bigValuesPrefixCost routes
+// only ESCAPING pairs here (issue #48). Neither magnitude escaping is the
+// common case at ordinary quantization and it makes every per-table test
+// statically true, so that case goes to accumEscFamilyFlat, which the
+// compiler can inline, instead of paying a call plus a per-table shift and
+// two comparisons here. The loop below still computes the same answer for
+// such a pair, just more slowly, so a caller that does not pre-check is
+// correct rather than wrong.
 func accumEscFamilyCost(acc, linb *[8]int, codes []codeEntry, ax, ay int32) {
 	ix, iy := ax, ay
-	escX, escY := ax >= escMaxDirect, ay >= escMaxDirect
 	if ix > escMaxDirect {
 		ix = escMaxDirect
 	}
@@ -163,6 +239,7 @@ func accumEscFamilyCost(acc, linb *[8]int, codes []codeEntry, ax, ay int32) {
 	if ay != 0 {
 		base++
 	}
+	escX, escY := ax >= escMaxDirect, ay >= escMaxDirect
 	for j := range linb {
 		l := linb[j]
 		maxVal := escMaxDirect + (int32(1) << uint(l)) - 1
@@ -210,7 +287,7 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 		for k := range lay.nBands {
 			end := pb[k+1]
 			for ; p < end; p++ {
-				cost += pairCost(bt, ax[p], ay[p])
+				cost += pairCostDirect(bt, ax[p], ay[p])
 			}
 			prefixCost[t][k+1] = cost
 		}
@@ -224,8 +301,14 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 	for k := range lay.nBands {
 		end := pb[k+1]
 		for ; p < end; p++ {
-			accumEscFamilyCost(&acc16, &escFam16Linbits, table16Codes, ax[p], ay[p])
-			accumEscFamilyCost(&acc24, &escFam24Linbits, table24Codes, ax[p], ay[p])
+			x, y := ax[p], ay[p]
+			if x < escMaxDirect && y < escMaxDirect {
+				accumEscFamilyFlat(&acc16, table16Codes, x, y)
+				accumEscFamilyFlat(&acc24, table24Codes, x, y)
+				continue
+			}
+			accumEscFamilyCost(&acc16, &escFam16Linbits, table16Codes, x, y)
+			accumEscFamilyCost(&acc24, &escFam24Linbits, table24Codes, x, y)
 		}
 		for j, t := range escFam16Tables {
 			prefixCost[t][k+1] = acc16[j]
@@ -341,9 +424,23 @@ func chooseRegions(ix *[576]int32, part spectrumPartition, lay *bandLayout) regi
 	// rangeCost is re-evaluated for every (r0, r1) combo below, but a and c
 	// (regionBounds' clamped band-boundary pair) each repeat across many
 	// combos, so memoize the cost by (a, b) to cost each distinct range
-	// once. Both arrays are fixed-size and stack-allocated (a, b are always
-	// in [0, lay.nBands] <= [0, 22], so [40][40] is safely oversized);
-	// zero-alloc is preserved.
+	// once. Both arrays are fixed-size and stack-allocated; zero-alloc is
+	// preserved.
+	//
+	// The dimensions MUST stay [40][40]. The production long-block path
+	// keeps a and b within [0, 22], but chooseRegions is also reachable with
+	// lay.nBands up to 39 (a blockLong-typed granule over a short layout, as
+	// TestOuterLoopShortConverges exercises), where rc(c, lay.nBands) indexes
+	// b = 39. Any smaller dimension truncates the memo and panics.
+	//
+	// The memo deliberately keeps the cost alone and discards rangeCost's
+	// table, even though that means re-costing the three winning ranges after
+	// the search. Discarding it is what lets the compiler strip the
+	// best-table tracking out of rangeCost's 30-table search loop, which runs
+	// per distinct range, and that loop costs far more than three recomputes.
+	// Issue #48 proposed carrying the table through the memo instead, judging
+	// it negligible; measured on the frame benchmarks it is a 6% per-frame
+	// REGRESSION, so the proposal was dropped rather than applied.
 	var rcCost [40][40]int
 	var rcSeen [40][40]bool
 	rc := func(a, b int) int {

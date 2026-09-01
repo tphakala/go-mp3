@@ -57,10 +57,13 @@ func WriteWAV16(w io.Writer, sampleRate int, ch [][]float64) error {
 		}
 	}
 	nch := len(ch)
-	dataBytes := n * nch * 2
-	if dataBytes > math.MaxUint32-(wavHeaderBytes-8) {
+	// int64 arithmetic so a long file cannot wrap the size on a 32-bit int
+	// before the RIFF field check.
+	dataBytes64 := int64(n) * int64(nch) * 2
+	if dataBytes64 > math.MaxUint32-(wavHeaderBytes-8) {
 		return errors.New("quality: WriteWAV16 payload exceeds the RIFF 32-bit size field")
 	}
+	dataBytes := int(dataBytes64)
 	var hdr [wavHeaderBytes]byte
 	copy(hdr[0:], "RIFF")
 	binary.LittleEndian.PutUint32(hdr[4:], uint32(wavHeaderBytes-8+dataBytes))

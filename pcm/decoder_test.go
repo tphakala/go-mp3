@@ -327,15 +327,18 @@ func TestDecoderXingDurationAndFirstFrame(t *testing.T) {
 	if n1 == 0 {
 		t.Fatal("first real frame decoded 0 samples; test assumption is stale")
 	}
-	// Gapless head-trim drops the first `delay` samples-per-channel; delay (576)
-	// < 1152, so it lands inside this first real audio frame. The first bytes
-	// pcm.Decoder emits are therefore frame 1 from per-channel offset `delay`,
-	// not from its start: verify both "tag frame excluded" and "head trimmed".
-	if delay >= n1 {
-		t.Fatalf("test assumes the head-trim (%d) lands within the first frame (%d samples/ch)", delay, n1)
+	// Gapless head-trim drops the first delay+lameDecoderDelay samples-per-
+	// channel (the tag's 576 plus the standard 529 synthesis delay, 1105 in
+	// all); that is < 1152, so it lands inside this first real audio frame.
+	// The first bytes pcm.Decoder emits are therefore frame 1 from per-channel
+	// offset headTrim, not from its start: verify both "tag frame excluded"
+	// and "head trimmed by the full decoder-side offset".
+	headTrim := delay + lameDecoderDelay
+	if headTrim >= n1 {
+		t.Fatalf("test assumes the head-trim (%d) lands within the first frame (%d samples/ch)", headTrim, n1)
 	}
-	wantS16 := make([]int16, (n1-delay)*fi1.Channels)
-	convertF32toS16(wantS16, scratch[delay*fi1.Channels:n1*fi1.Channels])
+	wantS16 := make([]int16, (n1-headTrim)*fi1.Channels)
+	convertF32toS16(wantS16, scratch[headTrim*fi1.Channels:n1*fi1.Channels])
 	wantBytes := make([]byte, len(wantS16)*bytesPerS16Sample)
 	for i, v := range wantS16 {
 		binary.LittleEndian.PutUint16(wantBytes[i*bytesPerS16Sample:], uint16(v))

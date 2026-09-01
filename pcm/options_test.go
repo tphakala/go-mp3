@@ -12,11 +12,12 @@ import (
 
 // decodeAllFloat32ViaFrameAPI decodes raw with the low-level frame API,
 // skipping the leading Xing/Info tag frame exactly as pcm.Decoder does, and
-// returns every real audio sample in order, gapless-trimmed to
-// [delay, total-padding) per channel. It never calls pcm.Decoder or
+// returns every real audio sample in order, trimmed to
+// [headTrim, total-tailTrim) per channel (pass 0, 0 for no trim; a LAME
+// tag's window comes from gaplessTrims). It never calls pcm.Decoder or
 // packOutput, so it is an independent ground truth for TestDecoderF32Output:
 // a bug in packOutput's float32 branch cannot also be present here.
-func decodeAllFloat32ViaFrameAPI(t *testing.T, raw []byte, delay, padding int) []float32 {
+func decodeAllFloat32ViaFrameAPI(t *testing.T, raw []byte, headTrim, tailTrim int) []float32 {
 	t.Helper()
 	d := mp3.NewDecoder()
 	scratch := make([]float32, 1152*2)
@@ -41,8 +42,8 @@ func decodeAllFloat32ViaFrameAPI(t *testing.T, raw []byte, delay, padding int) [
 		pos += fi.FrameBytes
 	}
 
-	lo := delay * channels
-	hi := len(all) - padding*channels
+	lo := headTrim * channels
+	hi := len(all) - tailTrim*channels
 	if lo > hi {
 		t.Fatalf("gapless trim window invalid: lo=%d hi=%d (len=%d)", lo, hi, len(all))
 	}
@@ -69,7 +70,8 @@ func float32BytesFromLE(t *testing.T, b []byte) []float32 {
 // those same samples.
 func TestDecoderF32Output(t *testing.T) {
 	raw := readFixture(t, sine48mono128)
-	want := decodeAllFloat32ViaFrameAPI(t, raw, sine48mDelay, sine48mPadding)
+	headTrim, tailTrim := gaplessTrims(sine48mDelay, sine48mPadding)
+	want := decodeAllFloat32ViaFrameAPI(t, raw, headTrim, tailTrim)
 
 	f32d, err := NewDecoder(bytes.NewReader(raw), WithF32())
 	if err != nil {

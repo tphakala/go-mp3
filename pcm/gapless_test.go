@@ -98,8 +98,9 @@ func TestGaplessDelayAndPadding(t *testing.T) {
 // It takes the sine48m fixture, zeroes the Info tag's frame count (so no total
 // can be derived), and feeds it through a non-seeker (a bufio.Reader, which is
 // not an io.Seeker) so the CBR byte-length fallback cannot supply one either.
-// The LAME delay is still parsed and head-trimmed; all 85 audio frames decode,
-// so emitted = 85*1152 - 576 = 97344 samples/channel.
+// The LAME delay is still parsed and head-trimmed (delay 576 plus the
+// standard 529-sample decoder delay); all 85 audio frames decode, so emitted
+// = 85*1152 - 576 - 529 = 96815 samples/channel.
 func TestGaplessHeadOnlyTrim(t *testing.T) {
 	mod := zeroInfoFrameCount(t, readFixture(t, sine48mono128))
 
@@ -121,8 +122,8 @@ func TestGaplessHeadOnlyTrim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	const wantSamples = 85*1152 - sine48mDelay // head trim only
-	gotSamples := len(out) / bytesPerS16Sample // mono
+	const wantSamples = 85*1152 - sine48mDelay - lameDecoderDelay // head trim only
+	gotSamples := len(out) / bytesPerS16Sample                    // mono
 	if gotSamples != wantSamples {
 		t.Errorf("emitted %d samples/channel, want %d (head trim only)", gotSamples, wantSamples)
 	}

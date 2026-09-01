@@ -44,3 +44,9 @@ tasks:
   compat:
     desc: Encode the compat grid and verify with ffmpeg/mpg123 black-box binaries (fails if either is missing)
     cmds: [MP3_REQUIRE_COMPAT=1 go test ./ -run Compat -v -timeout 20m]
+  quality:
+    desc: Compare the encoder against LAME (black-box binary) on the synthetic corpus and write tools/quality/out/report.md (ViSQOL and PEAQ are used when on PATH); pass flags after --
+    cmds: [go run ./tools/quality {{.CLI_ARGS}}]
+  quality:smoke:
+    desc: One-case end-to-end smoke test of the quality harness against lame (fails if lame is missing)
+    cmds: [MP3_REQUIRE_LAME=1 go test ./tools/quality -run 'TestQualityHarness' -v -timeout 10m]

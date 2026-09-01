@@ -175,7 +175,7 @@ func TestPreEchoDetectsAndRanks(t *testing.T) {
 	}
 	// Analytic check of the pre-noise case: error energy 960*0.05^2/3 over
 	// attack energy 240*0.8^2/3, about -18 dB, within statistical slack.
-	if want := 10 * math.Log10((960 * 0.05 * 0.05) / (240 * 0.8 * 0.8)); math.Abs(preDB-want) > 1 {
+	if want := 10 * math.Log10((960*0.05*0.05)/(240*0.8*0.8)); math.Abs(preDB-want) > 1 {
 		t.Fatalf("pre-noise PreEcho = %v dB, want about %v", preDB, want)
 	}
 	if v, ev := PreEcho(make([]float64, n), make([]float64, n), sr); ev != 0 || !math.IsNaN(v) {

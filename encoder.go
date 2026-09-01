@@ -13,7 +13,7 @@ import (
 const FrameSize = 1152
 
 // DefaultBitrate is the CBR target, in bits per second, selected when an
-// EncoderConfig leaves both Bitrate and Quality zero: 128 kb/s.
+// EncoderConfig leaves Bitrate zero: 128 kb/s.
 const DefaultBitrate = 128000
 
 // standardDecoderDelay is the fixed algorithmic delay, in samples per
@@ -89,21 +89,15 @@ type EncoderConfig struct {
 	// Bitrate is the CBR target for the whole stream, in bits per second:
 	// one of 32000, 40000, 48000, 56000, 64000, 80000, 96000, 112000,
 	// 128000, 160000, 192000, 224000, 256000, or 320000. Zero selects
-	// DefaultBitrate. Mutually exclusive with Quality.
+	// DefaultBitrate. This encoder is CBR-only; there is no quality or VBR
+	// setting.
 	Bitrate int
-	// Quality is not supported: this encoder is CBR-only (VBR is not on the
-	// roadmap). The field exists so the config surface stays stable, and is
-	// validated now: zero means unset, any nonzero value is rejected.
-	// Mutually exclusive with Bitrate.
-	Quality int
 }
 
 // toEncConfig validates cfg and maps it to the internal enc.Config, in the
-// normative order: sample rate, channel count, the Bitrate/Quality
-// mutual-exclusivity rule, the Quality-unsupported rejection, then
-// the bitrate itself. The bitrate check tests %1000 before dividing:
-// dividing first would silently truncate a value like 128500 to a legal
-// 128 kbps instead of rejecting it.
+// normative order: sample rate, channel count, then the bitrate itself. The
+// bitrate check tests %1000 before dividing: dividing first would silently
+// truncate a value like 128500 to a legal 128 kbps instead of rejecting it.
 func (cfg EncoderConfig) toEncConfig() (enc.Config, error) {
 	switch cfg.SampleRate {
 	case 32000, 44100, 48000:
@@ -113,13 +107,6 @@ func (cfg EncoderConfig) toEncConfig() (enc.Config, error) {
 	if cfg.Channels != 1 && cfg.Channels != 2 {
 		return enc.Config{}, fmt.Errorf("go-mp3: invalid channel count %d, want 1 or 2", cfg.Channels)
 	}
-	if cfg.Bitrate != 0 && cfg.Quality != 0 {
-		return enc.Config{}, errors.New("go-mp3: Bitrate and Quality are mutually exclusive")
-	}
-	if cfg.Quality != 0 {
-		return enc.Config{}, errors.New("go-mp3: Quality is not supported, this encoder is CBR-only; set Bitrate instead")
-	}
-
 	bitrate := cfg.Bitrate
 	switch {
 	case bitrate == 0:

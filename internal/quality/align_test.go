@@ -36,11 +36,13 @@ func TestAlignLagShortDeg(t *testing.T) {
 
 // TestAlignLagPeriodicProgram is the regression gate for the periodic-peak
 // ambiguity. multitone is a 440 Hz fundamental plus two harmonics, so its
-// correlation peaks repeat every 100.2 samples at 44.1 kHz and a raw argmax
-// over a longer-than-alignSamples reference picks an alias: this case
-// returned 3262 (the true lag plus exactly 22 periods) before the earliest
-// near-peak rule, which is what made the harness measure multitone at 27.66 dB
-// instead of 67.43 dB.
+// correlation peaks repeat every 100.2 samples at 44.1 kHz. An unnormalized
+// argmax over a longer-than-alignSamples reference then prefers whichever
+// alias lands its window on the loud part of the amplitude envelope, and
+// picks 3262, the true lag plus exactly 22 periods. Dividing by both windows'
+// energies is what resolves it, and on the real encode of this program the
+// difference is the whole measurement: 22.21 dB SNR at 3262 against 74.34 dB
+// at the true lag.
 func TestAlignLagPeriodicProgram(t *testing.T) {
 	const sr, lag = 44100, 1057
 	p, ok := ProgramByName("multitone")

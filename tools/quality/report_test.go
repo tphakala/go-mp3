@@ -318,8 +318,8 @@ func TestWavProgramRateRejected(t *testing.T) {
 	}
 }
 
-// TestRunExitCodes drives run() itself, which nothing else does. All three
-// cases are setup errors, so none needs an external binary.
+// TestRunExitCodes drives run() itself, which nothing else does. Every case
+// is a setup error, so none needs an external binary.
 func TestRunExitCodes(t *testing.T) {
 	for _, c := range []struct {
 		name string

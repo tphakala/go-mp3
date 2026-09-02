@@ -70,7 +70,12 @@ func float32BytesFromLE(t *testing.T, b []byte) []float32 {
 // those same samples.
 func TestDecoderF32Output(t *testing.T) {
 	raw := readFixture(t, sine48mono128)
-	headTrim, tailTrim := gaplessTrims(sine48mDelay, sine48mPadding)
+	// Deliberately literal rather than gaplessTrims(sine48mDelay,
+	// sine48mPadding): an oracle built from the production helper moves
+	// with it, so a wrong decoder-delay adjustment would cancel out on
+	// both sides of the comparison and the test would still pass.
+	// 576 tag delay + 529 synthesis delay, and 1344 tag padding - 529.
+	const headTrim, tailTrim = 1105, 815
 	want := decodeAllFloat32ViaFrameAPI(t, raw, headTrim, tailTrim)
 
 	f32d, err := NewDecoder(bytes.NewReader(raw), WithF32())

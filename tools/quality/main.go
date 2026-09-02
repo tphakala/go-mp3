@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -83,7 +84,7 @@ func parseFlags(args []string) (*options, error) {
 			return nil, fmt.Errorf("-bitrates: %d is not a positive bitrate", kbps)
 		}
 	}
-	if o.programs, err = selectPrograms(*programs, *corpus); err != nil {
+	if o.programs, err = selectPrograms(*programs, *corpus, o.rates); err != nil {
 		return nil, err
 	}
 	return o, nil
@@ -246,8 +247,9 @@ func parseInts(s string) ([]int, error) {
 }
 
 // selectPrograms returns the synthetic programs named in filter (all when
-// empty) plus one program per WAV file in corpus.
-func selectPrograms(filter, corpus string) ([]quality.Program, error) {
+// empty) plus one program per WAV file in corpus. rates is the effective
+// -rates set, which every corpus file must declare one of.
+func selectPrograms(filter, corpus string, rates []int) ([]quality.Program, error) {
 	var progs []quality.Program
 	if filter == "" {
 		progs = quality.Programs()
@@ -273,7 +275,7 @@ func selectPrograms(filter, corpus string) ([]quality.Program, error) {
 		if !e.Type().IsRegular() || !strings.EqualFold(filepath.Ext(e.Name()), ".wav") {
 			continue
 		}
-		p, err := wavProgram(filepath.Join(corpus, e.Name()))
+		p, err := wavProgram(filepath.Join(corpus, e.Name()), rates)
 		if err != nil {
 			return nil, err
 		}
@@ -286,7 +288,7 @@ func selectPrograms(filter, corpus string) ([]quality.Program, error) {
 // favor of the file's own length and returns empty channels (which runCase
 // reports as a failed case) when asked for a different sample rate than the
 // file's, since resampling would change what is being measured.
-func wavProgram(path string) (quality.Program, error) {
+func wavProgram(path string, rates []int) (quality.Program, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return quality.Program{}, err
@@ -295,6 +297,15 @@ func wavProgram(path string) (quality.Program, error) {
 	_ = f.Close() // read-only handle; the parse result is what matters
 	if err != nil {
 		return quality.Program{}, fmt.Errorf("%s: %w", path, err)
+	}
+	// A corpus program runs only at its own rate, so one outside the -rates
+	// set contributes no case at all: without this it would load, be skipped
+	// at every rate, and go missing from the report with only a log line.
+	// This also rejects the 0 a malformed fmt chunk can declare, which
+	// Program.SampleRate reads as the "any rate" sentinel and which would
+	// otherwise be measured under all three wrong labels.
+	if !slices.Contains(rates, sr) {
+		return quality.Program{}, fmt.Errorf("%s: sample rate %d is not one of -rates %v", path, sr, rates)
 	}
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	return quality.Program{

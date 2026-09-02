@@ -238,7 +238,18 @@ func decodeStream(stream []byte) ([][]float64, error) {
 		return nil, err
 	}
 	nch := d.Info().Channels
-	frames := len(raw) / (4 * nch)
+	// Both of these are decoder bugs rather than bad input, and both are
+	// silent without the check: a zero channel count divides by zero, and a
+	// length that is not a whole number of frames means the decoder and this
+	// unpacking disagree about the layout, which would drop the odd tail.
+	if nch <= 0 {
+		return nil, fmt.Errorf("decoded stream reports %d channels", nch)
+	}
+	frameBytes := 4 * nch
+	if len(raw)%frameBytes != 0 {
+		return nil, fmt.Errorf("decoded %d bytes, not a whole number of %d-byte frames (%d channels of float32)", len(raw), frameBytes, nch)
+	}
+	frames := len(raw) / frameBytes
 	out := make([][]float64, nch)
 	for c := range out {
 		out[c] = make([]float64, frames)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"math"
@@ -217,19 +218,24 @@ func TestParseInts(t *testing.T) {
 	}
 }
 
+// testRates is the full set of MPEG-1 rates, so a corpus fixture at any of
+// them is accepted and the rate check is not what a test is measuring unless
+// it says so.
+var testRates = []int{32000, 44100, 48000}
+
 func TestSelectPrograms(t *testing.T) {
-	all, err := selectPrograms("", "")
+	all, err := selectPrograms("", "", testRates)
 	if err != nil || len(all) != len(quality.Programs()) {
 		t.Fatalf("all programs: %d, %v", len(all), err)
 	}
-	two, err := selectPrograms("sweep, multitone", "")
+	two, err := selectPrograms("sweep, multitone", "", testRates)
 	if err != nil || len(two) != 2 || two[0].Name != "sweep" {
 		t.Fatalf("filtered programs: %+v, %v", two, err)
 	}
-	if _, err := selectPrograms("nope", ""); err == nil {
+	if _, err := selectPrograms("nope", "", testRates); err == nil {
 		t.Fatal("unknown program must error")
 	}
-	if _, err := selectPrograms("", "/nonexistent-corpus-dir"); err == nil {
+	if _, err := selectPrograms("", "/nonexistent-corpus-dir", testRates); err == nil {
 		t.Fatal("an unreadable corpus directory must error")
 	}
 }
@@ -252,7 +258,7 @@ func TestWavProgramCorpus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	progs, err := selectPrograms("multitone", dir)
+	progs, err := selectPrograms("multitone", dir, testRates)
 	if err != nil || len(progs) != 2 || progs[1].Name != "clip" || progs[1].Channels != 2 {
 		t.Fatalf("corpus programs: %+v, %v", progs, err)
 	}
@@ -274,8 +280,41 @@ func TestWavProgramCorpus(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bad, "bad.wav"), []byte("junk"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := selectPrograms("", bad); err == nil {
+	if _, err := selectPrograms("", bad, testRates); err == nil {
 		t.Fatal("an unparsable corpus WAV must error")
+	}
+}
+
+// TestWavProgramRateRejected: a corpus file whose rate is not in the
+// effective -rates set is an error at load, not a program that is loaded and
+// then skipped at every case. Rate 0, which a malformed fmt chunk can
+// declare and which Program.SampleRate reads as "any rate", goes the same way.
+func TestWavProgramRateRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "clip.wav")
+	if err := writeWAVFile(path, 48000, [][]float64{{0.1, -0.1}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wavProgram(path, []int{44100}); err == nil {
+		t.Fatal("a 48 kHz corpus file must be rejected when -rates is 44100")
+	}
+	if _, err := wavProgram(path, testRates); err != nil {
+		t.Fatalf("a 48 kHz corpus file must load when -rates includes it: %v", err)
+	}
+
+	// A zero rate in the fmt chunk, patched in place: bytes 24-27 of a
+	// canonical 44-byte header.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(raw[24:], 0)
+	zero := filepath.Join(dir, "zero.wav")
+	if err := os.WriteFile(zero, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wavProgram(zero, testRates); err == nil {
+		t.Fatal("a corpus file declaring rate 0 must be rejected")
 	}
 }
 

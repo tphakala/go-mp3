@@ -80,12 +80,20 @@ and published papers per PROVENANCE.md. All merged.
    Phase 2 (pcm) dated 2026-08-06/07, Phase 3 (encoder skeleton) dated
    2026-08-12, Phases 4-5 (psymodel, rate control, tuning) in the encoder-era
    plans. They remain for history.
-3. NEXT work: encoder quality tuning against a LAME baseline produced by
-   `task quality`. Run the harness first and record its Summary table in the
-   Hindsight bank, then tune against it. Every tuning PR re-runs the harness and
-   reports the Summary-table deltas per bitrate in its PR description. Such
-   PRs are NOT golden-neutral: each one re-freezes the encoder goldens
-   deliberately and runs the arm64 leg. No GitHub issues are open.
+3. NEXT work: encoder quality tuning against the LAME baseline. The baseline
+   exists: 44 cases at 44.1 kHz, 0 failed, taken 2026-09-02 against LAME
+   3.100, recorded in the Hindsight bank under the tag `baseline` and locally
+   at `tools/quality/out/baseline-44k.{md,json}` (gitignored). Re-run it with
+   `task quality`. It says the encoder wins raw and segmental SNR decisively
+   at 128 and 192 kbps yet loses log-spectral distance and PEAQ ODG at every
+   bitrate below 256, which is the signature of a psychoacoustic model not
+   spending its bits where they matter rather than a coding-noise problem.
+   Aim the tuning there, and treat the low-bitrate cases as the informative
+   ones: the band-limited SNR advantage inverts at 256 and 320. Every tuning
+   PR re-runs the harness and reports the Summary-table deltas per bitrate in
+   its PR description. Such PRs are NOT golden-neutral: each one re-freezes
+   the encoder goldens deliberately and runs the arm64 leg. Open GitHub
+   issue: #53, batched low-severity harness follow-ups, none of them blocking.
 
 ## Workflow conventions (established this project)
 

@@ -75,9 +75,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
-      # ffmpeg and mpg123 are black-box decode references only (see
+      # ffmpeg, mpg123, and lame are black-box binaries only (see
       # PROVENANCE.md); their source is never consulted.
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg mpg123
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg mpg123 lame
       # Longer than the 10m per-binary default: this job's total runtime is
       # the base compat grid across all sample rates plus the joint-stereo
       # and short-block matrices, all run through ffmpeg and mpg123, still
@@ -87,3 +87,15 @@ jobs:
       - run: go test ./ -run Compat -v -timeout 20m
         env:
           MP3_REQUIRE_COMPAT: '1'
+      # End-to-end runs of the quality harness against lame (a black-box
+      # binary too): proves the harness's pcm decode, alignment (go-mp3 lag
+      # == mp3.TotalDelay, LAME lag == 0 after pcm's gapless trim) and metric
+      # plumbing on both arches. It rides the compat job because that is the
+      # job installing the black-box binaries; in the test job, which installs
+      # none, these tests skip. 10m rather than the shared 20m: the two cases
+      # measure about 15s locally, and each lame call is separately bounded at
+      # 5m inside the harness. The full grid is a local tool (`task quality`),
+      # not a CI gate.
+      - run: go test ./tools/quality -run TestQualityHarness -v -timeout 10m
+        env:
+          MP3_REQUIRE_LAME: '1'

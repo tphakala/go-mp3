@@ -10,7 +10,8 @@ from LAME, Shine, or other GPL/LGPL encoders; see PROVENANCE.md for licensing
 provenance. It is a fixed-bitrate CBR encoder with a psychoacoustic model, a
 bit reservoir, per-frame M/S joint stereo, and attack-driven short blocks
 (block switching); quality at a given bitrate still lags a fully tuned
-encoder like LAME, and further tuning is planned. VBR is not planned.
+encoder like LAME, and further tuning is planned and measured against LAME
+(see Quality measurement against LAME below). VBR is not planned.
 
 ## Decoding
 
@@ -90,8 +91,8 @@ Status: it produces valid, standard-compliant CBR MPEG-1 Layer III streams
 (32/44.1/48 kHz, mono or stereo, the 14 legal CBR bitrates) with a
 psychoacoustic model, a bit reservoir, per-frame M/S joint stereo, and
 attack-driven short blocks, but quality at a given bitrate still lags a
-fully tuned encoder like LAME; further tuning is planned. VBR is not
-planned.
+fully tuned encoder like LAME; further tuning is planned and is measured
+with the quality harness described below. VBR is not planned.
 
 The encoded stream is tagless (no Xing/LAME header), so the `pcm` decoder
 below applies no gapless trim to it: the decoded output carries
@@ -104,14 +105,48 @@ For the interleaved output that means discarding the first
 `TotalDelay * Channels` sample values (not `TotalDelay` values) to align
 the decoded audio back to the original input.
 
+## Quality measurement against LAME
+
+`task quality` (or `go run ./tools/quality`) encodes a deterministic
+synthetic corpus (tones, pink noise, click trains, sweeps, bird-like chirps,
+a speech-like program, and three stereo programs) through both this encoder
+and the `lame` binary at the same CBR bitrates, decodes both through this
+project's `pcm` decoder, aligns them by normalized cross-correlation, and
+writes
+`tools/quality/out/report.md` plus a JSON twin. LAME is used strictly as a
+black-box binary (see PROVENANCE.md). The Go-native metrics are SNR,
+band-limited SNR (bins at or below 16 kHz, so LAME's bitrate-dependent
+lowpass is not counted as noise there), segmental SNR, log-spectral
+distance, a pre-echo measure around detected attacks, and effective
+bandwidth. When `visqol` (Google ViSQOL v3) and `peaq-odg` (a GstPEAQ front
+end) are on PATH, ViSQOL MOS-LQO and PEAQ ODG columns are added; both are
+optional, and both score at 48 kHz, so `ffmpeg` must also be on PATH for any
+grid that is not already 48 kHz (the default is 44.1 kHz); without it those
+two columns stay `n/a`. The `lame` binary itself is required: the harness
+refuses to run without it, so install it or pass `-lame`.
+
+Flags reach the tool after `--` when going through task (`task quality --
+-bitrates 128`), or directly with `go run`. `-corpus DIR` adds your own WAV
+files, each measured only at its own sample rate, so include that rate in
+`-rates` or the file is skipped. `-bitrates`, `-rates` and `-programs` shape
+the grid, `-seconds` sets the program length, `-keep` retains the
+intermediate MP3 and WAV files under the work directory, `-lame`, `-visqol`
+and `-peaq` take explicit binary paths, and `-out` and `-json` redirect the
+two reports. The default grid is the 11 synthetic programs at 44.1 kHz and
+128/192/256/320 kbps, 6 seconds each. `task quality:smoke` runs the same
+end-to-end check CI runs.
+
 ## Streaming decoder (package pcm)
 
 The `pcm` package wraps the frame API above into a plain `io.Reader`: give
 it an MP3 stream and read interleaved PCM back, without driving the
 frame-by-frame loop yourself. It skips a leading ID3v2 tag, recognizes a
 Xing/Info/VBRI tag frame and a LAME gapless extension (excluding the tag
-frame from the output and trimming the encoder's delay/padding), and
-recovers from mid-stream garbage.
+frame from the output and trimming the encoder delay plus the standard
+529-sample decoder delay at the head, and the padding less that same 529 at
+the tail, the same window ffmpeg and mpg123 apply, so the output lines up
+sample for sample with the encoder's input), and recovers from mid-stream
+garbage.
 
 ```go
 import mp3pcm "github.com/tphakala/go-mp3/pcm"
@@ -134,4 +169,4 @@ starts at per-channel sample `n` in the gapless-trimmed timeline.
 The decoder is usable today. The encoder is a usable CBR encoder with a
 psychoacoustic model, bit reservoir, M/S joint stereo, and short blocks,
 though quality still lags a fully tuned encoder like LAME; see the Encoding
-section above.
+and Quality measurement sections above.

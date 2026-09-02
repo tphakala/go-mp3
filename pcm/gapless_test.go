@@ -98,8 +98,9 @@ func TestGaplessDelayAndPadding(t *testing.T) {
 // It takes the sine48m fixture, zeroes the Info tag's frame count (so no total
 // can be derived), and feeds it through a non-seeker (a bufio.Reader, which is
 // not an io.Seeker) so the CBR byte-length fallback cannot supply one either.
-// The LAME delay is still parsed and head-trimmed; all 85 audio frames decode,
-// so emitted = 85*1152 - 576 = 97344 samples/channel.
+// The LAME delay is still parsed and head-trimmed (delay 576 plus the
+// standard 529-sample decoder delay); all 85 audio frames decode, so emitted
+// = 85*1152 - 576 - 529 = 96815 samples/channel.
 func TestGaplessHeadOnlyTrim(t *testing.T) {
 	mod := zeroInfoFrameCount(t, readFixture(t, sine48mono128))
 
@@ -121,8 +122,8 @@ func TestGaplessHeadOnlyTrim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	const wantSamples = 85*1152 - sine48mDelay // head trim only
-	gotSamples := len(out) / bytesPerS16Sample // mono
+	const wantSamples = 85*1152 - sine48mDelay - lameDecoderDelay // head trim only
+	gotSamples := len(out) / bytesPerS16Sample                    // mono
 	if gotSamples != wantSamples {
 		t.Errorf("emitted %d samples/channel, want %d (head trim only)", gotSamples, wantSamples)
 	}
@@ -149,4 +150,64 @@ func zeroInfoFrameCount(t *testing.T, raw []byte) []byte {
 		mod[framesOff+i] = 0
 	}
 	return mod
+}
+
+// TestGaplessTrims pins the trim arithmetic directly, including the clamp
+// that keeps the tail non-negative. The clamp had no test: removing it left
+// the whole package green, while a real LAME stream whose padding is under
+// the decoder delay would have produced a huge unsigned tail, a gaplessEnd
+// of 0, and a decoder that emitted nothing at all.
+//
+// The expectations are literal, derived from the ITU convention (head =
+// delay + 529, tail = padding - 529, floored at zero), not from the
+// production constant: a test written in terms of lameDecoderDelay tracks
+// any value the constant is given and so pins nothing.
+func TestGaplessTrims(t *testing.T) {
+	for _, c := range []struct{ delay, padding, wantHead, wantTail int }{
+		{576, 1344, 1105, 815}, // the sine48m fixture
+		{576, 1000, 1105, 471},
+		{576, 529, 1105, 0},      // exactly the decoder delay: nothing left to trim
+		{576, 100, 1105, 0},      // below it: clamps, never goes negative
+		{0, 0, 529, 0},           // no tag values at all
+		{4095, 4095, 4624, 3566}, // the 12-bit field maxima
+	} {
+		head, tail := gaplessTrims(c.delay, c.padding)
+		if head != c.wantHead || tail != c.wantTail {
+			t.Errorf("gaplessTrims(%d, %d) = (%d, %d), want (%d, %d)",
+				c.delay, c.padding, head, tail, c.wantHead, c.wantTail)
+		}
+	}
+}
+
+// TestGaplessHeadOnlyTrimSeekable is the seekable sibling of
+// TestGaplessHeadOnlyTrim. With no frame count in the tag but a seekable
+// source, the byte-length fallback supplies TotalSamples, and that estimate
+// has to lose the head trim too: it counts frames, and the head-trimmed
+// samples are never emitted. Before the fallback subtracted gaplessStart,
+// TotalSamples over-reported by the full 1105 while the invariant
+// "emitted == TotalSamples" claimed otherwise.
+func TestGaplessHeadOnlyTrimSeekable(t *testing.T) {
+	mod := zeroInfoFrameCount(t, readFixture(t, sine48mono128))
+
+	d, err := NewDecoder(bytes.NewReader(mod))
+	if err != nil {
+		t.Fatalf("NewDecoder: %v", err)
+	}
+	if got := d.Info().EncoderDelay; got != sine48mDelay {
+		t.Errorf("Info().EncoderDelay = %d, want %d", got, sine48mDelay)
+	}
+
+	out, err := io.ReadAll(d)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	gotSamples := uint64(len(out) / bytesPerS16Sample) // mono
+	const wantSamples = 85*1152 - sine48mDelay - lameDecoderDelay
+	if gotSamples != wantSamples {
+		t.Errorf("emitted %d samples/channel, want %d (head trim only)", gotSamples, wantSamples)
+	}
+	if got := d.Info().TotalSamples; got != gotSamples {
+		t.Errorf("Info().TotalSamples = %d, want %d (== emitted); the CBR byte-length "+
+			"fallback must also lose the head trim", got, gotSamples)
+	}
 }

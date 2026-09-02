@@ -83,11 +83,18 @@ const (
 // construction from the first audio frame; the remaining fields are filled by
 // later tasks (Xing/VBRI/LAME parsing) and stay at their zero values here.
 type Info struct {
-	SampleRate     int    // samples per second
-	Channels       int    // number of channels (1 or 2)
-	TotalSamples   uint64 // per channel; 0 when unknown (no length tag)
-	EncoderDelay   int    // LAME encoder delay in samples; 0 if absent
-	EncoderPadding int    // LAME encoder padding in samples; 0 if absent
+	SampleRate   int    // samples per second
+	Channels     int    // number of channels (1 or 2)
+	TotalSamples uint64 // per channel; 0 when unknown (no length tag)
+	// EncoderDelay and EncoderPadding are the RAW LAME tag fields, 0 when
+	// absent. They are not the window the decoder applies: the tag's delay
+	// covers the encoder side only, so the head trim is EncoderDelay plus the
+	// standard 529-sample synthesis delay and the tail trim is
+	// EncoderPadding less that same 529 (never below zero), which is what
+	// ffmpeg and mpg123 apply. A caller reconstructing the trim from these
+	// two fields alone would disagree with the decoder by 529 at each end.
+	EncoderDelay   int
+	EncoderPadding int
 }
 
 // Duration reports the stream's playing time, or 0 when TotalSamples is
@@ -160,12 +167,14 @@ type Decoder struct {
 	xingChecked bool
 
 	// Gapless-trim window, in per-channel sample positions of the raw decoded
-	// stream (before any trim). gaplessStart is the LAME encoder delay: samples
-	// before it are dropped from the head (this already covers the decoder's own
-	// ~528-sample filterbank delay, which LAME folds into its delay value, so no
-	// separate offset is added). gaplessEnd is the first sample to drop from the
-	// tail (pre-trim total minus the LAME padding); it stays math.MaxUint64 when
-	// the total is unknown, meaning no tail trim. producedSamples counts the
+	// stream (before any trim). gaplessStart is the LAME encoder delay plus the
+	// standard lameDecoderDelay (the tag's delay field covers the encoder side
+	// only; the decoder's own synthesis delay is added here, as ffmpeg and
+	// mpg123 do): samples before it are dropped from the head. gaplessEnd is
+	// the first sample to drop from the tail (pre-trim total minus the LAME
+	// padding, plus the same lameDecoderDelay, which the padding field
+	// over-counts by construction); it stays math.MaxUint64 when the total is
+	// unknown, meaning no tail trim. producedSamples counts the
 	// per-channel samples produced by real audio frames so far, giving each new
 	// frame its position in that raw timeline. All three are set by applyLAME
 	// and reset per Reset.
@@ -673,42 +682,66 @@ func (d *Decoder) applyVBRI(vh *vbriHeader, sampleRate int) {
 	}
 }
 
+// lameDecoderDelay is the standard Layer III synthesis delay (528 + 1
+// samples per channel) that the LAME tag convention leaves out of its
+// encoder-delay field: a gapless decoder skips delay + 529 samples at the
+// head and padding - 529 at the tail, so the emitted audio lines up sample
+// for sample with the encoder's input. ffmpeg and mpg123 (--gapless) both
+// apply exactly this offset, and the root package's EncoderDelay/TotalDelay
+// split documents the same constant from the encoder side. Before this
+// offset was applied here the output ran 529 samples late and lost the last
+// 529 real samples to the tail trim.
+const lameDecoderDelay = 529
+
+// gaplessTrims converts a LAME tag's encoder delay and padding fields into
+// the per-channel sample counts a gapless decoder drops at the head and at
+// the tail: head = delay + lameDecoderDelay, tail = padding -
+// lameDecoderDelay (never below zero). The single source of truth for the
+// trim arithmetic; applyLAME and the tests' independent ground truth both
+// use it.
+func gaplessTrims(delay, padding int) (head, tail int) {
+	return delay + lameDecoderDelay, max(padding-lameDecoderDelay, 0)
+}
+
 // applyLAME records a detected LAME extension's encoder delay and padding and
-// arms the gapless-trim window. The head trim drops the first delay
-// samples-per-channel; the tail trim drops the last padding samples-per-channel
-// at the true end, which needs the stream's total length. It reads the pre-trim
-// total from d.info.TotalSamples as applyXing set it (frames * samplesPerFrame).
+// arms the gapless-trim window. The head trim drops the first
+// delay+lameDecoderDelay samples-per-channel; the tail trim drops the last
+// padding-lameDecoderDelay samples-per-channel (never fewer than zero) at the
+// true end, which needs the stream's total length. It reads the pre-trim total
+// from d.info.TotalSamples as applyXing set it (frames * samplesPerFrame).
 //
-// When that total is known, applyLAME sets gaplessEnd = total - padding and
-// reduces TotalSamples by delay+padding, so Duration reflects the playable
-// length and the emitted count equals TotalSamples. When the total is unknown
-// (no frame count), only the head is trimmed (gaplessEnd stays open) and
-// TotalSamples is left at 0 for Reset's CBR fallback to decide. Negative inputs
-// (a malformed field) are ignored.
+// When that total is known, applyLAME sets gaplessEnd = total - tail and
+// reduces TotalSamples by head+tail (which equals delay+padding whenever the
+// padding covers the decoder delay, the normal case), so Duration reflects the
+// playable length and the emitted count equals TotalSamples. When the total is
+// unknown (no frame count), only the head is trimmed (gaplessEnd stays open)
+// and TotalSamples is left at 0 for Reset's CBR fallback to decide. Negative
+// inputs (a malformed field) are ignored.
 func (d *Decoder) applyLAME(delay, padding int) {
 	if delay < 0 || padding < 0 {
 		return
 	}
 	d.info.EncoderDelay = delay
 	d.info.EncoderPadding = padding
-	d.gaplessStart = uint64(delay)
+	headTrim, tailTrim := gaplessTrims(delay, padding)
+	head := uint64(headTrim)
+	d.gaplessStart = head
 
 	preTrim := d.info.TotalSamples
 	if preTrim == 0 {
 		return // total unknown: head-only trim, tail left open, TotalSamples 0
 	}
 
-	pad := uint64(padding)
-	if pad > preTrim {
-		pad = preTrim
+	tail := uint64(tailTrim)
+	if tail > preTrim {
+		tail = preTrim
 	}
-	d.gaplessEnd = preTrim - pad
+	d.gaplessEnd = preTrim - tail
 
-	trim := uint64(delay) + uint64(padding)
-	if trim > preTrim {
+	if head+tail > preTrim {
 		d.info.TotalSamples = 0
 	} else {
-		d.info.TotalSamples = preTrim - trim
+		d.info.TotalSamples = preTrim - head - tail
 	}
 }
 
@@ -776,7 +809,18 @@ func (d *Decoder) estimateCBRDuration(r io.Reader) {
 	if frames <= 0 {
 		return
 	}
-	d.info.TotalSamples = uint64(frames) * uint64(samplesPerFrame(d.info.SampleRate))
+	total := uint64(frames) * uint64(samplesPerFrame(d.info.SampleRate))
+	// A LAME tag with no frame count still armed the head trim, and those
+	// samples are never emitted, so the byte-length estimate has to lose them
+	// too or the documented "emitted count equals TotalSamples" invariant
+	// breaks by exactly gaplessStart. The tail stays open on this path
+	// (gaplessEnd is math.MaxUint64), so there is no tail term.
+	if total > d.gaplessStart {
+		total -= d.gaplessStart
+	} else {
+		total = 0
+	}
+	d.info.TotalSamples = total
 }
 
 // packOutput packs the given interleaved float32 samples (a sub-slice of

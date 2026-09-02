@@ -47,11 +47,11 @@ const (
 // contract.
 func FuzzEncoderAPI(f *testing.F) {
 	for _, seed := range fuzzEncoderAPISeeds() {
-		f.Add(seed.sampleRate, seed.channels, seed.bitrate, seed.quality, seed.ops)
+		f.Add(seed.sampleRate, seed.channels, seed.bitrate, seed.ops)
 	}
 
-	f.Fuzz(func(t *testing.T, sampleRate, channels, bitrate, quality int, ops []byte) {
-		cfg := mp3.EncoderConfig{SampleRate: sampleRate, Channels: channels, Bitrate: bitrate, Quality: quality}
+	f.Fuzz(func(t *testing.T, sampleRate, channels, bitrate int, ops []byte) {
+		cfg := mp3.EncoderConfig{SampleRate: sampleRate, Channels: channels, Bitrate: bitrate}
 
 		e, err := mp3.NewEncoder(cfg)
 		if err != nil {
@@ -68,31 +68,28 @@ func FuzzEncoderAPI(f *testing.F) {
 
 // fuzzEncoderAPISeed is one FuzzEncoderAPI seed corpus entry.
 type fuzzEncoderAPISeed struct {
-	sampleRate, channels, bitrate, quality int
-	ops                                    []byte
+	sampleRate, channels, bitrate int
+	ops                           []byte
 }
 
 // fuzzEncoderAPISeeds returns one seed per EncoderConfig validation-error
 // class (bad rate, bad channels, bad bitrate including the 128500 %1000
-// trap, nonzero Quality, Bitrate+Quality both set), plus opcode sequences
-// covering a clean encode-and-drain, audio-after-drain, audio-after-short,
-// and an empty non-nil frame.
+// trap), plus opcode sequences covering a clean encode-and-drain,
+// audio-after-drain, audio-after-short, and an empty non-nil frame.
 func fuzzEncoderAPISeeds() []fuzzEncoderAPISeed {
-	valid := fuzzEncoderAPISeed{sampleRate: 44100, channels: 2, bitrate: 128000, quality: 0}
+	valid := fuzzEncoderAPISeed{sampleRate: 44100, channels: 2, bitrate: 128000}
 	return []fuzzEncoderAPISeed{
-		{sampleRate: 22050, channels: 2, bitrate: 128000},             // bad sample rate
-		{sampleRate: 44100, channels: 3, bitrate: 128000},             // bad channel count
-		{sampleRate: 44100, channels: 2, bitrate: 128500},             // 128500: the %1000 trap
-		{sampleRate: 44100, channels: 2, bitrate: 129000},             // multiple of 1000, still illegal
-		{sampleRate: 44100, channels: 2, bitrate: 0, quality: 5},      // Quality unsupported (CBR-only)
-		{sampleRate: 44100, channels: 2, bitrate: 128000, quality: 1}, // Bitrate and Quality both set
-		{valid.sampleRate, valid.channels, valid.bitrate, valid.quality, // clean encode-and-drain
+		{sampleRate: 22050, channels: 2, bitrate: 128000}, // bad sample rate
+		{sampleRate: 44100, channels: 3, bitrate: 128000}, // bad channel count
+		{sampleRate: 44100, channels: 2, bitrate: 128500}, // 128500: the %1000 trap
+		{sampleRate: 44100, channels: 2, bitrate: 129000}, // multiple of 1000, still illegal
+		{valid.sampleRate, valid.channels, valid.bitrate, // clean encode-and-drain
 			[]byte{fuzzOpFullFrame, fuzzOpFullFrame, fuzzOpNilDrain}},
-		{valid.sampleRate, valid.channels, valid.bitrate, valid.quality, // audio after drain
+		{valid.sampleRate, valid.channels, valid.bitrate, // audio after drain
 			[]byte{fuzzOpFullFrame, fuzzOpNilDrain, fuzzOpFullFrame}},
-		{valid.sampleRate, valid.channels, valid.bitrate, valid.quality, // audio after a short final frame
+		{valid.sampleRate, valid.channels, valid.bitrate, // audio after a short final frame
 			[]byte{fuzzOpShortFrame, fuzzOpFullFrame}},
-		{valid.sampleRate, valid.channels, valid.bitrate, valid.quality, // empty non-nil frame
+		{valid.sampleRate, valid.channels, valid.bitrate, // empty non-nil frame
 			[]byte{fuzzOpEmptyFrame}},
 	}
 }

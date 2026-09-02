@@ -7,5 +7,6 @@
 // with a psychoacoustic model, a bit reservoir, per-frame M/S joint stereo,
 // and attack-driven short blocks (block switching). Quality at a given
 // bitrate still lags a fully tuned encoder like LAME; further tuning is
-// planned.
+// planned and is measured against LAME with the tools/quality harness (see
+// the README's "Quality measurement against LAME" section).
 package mp3

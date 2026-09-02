@@ -4,8 +4,8 @@ Pure-Go MP3 (MPEG-1/2/2.5 Layer III decoder, MPEG-1 Layer III encoder)
 implemented without cgo, `github.com/tphakala/go-mp3`, MIT licensed. Sibling of
 go-flac, go-opus, go-aac, go-wav.
 
-**Status (as of 2026-08-27, main HEAD 96162e7): decoder, streaming `pcm`
-container, and CBR encoder are all COMPLETE and merged.**
+**Status (as of 2026-09-01): decoder, streaming `pcm` container, CBR
+encoder, and the LAME quality harness are all COMPLETE and merged.**
 
 - **Decoder** (public package `mp3`: `NewDecoder` / `DecodeFrame` returning
   `(n, FrameInfo, error)` / `Reset`, sentinels `ErrCorruptStream`,
@@ -17,7 +17,11 @@ container, and CBR encoder are all COMPLETE and merged.**
   `WriteTo` / `SeekToSample` / `Reset` / `Info`, plus a `WithF32` option): an
   `io.Reader` + `io.WriterTo` over the frame decoder. ID3v2 skip + ID3v1
   trailer, S16 default plus float32 via `WithF32`, Xing/Info/VBRI/LAME tag
-  parsing, gapless trim, bounded resync surfacing `mp3.ErrCorruptStream`,
+  parsing, gapless trim (LAME delay plus the standard 529-sample decoder
+  delay at the head, the padding less that delay at the tail, never below
+  zero, the window ffmpeg and mpg123 apply; `Info` reports the RAW tag
+  fields, not the applied window), bounded resync surfacing
+  `mp3.ErrCorruptStream`,
   clean-end/truncation detection, and bit-exact `SeekToSample`. Fuzz +
   streaming conformance run bit-exact on amd64 + arm64 in the CI Oracle job.
 - **Encoder** (public package `mp3`: `NewEncoder` / `EncodeFrame` / `Reset` /
@@ -32,9 +36,33 @@ container, and CBR encoder are all COMPLETE and merged.**
   outer loop, per-frame M/S joint stereo, and attack-driven short blocks
   (block switching). Output is bit-exact cross-arch, round-trip SNR gated, and
   accepted by ffmpeg + mpg123 in CI. The stream is tagless (no Xing/LAME
-  header). VBR is NOT planned (dropped; `EncoderConfig.Quality` is a dead field
-  pending removal). Quality at a given bitrate still lags a fully tuned encoder
-  like LAME; further tuning is the main open work.
+  header). VBR is NOT planned (dropped; `EncoderConfig.Quality` was removed
+  before the first tag). Quality at a given bitrate still lags a fully tuned
+  encoder like LAME; further tuning is the main open work, measured with the
+  quality harness below.
+- **Quality harness** (`tools/quality`, metrics in `internal/quality`): `task
+  quality` compares the encoder against the `lame` binary (black box only) on
+  a deterministic synthetic corpus (11 programs: tonal, pink noise, click
+  trains, sweep, bird-like chirps, speech-like, three stereo) plus optional
+  WAVs (`-corpus DIR`, measured only at their own rate), decoding both
+  through `pcm`, aligning by NORMALIZED cross-correlation, and reporting SNR,
+  band-limited SNR (at or below 16 kHz),
+  segmental SNR, log-spectral distance, pre-echo, bandwidth, and (when
+  `visqol` / `peaq-odg` plus `ffmpeg` are on PATH) ViSQOL MOS-LQO and PEAQ
+  ODG, as Markdown plus JSON under the gitignored `tools/quality/out/`. On
+  this host
+  `~/bin/visqol` wraps the `docker.io/jonashaag/visqol:v3` container (rootless
+  podman, cwd mounted at /data, so pass relative paths) and `~/bin/peaq-odg`
+  wraps a GstPEAQ build under `~/.local`; CI has neither and runs only the
+  `TestQualityHarness*` smoke (two cases) in the Compat job with `lame`
+  installed. PEAQ basic prints `-nan` when a basic-model MOV has no active
+  frames (for instance a reference with no content above 8.1 kHz); the
+  harness records that as n/a.
+  GOTCHA: a perfectly stationary periodic program cannot be aligned by
+  cross-correlation (every lag one period apart scores the same), which is
+  why the corpus gives its tonal programs a slow amplitude envelope and why
+  the aligner normalizes by both windows' energy. Removing either brings
+  back a silently misaligned measurement, not a test failure.
 
 The encoder was built across Phases 3-5 (skeleton, psychoacoustic model + rate
 control, tuning), each an agy-reviewed plan derived only from ISO/IEC 11172-3
@@ -52,13 +80,12 @@ and published papers per PROVENANCE.md. All merged.
    Phase 2 (pcm) dated 2026-08-06/07, Phase 3 (encoder skeleton) dated
    2026-08-12, Phases 4-5 (psymodel, rate control, tuning) in the encoder-era
    plans. They remain for history.
-3. NEXT work: encoder quality tuning (it still lags LAME at a given bitrate),
-   and the remaining low-severity items in GitHub issue #48 (the only open
-   issue): `pairCost`/`accumEscFamilyCost` inliner fast-path, the abs-hoist
-   bounds-check hint in `bigValuesPrefixCost`, the `rangeCost` re-cache in
-   `chooseRegions`, and a comment-only doc nit in `internal/enc/encoder.go`
-   (the `clamp` doc around line 629). All benchmark-gated micro-perf plus the
-   doc nit; do them on fresh branches when the CodeRabbit review budget allows.
+3. NEXT work: encoder quality tuning against a LAME baseline produced by
+   `task quality`. Run the harness first and record its Summary table in the
+   Hindsight bank, then tune against it. Every tuning PR re-runs the harness and
+   reports the Summary-table deltas per bitrate in its PR description. Such
+   PRs are NOT golden-neutral: each one re-freezes the encoder goldens
+   deliberately and runs the arm64 leg. No GitHub issues are open.
 
 ## Workflow conventions (established this project)
 
@@ -86,15 +113,18 @@ and published papers per PROVENANCE.md. All merged.
   SNR gate, a zero-alloc `EncodeFrame` gate, and structural validation, plus
   the ffmpeg/mpg123 decode-compatibility gate in CI. The encoder is
   GOLDEN-NEUTRAL: any change to production encoder code must keep output
-  bit-exact against the committed goldens on amd64 AND arm64.
+  bit-exact against the committed goldens on amd64 AND arm64, unless the PR
+  is an explicit quality-tuning PR, which re-freezes the goldens on purpose
+  and carries a before/after `task quality` summary in its description.
 
 ## Hard rules
 
 - MIT provenance: the decoder derives only from the pinned minimp3 (CC0-1.0)
   vendored under `tools/oracle/`; the encoder derives only from ISO/IEC
   11172-3 and published papers. Never open LAME, Shine, dist10, libmad,
-  mpg123, FFmpeg, or Helix source. LAME/ffmpeg/mpg123 are black-box test
-  binaries only. See PROVENANCE.md.
+  mpg123, FFmpeg, or Helix source. LAME/ffmpeg/mpg123, and the quality
+  harness's optional visqol/peaq-odg scorers, are black-box binaries only.
+  See PROVENANCE.md.
 - `docs/` is private planning material: gitignored, never committed, never
   pushed. The SDD ledger under `.superpowers/` is likewise local only.
 - ISO conformance vectors are never committed; fetch scripts only.

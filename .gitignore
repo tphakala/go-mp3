@@ -8,6 +8,7 @@ testdata/corpus/
 tools/oracle/build/
 tools/oracle/dumps/
 tools/oracle/mutated/
+tools/quality/out/
 
 # go test -fuzz corpora (per-package testdata/fuzz/<FuzzName>/), including
 # any failing inputs it saves locally; the seed corpus lives in code via
@@ -16,6 +17,7 @@ tools/oracle/mutated/
 
 # Build artifacts
 /bin/
+/quality
 *.exe
 *.test
 *.out

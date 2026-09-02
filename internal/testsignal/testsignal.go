@@ -15,8 +15,9 @@
 // no-math.Sin/Cos-at-runtime rule (see internal/enc/mdcttables.go and
 // fbtables.go, whose coefficient tables are frozen literals for bit-exact
 // output) binds internal/enc's production encode path, not this test-support
-// leaf package. testsignal is imported only by _test.go files and never runs
-// on any encode path.
+// leaf package. testsignal is imported by _test.go files and by the
+// tools/quality harness (a standalone CLI that measures the encoder against
+// LAME), and never runs on any encode path.
 package testsignal
 
 import "math"
@@ -103,5 +104,72 @@ func MultiTone(sampleRate, nSamples int, chPhase, peak float64) []float64 {
 // MPEG-1 Layer III frame size) MP3 frames covering at least one second of
 // audio at sampleRate.
 func FramesForOneSecond(sampleRate int) int {
-	return (sampleRate + 1152 - 1) / 1152
+	return (sampleRate + FrameSize - 1) / FrameSize
+}
+
+// FrameSize is the MPEG-1 Layer III frame size in samples per channel, and
+// ClickPeriodFrames and ClickBurstFrames are the click cadence both the
+// compat gate and the tools/quality corpus drive block switching with.
+//
+// FrameSize duplicates the root package's mp3.FrameSize because importing it
+// here would cycle: internal/enc's own in-package tests import this package,
+// and the root mp3 package imports internal/enc. The root's compat_test.go
+// asserts the two stay equal.
+const (
+	FrameSize         = 1152
+	ClickPeriodFrames = 4
+	ClickBurstFrames  = 1
+)
+
+// ClickTrain returns nSamples of mono click-train content: silence with a
+// loud LCG-noise burst (amplitude 0.8, seed 0xC1CC7A31) every
+// periodFrames*FrameSize samples, each burst burstFrames*FrameSize samples
+// long, repeating for the whole duration, the first burst at sample 0. It
+// drives an encoder's attack detector repeatedly; the compat gate's
+// block-switching programs (root compat_test.go) and the tools/quality
+// corpus both consume it, so this is the single source of truth for the
+// float32 click-train program's seed and amplitude. A separate int32 mirror
+// in internal/dec/encx_fuzz_test.go repeats the same constants for the same
+// reason IdenticalNoise's does: a fuzz seed cannot double-round through this
+// float32 helper.
+func ClickTrain(nSamples, periodFrames, burstFrames int) []float32 {
+	x := make([]float32, nSamples)
+	seed := uint64(0xC1CC7A31)
+	period := periodFrames * FrameSize
+	burst := burstFrames * FrameSize
+	for start := 0; start+burst <= nSamples; start += period {
+		for i := range burst {
+			x[start+i] = float32(LCGSigned(&seed)) * 0.8
+		}
+	}
+	return x
+}
+
+// ToneClick returns nSamples of mono tone+click content: a steady MultiTone
+// (peak 0.5) interrupted every periodFrames frames by a genuine onset (576
+// samples of silence, then an LCG-noise burst of burstFrames frames, seed
+// 0x5A17C1CC, amplitude 0.9), clamped to [-1, 1]. The silence-then-burst
+// shape is what a sub-block energy-ratio attack detector actually fires on:
+// a click merely summed onto a loud tone never clears the ratio. The first
+// burst starts one period in, a true mid-stream onset rather than a
+// stream-start granule. Same single-source-of-truth role as ClickTrain.
+func ToneClick(sampleRate, nSamples, periodFrames, burstFrames int) []float32 {
+	tone := MultiTone(sampleRate, nSamples, 0, 0.5)
+	seed := uint64(0x5A17C1CC)
+	period := periodFrames * FrameSize
+	burst := burstFrames * FrameSize
+	const gap = 576
+	for start := period; start+burst <= nSamples; start += period {
+		for i := start - gap; i < start; i++ {
+			tone[i] = 0
+		}
+		for i := range burst {
+			tone[start+i] = LCGSigned(&seed) * 0.9
+		}
+	}
+	x := make([]float32, nSamples)
+	for i, v := range tone {
+		x[i] = float32(max(-1, min(1, v)))
+	}
+	return x
 }

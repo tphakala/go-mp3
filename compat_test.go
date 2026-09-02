@@ -146,79 +146,55 @@ func compatEncodeStereoStream(t *testing.T, sampleRate, kbps int, left, right []
 	return stream, e.Stats()
 }
 
-// compatClickPeriodFrames and compatClickBurstFrames define the cadence of
-// the click-train and tone+click programs below: a loud burst every
+// compatClickPeriodFrames and compatClickBurstFrames are the cadence of the
+// click-train and tone+click programs below: a loud burst every
 // compatClickPeriodFrames frames, each burst compatClickBurstFrames frames
 // long. This mirrors internal/dec/encx_shortcalib_test.go's
 // buildShortCalibProgram (a single mid-stream click), generalized to a
 // periodic train so the compat grid actually exercises block switching
 // repeatedly across the stream rather than once.
+//
+// They alias testsignal's pair rather than restating the numbers: the
+// tools/quality corpus drives the same programs at the same cadence, and two
+// independent copies would let the two consumers drift apart silently.
 const (
-	compatClickPeriodFrames = 4
-	compatClickBurstFrames  = 1
+	compatClickPeriodFrames = testsignal.ClickPeriodFrames
+	compatClickBurstFrames  = testsignal.ClickBurstFrames
 )
 
-// compatClickTrain returns nSamples of mono click-train content: silence
-// with a loud LCG-noise burst (amplitude 0.8) every
-// compatClickPeriodFrames*mp3.FrameSize samples, each burst
-// compatClickBurstFrames*mp3.FrameSize samples long, repeating for the
-// whole duration. This program exists purely to drive the encoder's attack
-// detector repeatedly (the Inc6 vacuous-pass lesson: the compat streams
-// must actually reach block switching, not merely decode cleanly).
-func compatClickTrain(nSamples int) []float32 {
-	x := make([]float32, nSamples)
-	seed := uint64(0xC1CC7A31)
-	period := compatClickPeriodFrames * mp3.FrameSize
-	burst := compatClickBurstFrames * mp3.FrameSize
-	for start := 0; start+burst <= nSamples; start += period {
-		for i := range burst {
-			x[start+i] = float32(testsignal.LCGSigned(&seed)) * 0.8
-		}
+// TestFrameSizeMatchesTestsignal pins the duplicated frame size. The click
+// programs are SIZED in testsignal.FrameSize and SLICED below by
+// mp3.FrameSize, so the compat grid silently stops testing what it claims to
+// if the two ever diverge. testsignal cannot import the root package (that
+// would cycle through internal/enc's in-package tests), so the guard lives
+// here, where both are already in scope.
+func TestFrameSizeMatchesTestsignal(t *testing.T) {
+	if testsignal.FrameSize != mp3.FrameSize {
+		t.Fatalf("testsignal.FrameSize = %d, mp3.FrameSize = %d", testsignal.FrameSize, mp3.FrameSize)
 	}
-	return x
+}
+
+// compatClickTrain returns nSamples of mono click-train content: silence
+// with a loud LCG-noise burst every compatClickPeriodFrames frames, each
+// burst compatClickBurstFrames frames long. This program exists purely to
+// drive the encoder's attack detector repeatedly (the Inc6 vacuous-pass
+// lesson: the compat streams must actually reach block switching, not merely
+// decode cleanly). Thin wrapper over testsignal.ClickTrain, the single
+// source of truth for the seed and amplitude (also consumed by the
+// tools/quality corpus).
+func compatClickTrain(nSamples int) []float32 {
+	return testsignal.ClickTrain(nSamples, compatClickPeriodFrames, compatClickBurstFrames)
 }
 
 // compatToneClick returns nSamples of mono tone+click content: a steady
-// multi-tone (testsignal.MultiTone, peak 0.5) interrupted every
-// compatClickPeriodFrames frames by a genuine onset (one granule of silence
-// then a full-scale LCG-noise burst of compatClickBurstFrames frames),
-// clamped to [-1, 1]. The silence-then-burst shape is what attackDetect
-// actually fires on: a click merely summed onto a loud tone never clears
-// attackRatio. Generalizes buildShortCalibProgram's single mid-stream click
-// to a periodic train, so long-block coding between clicks is exercised
-// alongside the short-block clicks themselves.
+// multi-tone interrupted every compatClickPeriodFrames frames by a genuine
+// onset (one granule of silence then a noise burst of compatClickBurstFrames
+// frames), so long-block coding between clicks is exercised alongside the
+// short-block clicks themselves. Thin wrapper over testsignal.ToneClick,
+// the single source of truth for the seed, amplitudes, and the
+// silence-then-burst onset shape (also consumed by the tools/quality corpus).
 func compatToneClick(sampleRate, nSamples int) []float32 {
-	tone := testsignal.MultiTone(sampleRate, nSamples, 0, 0.5)
-	seed := uint64(0x5A17C1CC)
-	period := compatClickPeriodFrames * mp3.FrameSize
-	burst := compatClickBurstFrames * mp3.FrameSize
-	// Each click must be a genuine onset, not noise summed onto the tone: a
-	// click merely added to a steady 0.5 tone never clears attackRatio (the
-	// tone's own energy dominates the sub-block ratio), so those "clicks"
-	// only ever produced short blocks via the old stream-start false attack.
-	// Silence one granule of the tone immediately before each burst so the
-	// burst sub-block is a real >10x energy jump attackDetect fires on. The
-	// first burst starts one period in, a true mid-stream onset rather than
-	// the stream-start granule the encoder deliberately never short-codes.
-	const gap = 576
-	for start := period; start+burst <= nSamples; start += period {
-		for i := start - gap; i < start; i++ {
-			tone[i] = 0
-		}
-		for i := range burst {
-			tone[start+i] = testsignal.LCGSigned(&seed) * 0.9
-		}
-	}
-	x := make([]float32, nSamples)
-	for i, v := range tone {
-		if v > 1 {
-			v = 1
-		} else if v < -1 {
-			v = -1
-		}
-		x[i] = float32(v)
-	}
-	return x
+	return testsignal.ToneClick(sampleRate, nSamples, compatClickPeriodFrames, compatClickBurstFrames)
 }
 
 // compatEncodeMonoStream encodes precomputed mono program (a whole number

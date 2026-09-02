@@ -368,9 +368,9 @@ func TestSeekOverflowSaturatesFromParsedTags(t *testing.T) {
 	if d.info.TotalSamples != 0 {
 		t.Fatalf("precondition: TotalSamples = %d, want 0 (unknown length)", d.info.TotalSamples)
 	}
-	if d.gaplessStart != sine48mDelay {
-		t.Fatalf("precondition: gaplessStart = %d, want %d (the fixture's parsed LAME delay)",
-			d.gaplessStart, sine48mDelay)
+	if d.gaplessStart != sine48mDelay+lameDecoderDelay {
+		t.Fatalf("precondition: gaplessStart = %d, want %d (the fixture's parsed LAME delay plus the decoder delay)",
+			d.gaplessStart, sine48mDelay+lameDecoderDelay)
 	}
 
 	// math.MaxInt64 + gaplessStart wraps int64 negative. Without the guard that

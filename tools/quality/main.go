@@ -21,8 +21,8 @@ import (
 	"github.com/tphakala/go-mp3/internal/quality"
 )
 
-// Exit codes: setup errors (flags, missing lame) are 2, a run where some
-// case failed is 1, success is 0.
+// Exit codes: success is 0, a run where some case failed is 1, setup errors
+// (flags, missing lame) are 2, and an interrupted run (Ctrl-C) is 3.
 const (
 	exitOK          = 0
 	exitCases       = 1
@@ -270,7 +270,9 @@ func genRef(p quality.Program, sampleRate, seconds int) [][]float64 {
 // results to rep in deterministic grid order and returning how many cases
 // failed. Only setup-class errors (a work directory that cannot be created)
 // are returned; a per-case failure is counted, not fatal. A cancelled context
-// (Ctrl-C) stops dispatch and leaves a partial report.
+// (Ctrl-C) stops dispatch and returns what completed so far; run() then
+// discards that partial result and exits with exitInterrupted rather than
+// writing a truncated report.
 func runGrid(ctx context.Context, tl tools, o *options, workDir string, rep *report, errw io.Writer) (int, error) {
 	jobs := buildJobs(ctx, o, errw)
 	total := len(jobs)

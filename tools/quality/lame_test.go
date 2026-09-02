@@ -25,6 +25,12 @@ func requireLame(t *testing.T) string {
 	return path
 }
 
+// caseRef builds a program's reference via the same genRef the grid uses, for
+// tests that drive runCase directly rather than through buildJobs.
+func caseRef(spec caseSpec) [][]float64 {
+	return genRef(spec.Program, spec.SampleRate, spec.Seconds)
+}
+
 // TestQualityHarnessLame runs one real case end to end: both encoders, pcm
 // decode, alignment, metrics. It pins the two alignment facts the harness
 // relies on (go-mp3's tagless stream lands at mp3.TotalDelay; LAME's tagged
@@ -37,7 +43,7 @@ func TestQualityHarnessLame(t *testing.T) {
 		t.Fatal("tone-click program missing")
 	}
 	spec := caseSpec{Program: prog, SampleRate: 44100, Kbps: 128, Seconds: 2}
-	res, err := runCase(t.Context(), tl, t.TempDir(), spec, io.Discard)
+	res, err := runCase(t.Context(), tl, t.TempDir(), spec, caseRef(spec), io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +88,8 @@ func TestQualityHarnessStereoShortTail(t *testing.T) {
 		t.Fatal("stereo-decorrelated program missing")
 	}
 	// 1 s at 44.1 kHz is 38.28 frames: the last go-mp3 frame is short.
-	res, err := runCase(t.Context(), tools{lame: lame}, t.TempDir(), caseSpec{Program: prog, SampleRate: 44100, Kbps: 192, Seconds: 1}, io.Discard)
+	spec := caseSpec{Program: prog, SampleRate: 44100, Kbps: 192, Seconds: 1}
+	res, err := runCase(t.Context(), tools{lame: lame}, t.TempDir(), spec, caseRef(spec), io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

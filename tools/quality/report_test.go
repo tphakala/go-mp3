@@ -87,7 +87,7 @@ func TestSummarize(t *testing.T) {
 }
 
 func TestWriteMarkdownAndJSON(t *testing.T) {
-	rep := &report{GeneratedUTC: "2026-09-02T00:00:00Z", GoMP3Rev: "abc1234",
+	rep := &report{SchemaVersion: reportSchemaVersion, GeneratedUTC: "2026-09-02T00:00:00Z", GoMP3Rev: "abc1234",
 		LAMEVersion: "LAME 64bits version 3.100", Seconds: 6, Attempted: 6, Failed: 1, Cases: sampleCases()}
 	var md bytes.Buffer
 	if err := writeMarkdown(&md, rep); err != nil {
@@ -134,10 +134,11 @@ func TestWriteMarkdownAndJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	var back struct {
-		LAMEVersion string `json:"lame_version"`
-		Attempted   int    `json:"attempted"`
-		Failed      int    `json:"failed"`
-		Cases       []struct {
+		SchemaVersion int    `json:"schema_version"`
+		LAMEVersion   string `json:"lame_version"`
+		Attempted     int    `json:"attempted"`
+		Failed        int    `json:"failed"`
+		Cases         []struct {
 			Program string `json:"program"`
 			GoMP3   struct {
 				SNR     *float64 `json:"snr"`
@@ -154,6 +155,9 @@ func TestWriteMarkdownAndJSON(t *testing.T) {
 	}
 	if back.Attempted != 6 || back.Failed != 1 {
 		t.Fatalf("json case counts = %d/%d, want 6/1", back.Attempted, back.Failed)
+	}
+	if back.SchemaVersion != reportSchemaVersion {
+		t.Fatalf("json schema_version = %d, want %d", back.SchemaVersion, reportSchemaVersion)
 	}
 	c := back.Cases[0].GoMP3
 	if c.SNR == nil || *c.SNR != 30 || c.PreEcho != nil || c.MOS == nil || *c.MOS != 4.5 {

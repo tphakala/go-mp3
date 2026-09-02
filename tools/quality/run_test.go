@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -32,6 +33,30 @@ func TestRunGridSetupError(t *testing.T) {
 	}
 	if failed != 0 || len(rep.Cases) != 0 {
 		t.Fatalf("a setup error must not report cases: failed=%d cases=%d", failed, len(rep.Cases))
+	}
+}
+
+// TestRunGridCancelled needs no external tools: an already-cancelled context
+// makes runGrid dispatch nothing and produce no cases, which is what lets run()
+// skip the report write and exit non-zero instead of overwriting a prior report
+// with a truncated one.
+func TestRunGridCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	o := &options{
+		rates:    []int{44100},
+		bitrates: []int{128},
+		jobs:     2,
+		seconds:  1,
+		programs: []quality.Program{{Name: "a", Channels: 1, Gen: func(_, n int) [][]float64 { return [][]float64{make([]float64, n)} }}},
+	}
+	rep := &report{}
+	failed, err := runGrid(ctx, tools{}, o, t.TempDir(), rep, io.Discard)
+	if err != nil {
+		t.Fatalf("a cancelled grid is not a setup error: %v", err)
+	}
+	if failed != 0 || len(rep.Cases) != 0 {
+		t.Fatalf("a cancelled grid must produce no cases: failed=%d cases=%d", failed, len(rep.Cases))
 	}
 }
 

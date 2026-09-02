@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"slices"
 	"testing"
@@ -82,7 +83,7 @@ func TestBuildJobsGridOrderAndSharedRef(t *testing.T) {
 		},
 		seconds: 1,
 	}
-	jobs := buildJobs(o, io.Discard)
+	jobs := buildJobs(t.Context(), o, io.Discard)
 	if len(jobs) != 4 {
 		t.Fatalf("built %d jobs, want 4 (2 programs x 2 bitrates)", len(jobs))
 	}
@@ -110,6 +111,22 @@ func TestBuildJobsGridOrderAndSharedRef(t *testing.T) {
 	}
 }
 
+func TestBuildJobsCancelled(t *testing.T) {
+	// An already-cancelled context stops buildJobs before it generates any
+	// reference, so a Ctrl-C during a long -seconds generation phase is prompt.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	o := &options{
+		rates:    []int{44100},
+		bitrates: []int{128},
+		seconds:  1,
+		programs: []quality.Program{{Name: "a", Channels: 1, Gen: func(_, n int) [][]float64 { return [][]float64{make([]float64, n)} }}},
+	}
+	if jobs := buildJobs(ctx, o, io.Discard); len(jobs) != 0 {
+		t.Fatalf("cancelled buildJobs built %d jobs, want 0", len(jobs))
+	}
+}
+
 func TestBuildJobsSkipsRateMismatchAndEmpty(t *testing.T) {
 	o := &options{
 		rates:    []int{44100},
@@ -124,7 +141,7 @@ func TestBuildJobsSkipsRateMismatchAndEmpty(t *testing.T) {
 		},
 		seconds: 1,
 	}
-	jobs := buildJobs(o, io.Discard)
+	jobs := buildJobs(t.Context(), o, io.Discard)
 	if len(jobs) != 1 || jobs[0].spec.Program.Name != "ok" || jobs[0].idx != 1 {
 		t.Fatalf("buildJobs skipped incorrectly: got %d jobs %+v", len(jobs), jobs)
 	}

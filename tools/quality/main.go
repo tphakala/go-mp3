@@ -24,9 +24,10 @@ import (
 // Exit codes: setup errors (flags, missing lame) are 2, a run where some
 // case failed is 1, success is 0.
 const (
-	exitOK    = 0
-	exitCases = 1
-	exitSetup = 2
+	exitOK          = 0
+	exitCases       = 1
+	exitSetup       = 2
+	exitInterrupted = 3
 )
 
 // unknownVersion is reported when a provenance value cannot be determined.
@@ -179,6 +180,14 @@ func run(ctx context.Context, args []string, errw io.Writer) int {
 	if err != nil {
 		return fail(errw, err)
 	}
+	// A cancelled run (Ctrl-C) is not a result. Leaving the previous report in
+	// place and returning non-zero is safer than overwriting it with a
+	// truncated one that looks structurally normal: a wrapping script must not
+	// mistake an interrupted run for a completed one.
+	if ctx.Err() != nil {
+		logf(errw, "quality: interrupted, leaving any previous report in place\n")
+		return exitInterrupted
+	}
 	rep.Failed = failed
 	rep.Attempted = len(rep.Cases) + failed
 	if err := writeFile(o.out, func(f *os.File) error { return writeMarkdown(f, rep) }); err != nil {
@@ -207,10 +216,16 @@ type caseJob struct {
 // generating and quantizing each program's reference once per sample rate and
 // reusing it across bitrates. Rates a program cannot serve, and empty
 // programs, are logged and dropped here so the job list holds only real cases.
-func buildJobs(o *options, errw io.Writer) []caseJob {
+// It checks ctx before each reference generation so a Ctrl-C during this phase
+// (which a large -seconds can make lengthy) stops promptly instead of building
+// out the whole grid first.
+func buildJobs(ctx context.Context, o *options, errw io.Writer) []caseJob {
 	var jobs []caseJob
 	for _, sr := range o.rates {
 		for i := range o.programs {
+			if ctx.Err() != nil {
+				return jobs // cancelled: stop generating references
+			}
 			p := o.programs[i]
 			if !p.RunsAt(sr) {
 				logf(errw, "skip: %s has no data at %d Hz\n", p.Name, sr)
@@ -257,7 +272,7 @@ func genRef(p quality.Program, sampleRate, seconds int) [][]float64 {
 // are returned; a per-case failure is counted, not fatal. A cancelled context
 // (Ctrl-C) stops dispatch and leaves a partial report.
 func runGrid(ctx context.Context, tl tools, o *options, workDir string, rep *report, errw io.Writer) (int, error) {
-	jobs := buildJobs(o, errw)
+	jobs := buildJobs(ctx, o, errw)
 	total := len(jobs)
 
 	// Cancel the shared context on a setup error so in-flight workers stop.
@@ -282,12 +297,16 @@ func runGrid(ctx context.Context, tl tools, o *options, workDir string, rep *rep
 	reclaim := o.work == "" && !o.keep
 	sem := make(chan struct{}, o.jobs)
 
+dispatch:
 	for ji := range jobs {
-		if ctx.Err() != nil {
-			break // stop dispatching once cancelled
+		// Acquire a worker slot, but stay cancelable: a plain sem send would
+		// block past a Ctrl-C while every slot is busy, delaying the stop.
+		select {
+		case <-ctx.Done():
+			break dispatch // cancelled: dispatch no more jobs
+		case sem <- struct{}{}:
 		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(ji int) {
 			defer wg.Done()
 			defer func() { <-sem }()

@@ -15,7 +15,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -73,17 +72,13 @@ type caseResult struct {
 // runCase executes one comparison inside dir, which must exist and is where
 // every intermediate file (reference WAV, both MP3 streams, aligned WAVs for
 // the external tools) is written.
-func runCase(ctx context.Context, tl tools, dir string, spec caseSpec, errw io.Writer) (caseResult, error) {
-	raw := spec.Program.Gen(spec.SampleRate, spec.SampleRate*spec.Seconds)
-	if len(raw) == 0 || len(raw[0]) == 0 {
+func runCase(ctx context.Context, tl tools, dir string, spec caseSpec, ref [][]float64, errw io.Writer) (caseResult, error) {
+	if len(ref) == 0 || len(ref[0]) == 0 {
 		return caseResult{}, errors.New("empty program at this sample rate")
 	}
-	// Quantize once and feed the SAME 16-bit signal to both encoders: LAME
-	// reads it from the WAV, go-mp3 gets the identical samples as float32.
-	ref := make([][]float64, len(raw))
-	for c := range raw {
-		ref[c] = quality.Quantize16(raw[c])
-	}
+	// ref is the quantized 16-bit signal, shared read-only across this
+	// program's bitrate cases. LAME reads it from the WAV written here; go-mp3
+	// gets the identical samples as float32. Nothing below mutates ref.
 	if err := writeWAVFile(filepath.Join(dir, "ref.wav"), spec.SampleRate, ref); err != nil {
 		return caseResult{}, err
 	}
@@ -163,15 +158,9 @@ func measure(ctx context.Context, tl tools, dir, name, base string, ref [][]floa
 
 // writeWAVFile writes planar float64 channels as a 16-bit WAV at path.
 func writeWAVFile(path string, sampleRate int, ch [][]float64) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	if err := quality.WriteWAV16(f, sampleRate, ch); err != nil {
-		_ = f.Close() // the write error is the one worth reporting
-		return err
-	}
-	return f.Close()
+	return writeFile(path, func(f *os.File) error {
+		return quality.WriteWAV16(f, sampleRate, ch)
+	})
 }
 
 // encodeGoMP3 runs the public mp3.Encoder over ref (planar float64) in
@@ -212,14 +201,11 @@ func encodeLAME(ctx context.Context, lame, dir, wavName, mp3Name string, kbps in
 	if lame == "" {
 		return nil, errors.New("lame binary not configured")
 	}
-	ctx, cancel := context.WithTimeout(ctx, cmdTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, lame, "--quiet", "--cbr", "-b", fmt.Sprint(kbps), wavName, mp3Name)
-	cmd.Dir = dir
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	// runTool runs inside dir with the shared timeout and combined-output
+	// capture; --quiet keeps stdout empty, so its output on failure is LAME's
+	// diagnostics. The stream is read back from the file LAME wrote.
+	if out, err := runTool(ctx, dir, lame, "--quiet", "--cbr", "-b", fmt.Sprint(kbps), wavName, mp3Name); err != nil {
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
 	}
 	return os.ReadFile(filepath.Join(dir, mp3Name))
 }

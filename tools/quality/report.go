@@ -54,16 +54,22 @@ var metrics = []metric{
 	{mODG, func(r *encoderResult) float64 { return r.ODG }, +1, true},
 }
 
+// reportSchemaVersion is the JSON report's layout version. Bump it on any
+// breaking change to the field set so a consumer can tell one layout from the
+// next; it is emitted as the first field of every report.
+const reportSchemaVersion = 1
+
 // report is the whole run: provenance header plus every case.
 type report struct {
-	GeneratedUTC string       `json:"generated_utc"`
-	GoMP3Rev     string       `json:"gomp3_rev"`
-	LAMEVersion  string       `json:"lame_version"`
-	Tools        []string     `json:"tools"`
-	Seconds      int          `json:"seconds"`
-	Attempted    int          `json:"attempted"`
-	Failed       int          `json:"failed"`
-	Cases        []caseResult `json:"cases"`
+	SchemaVersion int          `json:"schema_version"`
+	GeneratedUTC  string       `json:"generated_utc"`
+	GoMP3Rev      string       `json:"gomp3_rev"`
+	LAMEVersion   string       `json:"lame_version"`
+	Tools         []string     `json:"tools"`
+	Seconds       int          `json:"seconds"`
+	Attempted     int          `json:"attempted"`
+	Failed        int          `json:"failed"`
+	Cases         []caseResult `json:"cases"`
 }
 
 // summaryKey groups the summary by BOTH sample rate and bitrate. Keying on

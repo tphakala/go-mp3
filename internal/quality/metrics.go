@@ -144,12 +144,17 @@ func SegmentalSNR(ref, deg []float64, seg int) float64 {
 	return sum / float64(count)
 }
 
+// stftWindow is the Hann window for the fixed stftSize, computed once. It is
+// read-only after init, so concurrent callers (the harness scores cases in
+// parallel) share it safely.
+var stftWindow = hannWindow(stftSize)
+
 // stftFrames calls fn with the Hann-windowed power spectrum (bins
 // 0..stftSize/2, unnormalized FFT) of every full stftSize frame of x at hop
 // stftHop, and returns the number of frames visited. The power slice is
 // reused between calls; fn must copy what it keeps.
 func stftFrames(x []float64, fn func(power []float64)) int {
-	w := hannWindow(stftSize)
+	w := stftWindow
 	re := make([]float64, stftSize)
 	im := make([]float64, stftSize)
 	power := make([]float64, stftSize/2+1)

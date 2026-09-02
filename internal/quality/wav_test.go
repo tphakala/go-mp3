@@ -173,3 +173,147 @@ func TestQuantize16(t *testing.T) {
 		}
 	}
 }
+
+// TestReadWAVHostileChunkSize: a chunk declaring a size at or above 2^31 must
+// clamp to the bytes actually present rather than panic. The declared size is
+// negative in a 32-bit int, which is what made the old code slice body[:-1].
+func TestReadWAVHostileChunkSize(t *testing.T) {
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	putLE32w(&buf, 0xFFFFFFFF)
+	buf.WriteString("WAVE")
+	buf.Write(fmtBody(wavFormatPCM, 1, 44100, 16))
+	// Rewrite the fmt chunk with a hostile declared size.
+	out := buf.Bytes()
+	var full bytes.Buffer
+	full.Write(out[:12])
+	full.WriteString("fmt ")
+	putLE32w(&full, 0xFFFFFFFF)
+	full.Write(fmtBody(wavFormatPCM, 1, 44100, 16))
+	if _, _, err := ReadWAV(bytes.NewReader(full.Bytes())); err == nil {
+		t.Fatal("a chunk swallowing the rest of the file leaves no data chunk, want an error")
+	}
+}
+
+// TestReadWAVTruncatedDataChunk exercises the documented truncated-final-chunk
+// clamp: a data chunk declaring more bytes than the file holds decodes the
+// bytes that are there.
+func TestReadWAVTruncatedDataChunk(t *testing.T) {
+	var buf bytes.Buffer
+	buf.WriteString("RIFF")
+	putLE32w(&buf, 100)
+	buf.WriteString("WAVE")
+	buf.WriteString("fmt ")
+	fb := fmtBody(wavFormatPCM, 1, 8000, 16)
+	putLE32w(&buf, uint32(len(fb)))
+	buf.Write(fb)
+	buf.WriteString("data")
+	putLE32w(&buf, 4096) // declares far more than follows
+	neg := int16(-1000)
+	putLE16w(&buf, uint16(int16(1000)))
+	putLE16w(&buf, uint16(neg))
+	sr, ch, err := ReadWAV(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sr != 8000 || len(ch) != 1 || len(ch[0]) != 2 {
+		t.Fatalf("sr=%d ch=%d n=%d, want the two present samples", sr, len(ch), len(ch[0]))
+	}
+	if ch[0][0] != 1000.0/32768 || ch[0][1] != -1000.0/32768 {
+		t.Fatalf("samples = %v, %v", ch[0][0], ch[0][1])
+	}
+}
+
+// TestReadWAVMissingChunks: a file with a fmt but no data, or data but no
+// fmt, is rejected rather than silently decoded as empty.
+func TestReadWAVMissingChunks(t *testing.T) {
+	var noData bytes.Buffer
+	noData.WriteString("RIFF")
+	putLE32w(&noData, 28)
+	noData.WriteString("WAVE")
+	noData.WriteString("fmt ")
+	fb := fmtBody(wavFormatPCM, 1, 44100, 16)
+	putLE32w(&noData, uint32(len(fb)))
+	noData.Write(fb)
+	if _, _, err := ReadWAV(bytes.NewReader(noData.Bytes())); err == nil {
+		t.Fatal("fmt without data must error")
+	}
+
+	var noFmt bytes.Buffer
+	noFmt.WriteString("RIFF")
+	putLE32w(&noFmt, 12)
+	noFmt.WriteString("WAVE")
+	noFmt.WriteString("data")
+	putLE32w(&noFmt, 2)
+	putLE16w(&noFmt, 7)
+	if _, _, err := ReadWAV(bytes.NewReader(noFmt.Bytes())); err == nil {
+		t.Fatal("data without fmt must error")
+	}
+}
+
+// TestReadWAVShortFmtChunks covers both short-fmt rejections: a plain body
+// under 16 bytes, and an EXTENSIBLE body that stops before its sub-format.
+func TestReadWAVShortFmtChunks(t *testing.T) {
+	short := fmtBody(wavFormatPCM, 1, 44100, 16)[:14]
+	if _, _, err := ReadWAV(bytes.NewReader(buildWAV(short, make([]byte, 4)))); err == nil {
+		t.Fatal("a fmt chunk under 16 bytes must error")
+	}
+	ext := append(fmtBody(wavFormatExtensible, 1, 44100, 16), 22, 0, 16, 0)
+	if _, _, err := ReadWAV(bytes.NewReader(buildWAV(ext, make([]byte, 4)))); err == nil {
+		t.Fatal("an EXTENSIBLE fmt chunk without its sub-format GUID must error")
+	}
+}
+
+// TestReadWAV32BitPCM covers the 32-bit integer PCM branch, reachable from
+// any user-supplied corpus file.
+func TestReadWAV32BitPCM(t *testing.T) {
+	var data bytes.Buffer
+	for _, v := range []int32{0, 1 << 30, -(1 << 30), math.MaxInt32, math.MinInt32} {
+		putLE32w(&data, uint32(v))
+	}
+	sr, ch, err := ReadWAV(bytes.NewReader(buildWAV(fmtBody(wavFormatPCM, 1, 48000, 32), data.Bytes())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []float64{0, 0.5, -0.5, float64(math.MaxInt32) / 2147483648, -1}
+	if sr != 48000 || len(ch) != 1 || len(ch[0]) != len(want) {
+		t.Fatalf("sr=%d ch=%d n=%d", sr, len(ch), len(ch[0]))
+	}
+	for i, w := range want {
+		if ch[0][i] != w {
+			t.Fatalf("sample %d = %v, want %v", i, ch[0][i], w)
+		}
+	}
+}
+
+// TestReadWAVFloat32Clamps: float WAVs carry no format-imposed range, so
+// out-of-range and NaN samples must be brought into ReadWAV's documented
+// [-1, 1] rather than propagating into the metrics.
+func TestReadWAVFloat32Clamps(t *testing.T) {
+	var data bytes.Buffer
+	for _, s := range []float32{2.5, -3.0, float32(math.NaN()), 0.5} {
+		putLE32w(&data, math.Float32bits(s))
+	}
+	_, ch, err := ReadWAV(bytes.NewReader(buildWAV(fmtBody(wavFormatIEEEFloat, 1, 44100, 32), data.Bytes())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []float64{1, -1, 0, 0.5}
+	for i, w := range want {
+		if ch[0][i] != w {
+			t.Fatalf("sample %d = %v, want %v", i, ch[0][i], w)
+		}
+	}
+}
+
+// TestQuantize16RoundsHalfAwayFromZero pins the documented rounding mode: a
+// truncating or round-to-even regression shifts every half-code sample.
+func TestQuantize16RoundsHalfAwayFromZero(t *testing.T) {
+	got := Quantize16([]float64{0.5 / 32768, 1.5 / 32768, -0.5 / 32768, -1.5 / 32768})
+	want := []float64{1.0 / 32768, 2.0 / 32768, -1.0 / 32768, -2.0 / 32768}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("q[%d] = %v, want %v", i, got[i]*32768, want[i]*32768)
+		}
+	}
+}

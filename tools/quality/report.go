@@ -8,6 +8,8 @@ import (
 	"math"
 	"slices"
 	"strings"
+
+	"github.com/tphakala/go-mp3/internal/quality"
 )
 
 // Metric column names, shared by the report tables, the summary, and the
@@ -23,37 +25,33 @@ const (
 	mODG       = "ODG"
 )
 
-// metricNames is the report column order; higherBetter drives the summary's
-// win counting.
-var metricNames = []string{mSNR, mBandSNR, mSegSNR, mLSD, mPreEcho, mBandwidth, mMOS, mODG}
-
-var higherBetter = map[string]bool{
-	mSNR: true, mBandSNR: true, mSegSNR: true, mLSD: false, mPreEcho: false,
-	mBandwidth: true, mMOS: true, mODG: true,
+// metric describes one report column: how to read it from a result, and
+// which direction counts as better. scored is false for a column that is
+// reported but not judged, so it contributes a delta and no win.
+//
+// One table rather than three parallel ones on purpose: with a separate name
+// slice, getter switch and direction map, adding a metric to one and not the
+// others compiles and runs, and the failure is silent (an always-n/a column,
+// or an inverted win count).
+type metric struct {
+	name   string
+	get    func(*encoderResult) float64
+	better int // +1 higher is better, -1 lower is better
+	scored bool
 }
 
-// metricValue reads one named metric from an encoder result (Bandwidth in
-// kHz for readability).
-func metricValue(r *encoderResult, name string) float64 {
-	switch name {
-	case mSNR:
-		return r.Metrics.SNR
-	case mBandSNR:
-		return r.Metrics.BandSNR
-	case mSegSNR:
-		return r.Metrics.SegSNR
-	case mLSD:
-		return r.Metrics.LSD
-	case mPreEcho:
-		return r.Metrics.PreEcho
-	case mBandwidth:
-		return r.Metrics.Bandwidth / 1000
-	case mMOS:
-		return r.MOS
-	case mODG:
-		return r.ODG
-	}
-	return math.NaN()
+var metrics = []metric{
+	{mSNR, func(r *encoderResult) float64 { return r.Metrics.SNR }, +1, true},
+	{mBandSNR, func(r *encoderResult) float64 { return r.Metrics.BandSNR }, +1, true},
+	{mSegSNR, func(r *encoderResult) float64 { return r.Metrics.SegSNR }, +1, true},
+	{mLSD, func(r *encoderResult) float64 { return r.Metrics.LSD }, -1, true},
+	{mPreEcho, func(r *encoderResult) float64 { return r.Metrics.PreEcho }, -1, true},
+	// Bandwidth is informational: LAME's lowpass is a deliberate bitrate
+	// dependent choice, so "wider" is not "better" and scoring it would
+	// award points for declining to lowpass.
+	{mBandwidth, func(r *encoderResult) float64 { return r.Metrics.Bandwidth / 1000 }, +1, false},
+	{mMOS, func(r *encoderResult) float64 { return r.MOS }, +1, true},
+	{mODG, func(r *encoderResult) float64 { return r.ODG }, +1, true},
 }
 
 // report is the whole run: provenance header plus every case.
@@ -63,66 +61,100 @@ type report struct {
 	LAMEVersion  string       `json:"lame_version"`
 	Tools        []string     `json:"tools"`
 	Seconds      int          `json:"seconds"`
+	Attempted    int          `json:"attempted"`
+	Failed       int          `json:"failed"`
 	Cases        []caseResult `json:"cases"`
 }
 
-// summaryRow aggregates one bitrate across programs.
+// summaryKey groups the summary by BOTH sample rate and bitrate. Keying on
+// bitrate alone silently merged a multi-rate run into one row per bitrate,
+// while the detail tables above it stayed split by rate.
+type summaryKey struct {
+	SampleRate int
+	Kbps       int
+}
+
+// summaryRow aggregates one (rate, bitrate) across programs.
 type summaryRow struct {
-	Kbps     int
+	summaryKey
 	Programs int
 	// MeanDelta is the mean of (go-mp3 minus LAME) per metric over the
 	// programs where both values are finite; NaN when none are.
 	MeanDelta map[string]float64
-	// Wins counts the programs where go-mp3 beats LAME on that metric.
-	Wins map[string]int
+	// Compared counts those programs, and Wins how many of them go-mp3 won.
+	// Wins is printed over Compared, never over Programs: a metric no case
+	// could measure would otherwise read as a clean sweep of losses.
+	Compared map[string]int
+	Wins     map[string]int
 }
 
-// summarize aggregates go-mp3 minus LAME deltas per bitrate across programs.
+// summarize aggregates go-mp3 minus LAME deltas per (rate, bitrate).
 func summarize(cases []caseResult) []summaryRow {
-	byKbps := map[int]*summaryRow{}
-	counts := map[int]map[string]int{}
+	rows := map[summaryKey]*summaryRow{}
 	for i := range cases {
 		c := &cases[i]
-		row := byKbps[c.Kbps]
+		key := summaryKey{c.SampleRate, c.Kbps}
+		row := rows[key]
 		if row == nil {
-			row = &summaryRow{Kbps: c.Kbps, MeanDelta: map[string]float64{}, Wins: map[string]int{}}
-			byKbps[c.Kbps] = row
-			counts[c.Kbps] = map[string]int{}
+			row = &summaryRow{summaryKey: key, MeanDelta: map[string]float64{},
+				Compared: map[string]int{}, Wins: map[string]int{}}
+			rows[key] = row
 		}
 		row.Programs++
-		for _, m := range metricNames {
-			g, l := metricValue(&c.GoMP3, m), metricValue(&c.LAME, m)
-			if math.IsNaN(g) || math.IsNaN(l) {
+		for _, m := range metrics {
+			g, l := m.get(&c.GoMP3), m.get(&c.LAME)
+			if !finite(g) || !finite(l) {
 				continue
 			}
-			row.MeanDelta[m] += g - l
-			counts[c.Kbps][m]++
-			if (higherBetter[m] && g > l) || (!higherBetter[m] && g < l) {
-				row.Wins[m]++
+			row.MeanDelta[m.name] += g - l
+			row.Compared[m.name]++
+			if m.scored && (g-l)*float64(m.better) > 0 {
+				row.Wins[m.name]++
 			}
 		}
 	}
-	rows := make([]summaryRow, 0, len(byKbps))
-	for kbps, row := range byKbps {
-		for _, m := range metricNames {
-			if n := counts[kbps][m]; n > 0 {
-				row.MeanDelta[m] /= float64(n)
+	out := make([]summaryRow, 0, len(rows))
+	for _, row := range rows {
+		for _, m := range metrics {
+			if n := row.Compared[m.name]; n > 0 {
+				row.MeanDelta[m.name] /= float64(n)
 			} else {
-				row.MeanDelta[m] = math.NaN()
+				row.MeanDelta[m.name] = math.NaN()
 			}
 		}
-		rows = append(rows, *row)
+		out = append(out, *row)
 	}
-	slices.SortFunc(rows, func(a, b summaryRow) int { return a.Kbps - b.Kbps })
-	return rows
+	slices.SortFunc(out, func(a, b summaryRow) int {
+		if a.SampleRate != b.SampleRate {
+			return a.SampleRate - b.SampleRate
+		}
+		return a.Kbps - b.Kbps
+	})
+	return out
 }
 
-// fmtMetric renders a metric cell: n/a for NaN, two decimals otherwise.
+// finite reports whether v is a real measurement rather than a NaN or an
+// infinity. The Markdown and the JSON both treat the two the same way.
+func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
+
+// notMeasured is the cell text for a figure that was not measured (the
+// external tool was absent) or is undefined for that program.
+const notMeasured = "n/a"
+
+// fmtMetric renders a metric cell: notMeasured for anything not finite, two
+// decimals otherwise.
 func fmtMetric(v float64) string {
-	if math.IsNaN(v) {
-		return "n/a"
+	if !finite(v) {
+		return notMeasured
 	}
 	return fmt.Sprintf("%.2f", v)
+}
+
+// cell escapes a value for a Markdown table cell. Program names can come from
+// a corpus file name, and a pipe or a newline there would split the cell or
+// forge a whole row.
+func cell(s string) string {
+	return strings.NewReplacer("|", "\\|", "\n", " ", "\r", " ").Replace(s)
 }
 
 // writeMarkdown renders the full report: header, one table per sample rate,
@@ -130,9 +162,10 @@ func fmtMetric(v float64) string {
 func writeMarkdown(w io.Writer, r *report) error {
 	var b strings.Builder
 	b.WriteString("# go-mp3 versus LAME quality report\n\n")
-	fmt.Fprintf(&b, "- Generated: %s\n- go-mp3: %s\n- LAME: %s\n- External metrics: %s\n- Program length: %d s\n\n",
-		r.GeneratedUTC, r.GoMP3Rev, r.LAMEVersion, orNone(r.Tools), r.Seconds)
-	b.WriteString("Metrics: SNR, BandSNR (bins at or below 16 kHz), SegSNR, MOS (ViSQOL MOS-LQO), ODG (PEAQ basic): higher is better. LSD, PreEcho: lower is better. Bandwidth is informational (kHz). delta is go-mp3 minus LAME.\n\n")
+	fmt.Fprintf(&b, "- Generated: %s\n- go-mp3: %s\n- LAME: %s\n- External metrics: %s\n- Program length: %d s\n- Cases: %d attempted, %d failed\n\n",
+		r.GeneratedUTC, r.GoMP3Rev, r.LAMEVersion, orNone(r.Tools), r.Seconds, r.Attempted, r.Failed)
+	fmt.Fprintf(&b, "Metrics: SNR, BandSNR (bins at or below %.0f kHz), SegSNR, MOS (ViSQOL MOS-LQO), ODG (PEAQ basic): higher is better. LSD, PreEcho: lower is better. Bandwidth (kHz) is informational and is not scored. delta is go-mp3 minus LAME. Lag is the measured alignment in samples: %d for this project's tagless streams, 0 for a gapless-trimmed LAME stream. n/a means the figure was not measured (the external tool was absent) or is undefined for that program (no attack detected, no active frame).\n\n",
+		quality.BandLimitHz/1000, mp3TotalDelay)
 
 	rates := map[int]bool{}
 	for i := range r.Cases {
@@ -142,15 +175,16 @@ func writeMarkdown(w io.Writer, r *report) error {
 	slices.Sort(sortedRates)
 	for _, sr := range sortedRates {
 		fmt.Fprintf(&b, "## %d Hz\n\n", sr)
-		writeTableHeader(&b, "| Program | kbps | ch |", "|---|---|---|", " %s go | %s LAME | %s delta |", "---|---|---|")
+		writeHeader(&b, "| Program | kbps | ch | go lag | LAME lag |", "|---|---|---|---|---|",
+			[]string{"go", "LAME", "delta"})
 		for i := range r.Cases {
 			c := &r.Cases[i]
 			if c.SampleRate != sr {
 				continue
 			}
-			fmt.Fprintf(&b, "| %s | %d | %d |", c.Program, c.Kbps, c.Channels)
-			for _, m := range metricNames {
-				g, l := metricValue(&c.GoMP3, m), metricValue(&c.LAME, m)
+			fmt.Fprintf(&b, "| %s | %d | %d | %d | %d |", cell(c.Program), c.Kbps, c.Channels, c.GoMP3.Lag, c.LAME.Lag)
+			for _, m := range metrics {
+				g, l := m.get(&c.GoMP3), m.get(&c.LAME)
 				fmt.Fprintf(&b, " %s | %s | %s |", fmtMetric(g), fmtMetric(l), fmtMetric(g-l))
 			}
 			b.WriteString("\n")
@@ -158,12 +192,16 @@ func writeMarkdown(w io.Writer, r *report) error {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("## Summary\n\nMean delta (go-mp3 minus LAME) per bitrate across programs, and the number of programs go-mp3 wins.\n\n")
-	writeTableHeader(&b, "| kbps | programs |", "|---|---|", " %s mean delta | %s wins |", "---|---|")
+	b.WriteString("## Summary\n\nMean delta (go-mp3 minus LAME) per sample rate and bitrate across programs, and how many of the programs that could be compared go-mp3 won.\n\n")
+	writeHeader(&b, "| Hz | kbps | programs |", "|---|---|---|", []string{"mean delta", "wins"})
 	for _, row := range summarize(r.Cases) {
-		fmt.Fprintf(&b, "| %d | %d |", row.Kbps, row.Programs)
-		for _, m := range metricNames {
-			fmt.Fprintf(&b, " %s | %d/%d |", fmtMetric(row.MeanDelta[m]), row.Wins[m], row.Programs)
+		fmt.Fprintf(&b, "| %d | %d | %d |", row.SampleRate, row.Kbps, row.Programs)
+		for _, m := range metrics {
+			wins := notMeasured
+			if n := row.Compared[m.name]; n > 0 && m.scored {
+				wins = fmt.Sprintf("%d/%d", row.Wins[m.name], n)
+			}
+			fmt.Fprintf(&b, " %s | %s |", fmtMetric(row.MeanDelta[m.name]), wins)
 		}
 		b.WriteString("\n")
 	}
@@ -171,17 +209,25 @@ func writeMarkdown(w io.Writer, r *report) error {
 	return err
 }
 
-// writeTableHeader emits a Markdown table header: the fixed leading cells,
-// one perMetric group (formatted with the metric name repeated for each %s)
-// per metric, then the separator row.
-func writeTableHeader(b *strings.Builder, lead, leadSep, perMetric, perMetricSep string) {
+// writeHeader emits a Markdown table header: the fixed leading cells, then
+// one "<metric> <suffix>" cell per metric per suffix, then the separator row.
+//
+// It takes the suffixes rather than a format string on purpose. The previous
+// shape passed a format and three arguments to every caller, and the Summary
+// caller's format had only two verbs, so fmt appended %!(EXTRA string=...) to
+// each of its eight header cells and the whole table stopped rendering.
+func writeHeader(b *strings.Builder, lead, leadSep string, suffixes []string) {
 	b.WriteString(lead)
-	for _, m := range metricNames {
-		fmt.Fprintf(b, perMetric, m, m, m) //nolint:govet // the two-%s variant ignores the third argument by design
+	for _, m := range metrics {
+		for _, s := range suffixes {
+			fmt.Fprintf(b, " %s %s |", m.name, s)
+		}
 	}
 	b.WriteString("\n" + leadSep)
-	for range metricNames {
-		b.WriteString(perMetricSep)
+	for range metrics {
+		for range suffixes {
+			b.WriteString("---|")
+		}
 	}
 	b.WriteString("\n")
 }
@@ -210,13 +256,16 @@ type jsonEncoderResult struct {
 	ODG       *float64 `json:"odg"`
 }
 
+// nullable renders a non-finite measurement as JSON null, matching what
+// fmtMetric renders as n/a.
 func nullable(v float64) *float64 {
-	if math.IsNaN(v) || math.IsInf(v, 0) {
+	if !finite(v) {
 		return nil
 	}
 	return &v
 }
 
+// toJSONResult converts one encoder's result to its nullable-float mirror.
 func toJSONResult(r *encoderResult) jsonEncoderResult {
 	m := &r.Metrics
 	return jsonEncoderResult{

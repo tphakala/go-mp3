@@ -70,6 +70,19 @@ func parseFlags(args []string) (*options, error) {
 	if o.seconds <= 0 {
 		return nil, errors.New("-seconds must be positive")
 	}
+	// Validate at setup, not per case. An unvalidated rate reaches
+	// Program.Gen, where a negative one panics in make and 0 makes the
+	// chirp generator's zero-length period loop forever.
+	for _, r := range o.rates {
+		if r != 32000 && r != 44100 && r != 48000 {
+			return nil, fmt.Errorf("-rates: unsupported sample rate %d (want 32000, 44100, or 48000)", r)
+		}
+	}
+	for _, kbps := range o.bitrates {
+		if kbps <= 0 {
+			return nil, fmt.Errorf("-bitrates: %d is not a positive bitrate", kbps)
+		}
+	}
 	if o.programs, err = selectPrograms(*programs, *corpus); err != nil {
 		return nil, err
 	}
@@ -87,8 +100,21 @@ func run(ctx context.Context, args []string, errw io.Writer) int {
 	if tl.lame == "" {
 		return fail(errw, errors.New("lame binary not found (install lame or pass -lame)"))
 	}
-	if err := os.MkdirAll(filepath.Dir(o.out), 0o755); err != nil {
-		return fail(errw, err)
+	// An explicitly named tool that does not resolve is a setup error, not a
+	// reason to quietly omit its column: the user asked for that measurement.
+	for _, t := range []struct{ flag, name, got string }{
+		{o.lame, "-lame", tl.lame}, {o.visqol, "-visqol", tl.visqol}, {o.peaq, "-peaq", tl.peaq},
+	} {
+		if t.flag != "" && t.got == "" {
+			return fail(errw, fmt.Errorf("%s %q not found", t.name, t.flag))
+		}
+	}
+	// Both report directories, before the grid: creating only one meant a
+	// completed run could discard its JSON at the final syscall.
+	for _, p := range []string{o.out, o.jsonOut} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return fail(errw, err)
+		}
 	}
 	workDir := o.work
 	if workDir == "" {
@@ -118,6 +144,8 @@ func run(ctx context.Context, args []string, errw io.Writer) int {
 	if err != nil {
 		return fail(errw, err)
 	}
+	rep.Failed = failed
+	rep.Attempted = len(rep.Cases) + failed
 	if err := writeFile(o.out, func(f *os.File) error { return writeMarkdown(f, rep) }); err != nil {
 		return fail(errw, err)
 	}
@@ -142,12 +170,19 @@ func runGrid(ctx context.Context, tl tools, o *options, workDir string, rep *rep
 			for _, kbps := range o.bitrates {
 				i++
 				spec := caseSpec{Program: p, SampleRate: sr, Kbps: kbps, Seconds: o.seconds}
-				dir := filepath.Join(workDir, fmt.Sprintf("%s-%d-%d", p.Name, sr, kbps))
+				if !p.RunsAt(sr) {
+					logf(errw, "[%d/%d] %s %d Hz %d kbps: skipped, the program has no data at this rate\n", i, total, p.Name, sr, kbps)
+					continue
+				}
+				// Index-prefixed: a corpus file may share a synthetic
+				// program's name, and two cases writing one directory would
+				// overwrite each other's artifacts under -keep.
+				dir := filepath.Join(workDir, fmt.Sprintf("%03d-%s-%d-%d", i, p.Name, sr, kbps))
 				if err := os.MkdirAll(dir, 0o755); err != nil {
 					return failed, err
 				}
 				start := time.Now()
-				res, err := runCase(ctx, tl, dir, spec)
+				res, err := runCase(ctx, tl, dir, spec, errw)
 				if err != nil {
 					failed++
 					logf(errw, "[%d/%d] %s %d Hz %d kbps: FAILED: %v\n", i, total, p.Name, sr, kbps, err)
@@ -234,7 +269,8 @@ func selectPrograms(filter, corpus string) ([]quality.Program, error) {
 		return nil, err
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".wav") {
+		// Regular files only: opening a fifo named *.wav blocks forever.
+		if !e.Type().IsRegular() || !strings.EqualFold(filepath.Ext(e.Name()), ".wav") {
 			continue
 		}
 		p, err := wavProgram(filepath.Join(corpus, e.Name()))
@@ -261,16 +297,12 @@ func wavProgram(path string) (quality.Program, error) {
 		return quality.Program{}, fmt.Errorf("%s: %w", path, err)
 	}
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	return quality.Program{Name: name, Channels: len(ch), Gen: func(rate, _ int) [][]float64 {
-		if rate != sr {
-			out := make([][]float64, len(ch))
-			for c := range out {
-				out[c] = []float64{}
-			}
-			return out
-		}
-		return ch
-	}}, nil
+	return quality.Program{
+		Name:       name,
+		Channels:   len(ch),
+		SampleRate: sr, // a corpus file is measured only at its own rate
+		Gen:        func(_, _ int) [][]float64 { return ch },
+	}, nil
 }
 
 // vcsRevision returns the short VCS revision embedded by the Go toolchain,

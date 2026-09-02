@@ -52,7 +52,10 @@ func lameVersion(ctx context.Context, lame string) string {
 		return unknownVersion
 	}
 	line, _, _ := strings.Cut(string(out), "\n")
-	return strings.TrimSpace(line)
+	if line = strings.TrimSpace(line); line == "" {
+		return unknownVersion // a build that prints its banner elsewhere
+	}
+	return line
 }
 
 // Result-line patterns of the external tools. Both can print nan (PEAQ
@@ -155,5 +158,9 @@ func parseLast(re *regexp.Regexp, out, what string) (float64, error) {
 	if bare == "nan" || bare == "inf" {
 		return math.NaN(), nil
 	}
-	return strconv.ParseFloat(v, 64)
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: unparsable result %q: %w", what, v, err)
+	}
+	return f, nil
 }

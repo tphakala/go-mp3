@@ -92,12 +92,17 @@ func TestGaplessTrimAlignsToEncoderInput(t *testing.T) {
 	var sig, noise float64
 	for i := range nInput {
 		v := float64(math.Float32frombits(binary.LittleEndian.Uint32(raw[i*bytesPerF32Sample:])))
-		d := input[i] - v
+		diff := input[i] - v
 		sig += input[i] * input[i]
-		noise += d * d
+		noise += diff * diff
 	}
 	snr := 10 * math.Log10(sig/noise)
-	if snr < 20 {
-		t.Fatalf("SNR of gapless output against the encoder input = %.1f dB, want >= 20 dB (a misaligned head trim scores near or below 0 dB)", snr)
+	// 40 dB, not 20: measured, the correct 529 scores about 70 dB while a
+	// one-sample slip scores 21.1 dB and dropping the offset entirely scores
+	// -4.1 dB. A 20 dB gate passed 528 and 530 with 1.1 dB to spare, so it
+	// pinned the presence of the offset but not its value.
+	if snr < 40 {
+		t.Fatalf("SNR of gapless output against the encoder input = %.1f dB, want >= 40 dB "+
+			"(a one-sample slip scores about 21 dB, a dropped 529 scores below 0 dB)", snr)
 	}
 }

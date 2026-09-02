@@ -90,8 +90,12 @@ jobs:
       # End-to-end runs of the quality harness against lame (a black-box
       # binary too): proves the harness's pcm decode, alignment (go-mp3 lag
       # == mp3.TotalDelay, LAME lag == 0 after pcm's gapless trim) and metric
-      # plumbing on both arches. The full grid is a local tool (`task
-      # quality`), not a CI gate.
+      # plumbing on both arches. It rides the compat job because that is the
+      # job installing the black-box binaries; in the test job, which installs
+      # none, these tests skip. 10m rather than the shared 20m: the two cases
+      # measure about 15s locally, and each lame call is separately bounded at
+      # 5m inside the harness. The full grid is a local tool (`task quality`),
+      # not a CI gate.
       - run: go test ./tools/quality -run TestQualityHarness -v -timeout 10m
         env:
           MP3_REQUIRE_LAME: '1'

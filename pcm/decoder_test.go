@@ -230,7 +230,8 @@ func TestDecoderStereoByteCount(t *testing.T) {
 	// Gapless trim (default-on) removes the LAME encoder delay and padding from
 	// the emitted audio; subtract them from the independently derived total so
 	// the byte count still catches a double-count or dropped channel.
-	perChannel -= d.Info().EncoderDelay + d.Info().EncoderPadding
+	head, tail := gaplessTrims(d.Info().EncoderDelay, d.Info().EncoderPadding)
+	perChannel -= head + tail
 	want := perChannel * channels * bytesPerS16Sample
 	if len(out) != want {
 		t.Errorf("stereo decoded %d bytes, want %d (%d samples/ch * %d ch * %d bytes)",
@@ -283,7 +284,8 @@ func TestDecoderXingDurationAndFirstFrame(t *testing.T) {
 	const declaredFrames = 316
 	const delay, padding = 576, 576
 	const preTrimSamples = uint64(declaredFrames) * 1152 // MPEG1 Layer III: 1152 samples/frame
-	const wantSamples = preTrimSamples - delay - padding // post-gapless: 362880
+	head, tail := gaplessTrims(delay, padding)
+	wantSamples := preTrimSamples - uint64(head) - uint64(tail) // post-gapless: 362880
 
 	d, err := NewDecoder(bytes.NewReader(raw))
 	if err != nil {
@@ -333,12 +335,11 @@ func TestDecoderXingDurationAndFirstFrame(t *testing.T) {
 	// The first bytes pcm.Decoder emits are therefore frame 1 from per-channel
 	// offset headTrim, not from its start: verify both "tag frame excluded"
 	// and "head trimmed by the full decoder-side offset".
-	headTrim := delay + lameDecoderDelay
-	if headTrim >= n1 {
-		t.Fatalf("test assumes the head-trim (%d) lands within the first frame (%d samples/ch)", headTrim, n1)
+	if head >= n1 {
+		t.Fatalf("test assumes the head-trim (%d) lands within the first frame (%d samples/ch)", head, n1)
 	}
-	wantS16 := make([]int16, (n1-headTrim)*fi1.Channels)
-	convertF32toS16(wantS16, scratch[headTrim*fi1.Channels:n1*fi1.Channels])
+	wantS16 := make([]int16, (n1-head)*fi1.Channels)
+	convertF32toS16(wantS16, scratch[head*fi1.Channels:n1*fi1.Channels])
 	wantBytes := make([]byte, len(wantS16)*bytesPerS16Sample)
 	for i, v := range wantS16 {
 		binary.LittleEndian.PutUint16(wantBytes[i*bytesPerS16Sample:], uint16(v))

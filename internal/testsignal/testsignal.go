@@ -104,15 +104,22 @@ func MultiTone(sampleRate, nSamples int, chPhase, peak float64) []float64 {
 // MPEG-1 Layer III frame size) MP3 frames covering at least one second of
 // audio at sampleRate.
 func FramesForOneSecond(sampleRate int) int {
-	return (sampleRate + 1152 - 1) / 1152
+	return (sampleRate + FrameSize - 1) / FrameSize
 }
 
-// FrameSize is the MPEG-1 Layer III frame size in samples per channel,
-// duplicated here (the root mp3 package cannot be imported from this leaf
-// without an import cycle through its tests) so the click programs below
-// can be expressed in frames, the unit the encoder's attack detector and
-// the compat gate reason in.
-const FrameSize = 1152
+// FrameSize is the MPEG-1 Layer III frame size in samples per channel, and
+// ClickPeriodFrames and ClickBurstFrames are the click cadence both the
+// compat gate and the tools/quality corpus drive block switching with.
+//
+// FrameSize duplicates the root package's mp3.FrameSize because importing it
+// here would cycle: internal/enc's own in-package tests import this package,
+// and the root mp3 package imports internal/enc. The root's compat_test.go
+// asserts the two stay equal.
+const (
+	FrameSize         = 1152
+	ClickPeriodFrames = 4
+	ClickBurstFrames  = 1
+)
 
 // ClickTrain returns nSamples of mono click-train content: silence with a
 // loud LCG-noise burst (amplitude 0.8, seed 0xC1CC7A31) every
@@ -121,7 +128,10 @@ const FrameSize = 1152
 // drives an encoder's attack detector repeatedly; the compat gate's
 // block-switching programs (root compat_test.go) and the tools/quality
 // corpus both consume it, so this is the single source of truth for the
-// seed and amplitude.
+// float32 click-train program's seed and amplitude. A separate int32 mirror
+// in internal/dec/encx_fuzz_test.go repeats the same constants for the same
+// reason IdenticalNoise's does: a fuzz seed cannot double-round through this
+// float32 helper.
 func ClickTrain(nSamples, periodFrames, burstFrames int) []float32 {
 	x := make([]float32, nSamples)
 	seed := uint64(0xC1CC7A31)

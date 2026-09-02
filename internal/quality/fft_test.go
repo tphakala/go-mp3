@@ -33,11 +33,7 @@ func TestFFTMatchesDFT(t *testing.T) {
 	const n = 128
 	re := make([]float64, n)
 	im := make([]float64, n)
-	seed := uint64(12345)
-	for i := range re {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		re[i] = float64(seed>>11)/float64(1<<53)*2 - 1
-	}
+	copy(re, genNoise(n, 1, 12345))
 	wantRe := make([]float64, n)
 	wantIm := make([]float64, n)
 	for k := range n {
@@ -82,10 +78,17 @@ func TestHannWindowEndpoints(t *testing.T) {
 	}
 }
 
-func TestNextPow2(t *testing.T) {
-	for _, c := range []struct{ in, want int }{{0, 1}, {1, 1}, {2, 2}, {3, 4}, {1000, 1024}, {2048, 2048}} {
-		if got := nextPow2(c.in); got != c.want {
-			t.Fatalf("nextPow2(%d) = %d, want %d", c.in, got, c.want)
-		}
+// TestFFTRejectsMismatchedLengths covers the other two arms of fft's guard,
+// which the non-power-of-two case leaves untouched.
+func TestFFTRejectsMismatchedLengths(t *testing.T) {
+	for _, c := range []struct{ nRe, nIm int }{{8, 4}, {0, 0}} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("fft(%d, %d) must panic", c.nRe, c.nIm)
+				}
+			}()
+			fft(make([]float64, c.nRe), make([]float64, c.nIm))
+		}()
 	}
 }

@@ -28,10 +28,12 @@ The encoder in internal/enc is an independent implementation from ISO/IEC
 codec source (LAME, Shine, dist10, libmad, mpg123, FFmpeg, Helix) is
 consulted during its development. LAME, ffmpeg, and mpg123 binaries are
 used only as black-box compatibility and quality references. The
-`tools/quality` harness drives the `lame` binary (and, when present, the
-`visqol` and `peaq-odg` binaries) through `os/exec` only; no encoder source
-is consulted, and the harness decodes both encoders' output through this
-project's own decoder.
+`tools/quality` harness drives the `lame` binary (and, when present,
+`ffmpeg` for resampling plus the `visqol` and `peaq-odg` scorers) through
+`os/exec` only; no source of any of them is consulted, and the harness
+decodes both encoders' output through this project's own decoder. Its
+metrics in `internal/quality` are independent implementations of standard
+published definitions.
 
 Its normative tables are transcribed directly from the standard: Table B.7
 Huffman code tables (internal/enc/hufftables.go), Table B.8 scalefactor

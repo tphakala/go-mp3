@@ -83,11 +83,18 @@ const (
 // construction from the first audio frame; the remaining fields are filled by
 // later tasks (Xing/VBRI/LAME parsing) and stay at their zero values here.
 type Info struct {
-	SampleRate     int    // samples per second
-	Channels       int    // number of channels (1 or 2)
-	TotalSamples   uint64 // per channel; 0 when unknown (no length tag)
-	EncoderDelay   int    // LAME encoder delay in samples; 0 if absent
-	EncoderPadding int    // LAME encoder padding in samples; 0 if absent
+	SampleRate   int    // samples per second
+	Channels     int    // number of channels (1 or 2)
+	TotalSamples uint64 // per channel; 0 when unknown (no length tag)
+	// EncoderDelay and EncoderPadding are the RAW LAME tag fields, 0 when
+	// absent. They are not the window the decoder applies: the tag's delay
+	// covers the encoder side only, so the head trim is EncoderDelay plus the
+	// standard 529-sample synthesis delay and the tail trim is
+	// EncoderPadding less that same 529 (never below zero), which is what
+	// ffmpeg and mpg123 apply. A caller reconstructing the trim from these
+	// two fields alone would disagree with the decoder by 529 at each end.
+	EncoderDelay   int
+	EncoderPadding int
 }
 
 // Duration reports the stream's playing time, or 0 when TotalSamples is
@@ -802,7 +809,18 @@ func (d *Decoder) estimateCBRDuration(r io.Reader) {
 	if frames <= 0 {
 		return
 	}
-	d.info.TotalSamples = uint64(frames) * uint64(samplesPerFrame(d.info.SampleRate))
+	total := uint64(frames) * uint64(samplesPerFrame(d.info.SampleRate))
+	// A LAME tag with no frame count still armed the head trim, and those
+	// samples are never emitted, so the byte-length estimate has to lose them
+	// too or the documented "emitted count equals TotalSamples" invariant
+	// breaks by exactly gaplessStart. The tail stays open on this path
+	// (gaplessEnd is math.MaxUint64), so there is no tail term.
+	if total > d.gaplessStart {
+		total -= d.gaplessStart
+	} else {
+		total = 0
+	}
+	d.info.TotalSamples = total
 }
 
 // packOutput packs the given interleaved float32 samples (a sub-slice of

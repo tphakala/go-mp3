@@ -4,6 +4,8 @@ import (
 	"math"
 	"slices"
 	"testing"
+
+	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
 // genTone returns n samples of a sine at f Hz with the given amplitude.
@@ -15,12 +17,12 @@ func genTone(n, sampleRate int, f, amp float64) []float64 {
 	return x
 }
 
-// genNoise returns deterministic uniform noise in [-amp, amp].
+// genNoise returns deterministic uniform noise in [-amp, amp], through the
+// project's shared generator rather than a local copy of its constants.
 func genNoise(n int, amp float64, seed uint64) []float64 {
 	x := make([]float64, n)
 	for i := range x {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		x[i] = (float64(seed>>11)/float64(1<<53)*2 - 1) * amp
+		x[i] = testsignal.LCGSigned(&seed) * amp
 	}
 	return x
 }

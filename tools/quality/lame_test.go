@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -36,7 +37,7 @@ func TestQualityHarnessLame(t *testing.T) {
 		t.Fatal("tone-click program missing")
 	}
 	spec := caseSpec{Program: prog, SampleRate: 44100, Kbps: 128, Seconds: 2}
-	res, err := runCase(t.Context(), tl, t.TempDir(), spec)
+	res, err := runCase(t.Context(), tl, t.TempDir(), spec, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,9 +77,12 @@ func TestQualityHarnessLame(t *testing.T) {
 // alignment path.
 func TestQualityHarnessStereoShortTail(t *testing.T) {
 	lame := requireLame(t)
-	prog, _ := quality.ProgramByName("stereo-decorrelated")
+	prog, ok := quality.ProgramByName("stereo-decorrelated")
+	if !ok {
+		t.Fatal("stereo-decorrelated program missing")
+	}
 	// 1 s at 44.1 kHz is 38.28 frames: the last go-mp3 frame is short.
-	res, err := runCase(t.Context(), tools{lame: lame}, t.TempDir(), caseSpec{Program: prog, SampleRate: 44100, Kbps: 192, Seconds: 1})
+	res, err := runCase(t.Context(), tools{lame: lame}, t.TempDir(), caseSpec{Program: prog, SampleRate: 44100, Kbps: 192, Seconds: 1}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,10 +130,13 @@ func TestAlignTrim(t *testing.T) {
 		ref[1][i] = -ref[0][i]
 	}
 	deg := [][]float64{make([]float64, 6200), make([]float64, 6200)}
-	copy(deg[0][1057:], ref[0])
-	copy(deg[1][1057:], ref[1])
+	// An arbitrary lag, deliberately not mp3.TotalDelay: this is a unit test
+	// of the trim arithmetic, not of the encoder's delay.
+	const testLag = 733
+	copy(deg[0][testLag:], ref[0])
+	copy(deg[1][testLag:], ref[1])
 	r, d, lag := alignTrim(ref, deg)
-	if lag != 1057 || len(r[0]) != 5000 || len(d[1]) != 5000 {
+	if lag != testLag || len(r[0]) != 5000 || len(d[1]) != 5000 {
 		t.Fatalf("lag=%d lens=%d/%d", lag, len(r[0]), len(d[1]))
 	}
 	if quality.SNR(r[1], d[1]) != quality.SNRCap {

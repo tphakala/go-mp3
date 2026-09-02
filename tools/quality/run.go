@@ -28,6 +28,11 @@ import (
 // cmdTimeout bounds every external binary invocation.
 const cmdTimeout = 5 * time.Minute
 
+// mp3TotalDelay is this project's own encoder-plus-decoder algorithmic delay,
+// the lag a correctly aligned tagless stream measures at. Named here so the
+// report's legend can state it without importing the root package twice.
+const mp3TotalDelay = mp3.TotalDelay
+
 // alignment search window handed to quality.AlignLag: a small negative
 // allowance for an over-trimmed stream, and well past any MP3 codec delay
 // on the positive side.
@@ -68,7 +73,7 @@ type caseResult struct {
 // runCase executes one comparison inside dir, which must exist and is where
 // every intermediate file (reference WAV, both MP3 streams, aligned WAVs for
 // the external tools) is written.
-func runCase(ctx context.Context, tl tools, dir string, spec caseSpec) (caseResult, error) {
+func runCase(ctx context.Context, tl tools, dir string, spec caseSpec, errw io.Writer) (caseResult, error) {
 	raw := spec.Program.Gen(spec.SampleRate, spec.SampleRate*spec.Seconds)
 	if len(raw) == 0 || len(raw[0]) == 0 {
 		return caseResult{}, errors.New("empty program at this sample rate")
@@ -96,11 +101,11 @@ func runCase(ctx context.Context, tl tools, dir string, spec caseSpec) (caseResu
 	}
 
 	res := caseResult{Program: spec.Program.Name, Channels: len(ref), SampleRate: spec.SampleRate, Kbps: spec.Kbps}
-	res.GoMP3, err = measure(ctx, tl, dir, "go-mp3", "gomp3", ref, goStream, spec.SampleRate)
+	res.GoMP3, err = measure(ctx, tl, dir, "go-mp3", "gomp3", ref, goStream, spec.SampleRate, errw)
 	if err != nil {
 		return caseResult{}, err
 	}
-	res.LAME, err = measure(ctx, tl, dir, "lame", "lame", ref, lameStream, spec.SampleRate)
+	res.LAME, err = measure(ctx, tl, dir, "lame", "lame", ref, lameStream, spec.SampleRate, errw)
 	if err != nil {
 		return caseResult{}, err
 	}
@@ -109,8 +114,8 @@ func runCase(ctx context.Context, tl tools, dir string, spec caseSpec) (caseResu
 
 // measure decodes, aligns, and scores one encoder's stream against ref. The
 // external perceptual tools run only when configured; their failures are
-// reported on stderr and leave the value NaN rather than failing the case.
-func measure(ctx context.Context, tl tools, dir, name, base string, ref [][]float64, stream []byte, sampleRate int) (encoderResult, error) {
+// reported through errw and leave the value NaN rather than failing the case.
+func measure(ctx context.Context, tl tools, dir, name, base string, ref [][]float64, stream []byte, sampleRate int, errw io.Writer) (encoderResult, error) {
 	deg, err := decodeStream(stream)
 	if err != nil {
 		return encoderResult{}, fmt.Errorf("%s decode: %w", name, err)
@@ -119,12 +124,20 @@ func measure(ctx context.Context, tl tools, dir, name, base string, ref [][]floa
 		return encoderResult{}, fmt.Errorf("%s: decoded %d channels, want %d", name, len(deg), len(ref))
 	}
 	refA, degA, lag := alignTrim(ref, deg)
+	if len(refA) == 0 || len(refA[0]) < quality.SegSNRSegment {
+		// Nothing meaningful overlaps. Scoring this would report the metrics'
+		// degenerate-input values as a measurement, so fail the case instead.
+		return encoderResult{}, fmt.Errorf("%s: alignment at lag %d left %d overlapping samples", name, lag, len(refA[0]))
+	}
 	r := encoderResult{Name: name, Lag: lag, Bytes: len(stream), MOS: math.NaN(), ODG: math.NaN()}
 	r.Metrics = quality.Compare(refA, degA, sampleRate)
 	if tl.visqol == "" && tl.peaq == "" {
 		return r, nil
 	}
-	refWav, degWav := "ref-aligned.wav", base+"-aligned.wav"
+	// The reference is aligned per encoder (the lags differ), so its file name
+	// is namespaced too: a shared name would leave -keep holding only the last
+	// encoder's copy, and the other's scores unreproducible.
+	refWav, degWav := base+"-ref-aligned.wav", base+"-aligned.wav"
 	if err := writeWAVFile(filepath.Join(dir, refWav), sampleRate, refA); err != nil {
 		return encoderResult{}, err
 	}
@@ -135,14 +148,14 @@ func measure(ctx context.Context, tl tools, dir, name, base string, ref [][]floa
 		if v, err := runVisqol(ctx, tl, dir, refWav, degWav, sampleRate); err == nil {
 			r.MOS = v
 		} else {
-			fmt.Fprintf(os.Stderr, "warning: visqol %s/%s: %v\n", filepath.Base(dir), name, err)
+			logf(errw, "warning: visqol %s/%s: %v\n", filepath.Base(dir), name, err)
 		}
 	}
 	if tl.peaq != "" {
 		if v, err := runPEAQ(ctx, tl, dir, refWav, degWav, sampleRate); err == nil {
 			r.ODG = v
 		} else {
-			fmt.Fprintf(os.Stderr, "warning: peaq %s/%s: %v\n", filepath.Base(dir), name, err)
+			logf(errw, "warning: peaq %s/%s: %v\n", filepath.Base(dir), name, err)
 		}
 	}
 	return r, nil

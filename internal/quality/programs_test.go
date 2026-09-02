@@ -58,14 +58,20 @@ func TestProgramByName(t *testing.T) {
 // the programs designed to carry them, and none in the steady ones.
 func TestTransientProgramsHaveAttacks(t *testing.T) {
 	for _, name := range []string{"click-train", "tone-click", "bird-chirps", "stereo-wide"} {
-		p, _ := ProgramByName(name)
+		p, ok := ProgramByName(name)
+		if !ok {
+			t.Fatalf("program %q missing", name)
+		}
 		x := p.Gen(44100, 3*44100)
 		if _, events := PreEcho(x[0], x[0], 44100); events == 0 {
 			t.Fatalf("%s: PreEcho found no attacks", name)
 		}
 	}
 	for _, name := range []string{"multitone", "sweep"} {
-		p, _ := ProgramByName(name)
+		p, ok := ProgramByName(name)
+		if !ok {
+			t.Fatalf("program %q missing", name)
+		}
 		x := p.Gen(44100, 3*44100)
 		if _, events := PreEcho(x[0], x[0], 44100); events != 0 {
 			t.Fatalf("%s: PreEcho found %d attacks in a steady program", name, events)

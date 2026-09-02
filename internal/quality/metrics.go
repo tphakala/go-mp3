@@ -60,6 +60,10 @@ type Metrics struct {
 // for the pair.
 func Compare(ref, deg [][]float64, sampleRate int) Metrics {
 	var m Metrics
+	if len(ref) == 0 || len(deg) != len(ref) {
+		return Metrics{SNR: math.NaN(), BandSNR: math.NaN(), SegSNR: math.NaN(),
+			LSD: math.NaN(), PreEcho: math.NaN()}
+	}
 	nch := float64(len(ref))
 	for c := range ref {
 		m.SNR += SNR(ref[c], deg[c]) / nch
@@ -94,8 +98,14 @@ func energies(ref, deg []float64, lo, hi int) (sig, errE float64) {
 	return sig, errE
 }
 
-// snrFrom converts energies to dB with the cap.
+// snrFrom converts energies to dB with the cap. A reference with no energy
+// at all yields NaN rather than the cap: there was nothing to measure, and
+// reporting the top of the scale for that would turn "no data" into "perfect"
+// (the sibling metrics all return NaN for the same degenerate input).
 func snrFrom(sig, errE float64) float64 {
+	if sig <= 0 {
+		return math.NaN()
+	}
 	if errE == 0 || errE <= epsilon*sig {
 		return SNRCap
 	}
@@ -114,6 +124,9 @@ func SNR(ref, deg []float64) float64 {
 // mean-square above the active floor) of the per-segment SNR clamped to
 // [SegSNRMin, SegSNRMax]. It returns NaN when no segment is active.
 func SegmentalSNR(ref, deg []float64, seg int) float64 {
+	if seg <= 0 {
+		return math.NaN() // a non-positive segment length would not terminate
+	}
 	n := min(len(ref), len(deg))
 	var sum float64
 	var count int
@@ -182,6 +195,13 @@ func SpectralMetrics(ref, deg []float64, sampleRate int) (bandSNR, lsd float64) 
 	for i := range errSig {
 		errSig[i] = ref[i] - deg[i]
 	}
+	if len(refPow) == 0 {
+		// Shorter than one STFT frame: nothing was transformed, so neither
+		// figure is defined. Returning the SNR cap here would report a
+		// too-short input as a perfect match.
+		return math.NaN(), math.NaN()
+	}
+
 	var sig, errE float64
 	f := 0
 	stftFrames(errSig, func(p []float64) {

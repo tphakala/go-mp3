@@ -33,3 +33,47 @@ func TestAlignLagShortDeg(t *testing.T) {
 		t.Fatalf("AlignLag = %d, want 100", got)
 	}
 }
+
+// TestAlignLagPeriodicProgram is the regression gate for the periodic-peak
+// ambiguity. multitone is a 440 Hz fundamental plus two harmonics, so its
+// correlation peaks repeat every 100.2 samples at 44.1 kHz and a raw argmax
+// over a longer-than-alignSamples reference picks an alias: this case
+// returned 3262 (the true lag plus exactly 22 periods) before the earliest
+// near-peak rule, which is what made the harness measure multitone at 27.66 dB
+// instead of 67.43 dB.
+func TestAlignLagPeriodicProgram(t *testing.T) {
+	const sr, lag = 44100, 1057
+	p, ok := ProgramByName("multitone")
+	if !ok {
+		t.Fatal("multitone program missing")
+	}
+	// Longer than alignSamples, so the correlation window is a strict prefix
+	// and the aliases are not resolved by the window running out.
+	ref := p.Gen(sr, 6*sr)[0]
+	deg := make([]float64, len(ref)+lag)
+	copy(deg[lag:], ref)
+	if got := AlignLag(ref, deg, -128, 4096); got != lag {
+		t.Fatalf("AlignLag on a periodic program = %d, want %d", got, lag)
+	}
+}
+
+// TestAlignLagUncorrelated: a silent or anti-correlated pair has no positive
+// peak, so the lag must be 0 rather than an arbitrary end of the search range
+// (which would silently trim real samples off the reference).
+func TestAlignLagUncorrelated(t *testing.T) {
+	const n = 1 << 14
+	zeros := make([]float64, n)
+	if got := AlignLag(zeros, zeros, -128, 4096); got != 0 {
+		t.Fatalf("silent pair: AlignLag = %d, want 0", got)
+	}
+	sig := genNoise(n, 0.5, 45)
+	if got := AlignLag(sig, zeros, -128, 4096); got != 0 {
+		t.Fatalf("silent deg: AlignLag = %d, want 0", got)
+	}
+	if got := AlignLag(sig, sig, -128, 4096); got != 0 {
+		t.Fatalf("identical pair: AlignLag = %d, want 0", got)
+	}
+	if got := AlignLag(nil, sig, -128, 4096); got != 0 {
+		t.Fatalf("empty ref: AlignLag = %d, want 0", got)
+	}
+}

@@ -71,7 +71,7 @@ func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
 	// directly. rawTarget >= gaplessStart (sampleIndex >= 0), so the head trim is
 	// already satisfied at the landing sample.
 	spf := int64(samplesPerFrame(d.info.SampleRate))
-	rawTarget := sampleIndex + int64(d.gaplessStart) //nolint:gosec // G115: gaplessStart is the small LAME delay.
+	rawTarget := sampleIndex + int64(d.gaplessStart) //nolint:gosec // G115: gaplessStart is the small LAME delay plus the 529-sample decoder delay.
 	if rawTarget < sampleIndex {
 		// int64 overflow: sampleIndex plus the (small) gapless delay wrapped past
 		// math.MaxInt64. Only an unknown length (TotalSamples == 0) reaches here
@@ -115,7 +115,7 @@ func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
 		// The stream ends before the target frame: a seek past the true end of an
 		// unknown-length stream (a known length would have clamped above). Land at
 		// the end, reporting the playable samples that do exist.
-		end := avail*spf - int64(d.gaplessStart) //nolint:gosec // G115: small delay.
+		end := avail*spf - int64(d.gaplessStart) //nolint:gosec // G115: the small LAME delay plus the 529-sample decoder delay.
 		if end < 0 {
 			end = 0
 		}
@@ -314,7 +314,7 @@ func (d *Decoder) primeAndLand(primeFrame, targetFrame, intra, spf int64) (int64
 		d.pending = nil
 	}
 
-	return rawTarget - int64(d.gaplessStart), nil //nolint:gosec // G115: gaplessStart is the small LAME delay.
+	return rawTarget - int64(d.gaplessStart), nil //nolint:gosec // G115: gaplessStart is the small LAME delay plus the 529-sample decoder delay.
 }
 
 // seekToEnd positions the decoder at end-of-stream so the next read is io.EOF,

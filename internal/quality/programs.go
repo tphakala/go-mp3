@@ -11,18 +11,21 @@ import (
 type Program struct {
 	Name     string
 	Channels int
+	// SampleRate pins a program to one rate, and is 0 for the synthetic
+	// programs, which generate at any rate. A corpus WAV is only meaningful
+	// at its own rate, and resampling it would change what is measured, so
+	// the caller skips the rates it does not serve rather than failing them.
+	SampleRate int
 	// Gen returns Channels planar float64 channels of nSamples samples each,
-	// every sample in [-1, 1], identical on every call.
+	// every sample in [-1, 1], identical on every call. A program with a
+	// pinned SampleRate ignores both arguments and returns its own samples.
 	Gen func(sampleRate, nSamples int) [][]float64
 }
 
-// clickPeriodFrames and clickBurstFrames are the click-program cadence, the
-// same 4-frame period and 1-frame burst the compat gate drives block
-// switching with.
-const (
-	clickPeriodFrames = 4
-	clickBurstFrames  = 1
-)
+// RunsAt reports whether the program has data at sampleRate.
+func (p Program) RunsAt(sampleRate int) bool {
+	return p.SampleRate == 0 || p.SampleRate == sampleRate
+}
 
 // Programs returns the synthetic corpus in report order: eight mono
 // programs spanning tonal, noisy, transient, swept, bird-like, and
@@ -33,20 +36,25 @@ func Programs() []Program {
 		return Program{Name: name, Channels: 1, Gen: func(sr, n int) [][]float64 { return [][]float64{gen(sr, n)} }}
 	}
 	return []Program{
-		mono("multitone", func(sr, n int) []float64 { return testsignal.MultiTone(sr, n, 0, 0.7) }),
+		mono("multitone", func(sr, n int) []float64 {
+			return withSlowEnvelope(testsignal.MultiTone(sr, n, 0, 0.7), sr)
+		}),
 		mono("harmonic-vibrato", genHarmonicVibrato),
 		mono("pink-noise", genPinkNoise),
 		mono("click-train", func(_, n int) []float64 {
-			return toF64(testsignal.ClickTrain(n, clickPeriodFrames, clickBurstFrames))
+			return toF64(testsignal.ClickTrain(n, testsignal.ClickPeriodFrames, testsignal.ClickBurstFrames))
 		}),
 		mono("tone-click", func(sr, n int) []float64 {
-			return toF64(testsignal.ToneClick(sr, n, clickPeriodFrames, clickBurstFrames))
+			return toF64(testsignal.ToneClick(sr, n, testsignal.ClickPeriodFrames, testsignal.ClickBurstFrames))
 		}),
 		mono("sweep", genSweep),
 		mono("bird-chirps", genBirdChirps),
 		mono("speech-like", genSpeechLike),
 		{Name: "stereo-decorrelated", Channels: 2, Gen: func(sr, n int) [][]float64 {
-			return [][]float64{testsignal.MultiTone(sr, n, 0, 0.7), testsignal.MultiTone(sr, n, 0.37, 0.7)}
+			return [][]float64{
+				withSlowEnvelope(testsignal.MultiTone(sr, n, 0, 0.7), sr),
+				withSlowEnvelope(testsignal.MultiTone(sr, n, 0.37, 0.7), sr),
+			}
 		}},
 		{Name: "stereo-near-identical", Channels: 2, Gen: func(sr, n int) [][]float64 {
 			l := genHarmonicVibrato(sr, n)
@@ -82,6 +90,31 @@ func toF64(x []float32) []float64 {
 }
 
 func clamp1(v float64) float64 { return max(-1, min(1, v)) }
+
+// envelopeHz is the amplitude-modulation rate withSlowEnvelope applies. It is
+// slow enough not to disturb what a tonal program measures, and fast enough
+// that a whole-period misalignment is visible within one correlation window.
+const envelopeHz = 0.7
+
+// withSlowEnvelope multiplies x in place by a slow amplitude modulation
+// between 0.45 and 1.0, and returns it.
+//
+// This exists for the aligner, not for the audio. A perfectly stationary
+// periodic program correlates almost identically at every lag one signal
+// period apart, so its true delay is not recoverable from cross-correlation:
+// the harness measured a 440 Hz program at 3262 samples instead of 1057
+// (exactly 22 periods late) and then scored every metric on misaligned audio,
+// reporting 27.66 dB where the true alignment gives 67.43 dB. An envelope
+// makes the correlation peak unique. Every other program in the corpus
+// already carries such a feature (vibrato, transients, a sweep, or noise) and
+// aligns correctly without help; these two were the only stationary ones.
+func withSlowEnvelope(x []float64, sr int) []float64 {
+	for i := range x {
+		t := float64(i) / float64(sr)
+		x[i] *= 0.725 + 0.275*math.Sin(2*math.Pi*envelopeHz*t)
+	}
+	return x
+}
 
 // genHarmonicVibrato: 220 Hz with 12 harmonics at 1/k, 5.5 Hz vibrato of
 // +/-1 %, 0.5 Hz amplitude modulation between 0.3 and 1.0, peak 0.6.
@@ -135,13 +168,20 @@ func genPinkNoise(_, n int) []float64 {
 // amplitude 0.5.
 func genSweep(sr, n int) []float64 {
 	x := make([]float64, n)
-	const f0, f1 = 50.0, 18000.0
+	if sr <= 0 || n <= 0 {
+		return x
+	}
+	// The top of the sweep is held below Nyquist: at 32 kHz a fixed 18 kHz
+	// end folds back, so the REFERENCE program itself would alias and skew
+	// both encoders' bandwidth and band-limited SNR at that rate.
+	const f0 = 50.0
+	f1 := min(18000.0, 0.45*float64(sr))
 	dur := float64(n) / float64(sr)
 	k := math.Log(f1 / f0)
+	amp := 2 * math.Pi * f0 * dur / k
 	for i := range x {
 		t := float64(i) / float64(sr)
-		phase := 2 * math.Pi * f0 * dur / k * (math.Exp(k*t/dur) - 1)
-		x[i] = 0.5 * math.Sin(phase)
+		x[i] = 0.5 * math.Sin(amp*(math.Exp(k*t/dur)-1))
 	}
 	return x
 }
@@ -154,15 +194,23 @@ func genBirdChirps(sr, n int) []float64 {
 	period := sr / 4
 	length := sr * 60 / 1000
 	attack := sr * 3 / 1000
+	if period <= 0 || length <= 0 || attack <= 0 {
+		return x // a rate too low to carry a chirp; the loop would not advance
+	}
+	decay := float64(sr) * 0.040
 	for start := 0; start+length <= n; start += period {
 		phase := 0.0
 		for i := range length {
 			u := float64(i) / float64(length)
 			f := 2000 + 4000*u
 			phase += 2 * math.Pi * f / float64(sr)
-			env := math.Exp(-float64(i-attack) / (float64(sr) * 0.040))
+			// if/else, not compute-then-overwrite: the Exp is real work and
+			// the attack ramp discards it for the first attack samples.
+			var env float64
 			if i < attack {
 				env = float64(i) / float64(attack)
+			} else {
+				env = math.Exp(-float64(i-attack) / decay)
 			}
 			x[start+i] = 0.6 * env * math.Sin(phase)
 		}

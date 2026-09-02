@@ -60,7 +60,9 @@ func WriteWAV16(w io.Writer, sampleRate int, ch [][]float64) error {
 	// int64 arithmetic so a long file cannot wrap the size on a 32-bit int
 	// before the RIFF field check.
 	dataBytes64 := int64(n) * int64(nch) * 2
-	if dataBytes64 > math.MaxUint32-(wavHeaderBytes-8) {
+	// Bounded by MaxInt32 as well as by the RIFF field: the narrowing below
+	// would otherwise wrap negative on a 32-bit int and panic in make.
+	if dataBytes64 > math.MaxInt32 || dataBytes64 > math.MaxUint32-(wavHeaderBytes-8) {
 		return errors.New("quality: WriteWAV16 payload exceeds the RIFF 32-bit size field")
 	}
 	dataBytes := int(dataBytes64)
@@ -107,11 +109,16 @@ func ReadWAV(r io.Reader) (sampleRate int, ch [][]float64, err error) {
 	haveFmt := false
 	for pos := 12; pos+8 <= len(b); {
 		id := string(b[pos : pos+4])
-		size := int(binary.LittleEndian.Uint32(b[pos+4:]))
+		// int64 throughout: a declared size at or above 2^31 is negative in a
+		// 32-bit int, which slips past the truncation clamp below and panics
+		// on body[:size]. ReadWAV parses user-supplied files (the harness's
+		// -corpus flag), so a hostile size must clamp, not crash.
+		size64 := int64(binary.LittleEndian.Uint32(b[pos+4:]))
 		body := b[pos+8:]
-		if size > len(body) {
-			size = len(body) // tolerate a truncated final chunk
+		if size64 > int64(len(body)) {
+			size64 = int64(len(body)) // tolerate a truncated final chunk
 		}
+		size := int(size64)
 		body = body[:size]
 		switch id {
 		case "fmt ":
@@ -183,7 +190,16 @@ func wavSampleReader(format, bits int) (conv func([]byte) float64, bytesPer int,
 	case format == wavFormatPCM && bits == 32:
 		return func(p []byte) float64 { return float64(int32(binary.LittleEndian.Uint32(p))) / 2147483648 }, 4, nil
 	case format == wavFormatIEEEFloat && bits == 32:
-		return func(p []byte) float64 { return float64(math.Float32frombits(binary.LittleEndian.Uint32(p))) }, 4, nil
+		// Float WAVs are not bound to [-1, 1] by their format the way the PCM
+		// variants are, and a NaN would convert to an implementation-defined
+		// int16 downstream, so clamp here to honour ReadWAV's documented range.
+		return func(p []byte) float64 {
+			v := float64(math.Float32frombits(binary.LittleEndian.Uint32(p)))
+			if math.IsNaN(v) {
+				return 0
+			}
+			return max(-1, min(1, v))
+		}, 4, nil
 	default:
 		return nil, 0, fmt.Errorf("quality: unsupported WAV format tag %d with %d bits", format, bits)
 	}

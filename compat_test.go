@@ -146,17 +146,33 @@ func compatEncodeStereoStream(t *testing.T, sampleRate, kbps int, left, right []
 	return stream, e.Stats()
 }
 
-// compatClickPeriodFrames and compatClickBurstFrames define the cadence of
-// the click-train and tone+click programs below: a loud burst every
+// compatClickPeriodFrames and compatClickBurstFrames are the cadence of the
+// click-train and tone+click programs below: a loud burst every
 // compatClickPeriodFrames frames, each burst compatClickBurstFrames frames
 // long. This mirrors internal/dec/encx_shortcalib_test.go's
 // buildShortCalibProgram (a single mid-stream click), generalized to a
 // periodic train so the compat grid actually exercises block switching
 // repeatedly across the stream rather than once.
+//
+// They alias testsignal's pair rather than restating the numbers: the
+// tools/quality corpus drives the same programs at the same cadence, and two
+// independent copies would let the two consumers drift apart silently.
 const (
-	compatClickPeriodFrames = 4
-	compatClickBurstFrames  = 1
+	compatClickPeriodFrames = testsignal.ClickPeriodFrames
+	compatClickBurstFrames  = testsignal.ClickBurstFrames
 )
+
+// TestFrameSizeMatchesTestsignal pins the duplicated frame size. The click
+// programs are SIZED in testsignal.FrameSize and SLICED below by
+// mp3.FrameSize, so the compat grid silently stops testing what it claims to
+// if the two ever diverge. testsignal cannot import the root package (that
+// would cycle through internal/enc's in-package tests), so the guard lives
+// here, where both are already in scope.
+func TestFrameSizeMatchesTestsignal(t *testing.T) {
+	if testsignal.FrameSize != mp3.FrameSize {
+		t.Fatalf("testsignal.FrameSize = %d, mp3.FrameSize = %d", testsignal.FrameSize, mp3.FrameSize)
+	}
+}
 
 // compatClickTrain returns nSamples of mono click-train content: silence
 // with a loud LCG-noise burst every compatClickPeriodFrames frames, each

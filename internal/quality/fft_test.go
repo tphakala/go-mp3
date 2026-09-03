@@ -92,3 +92,24 @@ func TestFFTRejectsMismatchedLengths(t *testing.T) {
 		}()
 	}
 }
+
+// TestStftTwiddlesMatchInline pins that the precomputed stftTwiddles are
+// bit-for-bit the cos/sin values fft's inline path computes for the same stage
+// and index. That equality is what makes the table-driven transform of stftSize
+// produce identical output to the inline one; a drift here would shift every
+// STFT-derived metric silently.
+func TestStftTwiddlesMatchInline(t *testing.T) {
+	for stage, size := 0, 2; size <= stftSize; stage, size = stage+1, size<<1 {
+		half := size >> 1
+		if got := len(stftTwiddles[stage]); got != half {
+			t.Fatalf("stage %d (size %d): table has %d factors, want %d", stage, size, got, half)
+		}
+		step := -2 * math.Pi / float64(size)
+		for k := range half {
+			wantRe, wantIm := math.Cos(step*float64(k)), math.Sin(step*float64(k))
+			if got := stftTwiddles[stage][k]; got.re != wantRe || got.im != wantIm {
+				t.Fatalf("stage %d k %d: table (%v, %v), inline (%v, %v)", stage, k, got.re, got.im, wantRe, wantIm)
+			}
+		}
+	}
+}

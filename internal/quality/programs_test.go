@@ -54,6 +54,25 @@ func TestProgramByName(t *testing.T) {
 	}
 }
 
+// TestRunsAt pins the two halves of the rate contract: a synthetic program
+// (SampleRate 0) runs at every rate, a corpus program pinned to one rate runs
+// only there. The grid skips the rates a program does not serve.
+func TestRunsAt(t *testing.T) {
+	synthetic := Program{SampleRate: 0}
+	for _, sr := range []int{32000, 44100, 48000} {
+		if !synthetic.RunsAt(sr) {
+			t.Fatalf("a SampleRate-0 program must run at %d Hz", sr)
+		}
+	}
+	pinned := Program{SampleRate: 44100}
+	if !pinned.RunsAt(44100) {
+		t.Fatal("a pinned program must run at its own rate")
+	}
+	if pinned.RunsAt(48000) {
+		t.Fatal("a pinned program must not run at a different rate")
+	}
+}
+
 // TestTransientProgramsHaveAttacks: the pre-echo metric must find attacks in
 // the programs designed to carry them, and none in the steady ones.
 func TestTransientProgramsHaveAttacks(t *testing.T) {

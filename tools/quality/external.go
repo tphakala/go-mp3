@@ -75,6 +75,11 @@ func runTool(ctx context.Context, dir, bin string, args ...string) (string, erro
 	cmd.Dir = dir
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
+	// WaitDelay so a tool that is killed on cancellation but leaks a child
+	// still holding the output pipe cannot wedge cmd.Run forever: after the
+	// delay Go closes the pipe and returns. Without it a Ctrl-C during a
+	// wedged external tool could not free the worker.
+	cmd.WaitDelay = 3 * time.Second
 	err := cmd.Run()
 	return out.String(), err
 }

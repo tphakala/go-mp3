@@ -59,9 +59,16 @@ func TestAlignLagPeriodicProgram(t *testing.T) {
 	}
 }
 
-// TestAlignLagUncorrelated: a silent or anti-correlated pair has no positive
-// peak, so the lag must be 0 rather than an arbitrary end of the search range
-// (which would silently trim real samples off the reference).
+// TestAlignLagUncorrelated: a pair with no delay to recover must land at lag 0.
+// A silent pair (or a silent degraded side) has no energy, so every lag is
+// skipped and the default 0 stands; an identical pair correlates most strongly
+// at lag 0; an empty reference has nothing to correlate. The alternative, an
+// arbitrary end of the search range, would silently trim real samples off the
+// reference. (A phase-inverted pair does NOT land at 0: the reference's own
+// autocorrelation is nonzero at some shifts, so the inverted correlation is
+// positive there and the search picks that spurious lag. That case never
+// arises here, since a decoded stream is positively correlated with its
+// source.)
 func TestAlignLagUncorrelated(t *testing.T) {
 	const n = 1 << 14
 	zeros := make([]float64, n)

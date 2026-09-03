@@ -220,3 +220,86 @@ func TestCompareAveragesChannels(t *testing.T) {
 		t.Fatalf("steady tones: PreEcho=%v N=%d, want NaN and 0", m.PreEcho, m.PreEchoN)
 	}
 }
+
+// sameBits reports whether a and b are the identical float64, treating any two
+// NaNs as equal (their payloads are irrelevant here) and requiring bit
+// equality otherwise. It is the strict test the fused/reference comparison
+// needs: an ordinary tolerance would let a subtly reordered accumulation pass.
+func sameBits(a, b float64) bool {
+	if math.IsNaN(a) || math.IsNaN(b) {
+		return math.IsNaN(a) && math.IsNaN(b)
+	}
+	return math.Float64bits(a) == math.Float64bits(b)
+}
+
+// TestCompareSpectraMatchesReference proves the fused single-pass
+// compareSpectra returns bit-for-bit the same band-limited SNR, LSD, and
+// bandwidth as SpectralMetrics plus Bandwidth called separately (the shape the
+// grid ran before the fusion). That bit-identity is the invariant that keeps
+// the reported metric numbers unchanged. The silent-ref case is the decisive
+// one: its reference is silent so every frame is LSD-inactive, while its
+// degraded signal is a loud high-frequency tone. Accumulating the bandwidth
+// PSD past the active-frame gate would then drop every frame and collapse the
+// bandwidth to 0 while the reference Bandwidth reports the tone, so that
+// mistake fails this test.
+func TestCompareSpectraMatchesReference(t *testing.T) {
+	const n = 6*stftHop + stftSize // several full STFT frames
+
+	base := genTone(n, 48000, 1000, 0.5)
+	mixedRef := slices.Clone(base)
+	highTail := make([]float64, n)
+	for i := n / 2; i < n; i++ {
+		mixedRef[i] = 0 // silent reference tail: LSD-inactive there
+		highTail[i] = 0.3 * math.Sin(2*math.Pi*15000*float64(i)/48000)
+	}
+
+	// A degraded signal longer than the 4096-sample reference in the unequal
+	// case: a 1 kHz tone over the reference's window, then a distinct 15 kHz
+	// tone in the trailing samples that the common-length measurement ignores.
+	unequalDeg := make([]float64, 8192)
+	copy(unequalDeg, genTone(4096, 48000, 1000, 0.5))
+	copy(unequalDeg[4096:], genTone(4096, 48000, 15000, 0.5))
+
+	cases := []struct {
+		name       string
+		ref, deg   []float64
+		sampleRate int
+	}{
+		{"tone+noise/48k", base, addSignals(base, genNoise(n, 0.01, 1)), 48000},
+		{"noise/44.1k", genNoise(n, 0.3, 2), addSignals(genNoise(n, 0.3, 2), genNoise(n, 0.02, 3)), 44100},
+		{"multitone/32k",
+			addSignals(genTone(n, 32000, 500, 0.3), genTone(n, 32000, 4000, 0.2)),
+			addSignals(genTone(n, 32000, 500, 0.3), genNoise(n, 0.05, 4)), 32000},
+		{"identical/48k", base, slices.Clone(base), 48000},
+		{"silence/48k", make([]float64, n), make([]float64, n), 48000},
+		{"mixed-active/48k", mixedRef, addSignals(mixedRef, highTail), 48000},
+		// Silent reference, loud high-frequency degraded signal: every frame is
+		// LSD-inactive, so bandwidth must still pool them all. This is the case
+		// that catches a bandwidth accumulation gated on frame activity.
+		{"silent-ref/48k", make([]float64, n), genTone(n, 48000, 15000, 0.4), 48000},
+		// Degraded longer than reference, with a high-frequency tail beyond the
+		// reference length: compareSpectra measures the common window, so its
+		// bandwidth is the low tone's, not the tail's. This pins that
+		// common-length behavior and catches a regression to full-deg bandwidth.
+		{"unequal/48k", genTone(4096, 48000, 1000, 0.5), unequalDeg, 48000},
+		{"short/48k", genTone(100, 48000, 1000, 0.5), genTone(100, 48000, 1000, 0.4), 48000},
+	}
+
+	for _, c := range cases {
+		wantBand, wantLSD := SpectralMetrics(c.ref, c.deg, c.sampleRate)
+		// compareSpectra measures the common leading window, so its bandwidth
+		// oracle is Bandwidth over the same truncated deg, not the full slice.
+		n := min(len(c.ref), len(c.deg))
+		wantBW := Bandwidth(c.deg[:n], c.sampleRate)
+		gotBand, gotLSD, gotBW := compareSpectra(c.ref, c.deg, c.sampleRate)
+		if !sameBits(gotBand, wantBand) {
+			t.Errorf("%s: bandSNR = %v, want %v (SpectralMetrics)", c.name, gotBand, wantBand)
+		}
+		if !sameBits(gotLSD, wantLSD) {
+			t.Errorf("%s: LSD = %v, want %v (SpectralMetrics)", c.name, gotLSD, wantLSD)
+		}
+		if !sameBits(gotBW, wantBW) {
+			t.Errorf("%s: bandwidth = %v, want %v (Bandwidth)", c.name, gotBW, wantBW)
+		}
+	}
+}

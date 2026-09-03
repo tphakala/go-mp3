@@ -90,6 +90,11 @@ type Config struct {
 	SampleRate  int // 32000, 44100, 48000
 	Channels    int // 1 or 2
 	BitrateKbps int // 32..320, the 14 MPEG-1 Layer III values
+
+	// FastRateControl selects the inner rate loop's global_gain search:
+	// false (the default) is the exact upward linear scan, true is the
+	// binary search (codeGranule's fast path). See the public RateControl.
+	FastRateControl bool
 }
 
 // validate reports whether cfg names a legal MPEG-1 Layer III CBR
@@ -843,7 +848,7 @@ func (e *Encoder) codeFrame(dst []byte) []byte {
 		for ch := range e.nch {
 			budget := budgets[g*e.nch+ch]
 			lay := layoutFor(e.bt[g][ch], e.srIndex)
-			_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, &e.gr[g][ch], &e.bestScratch)
+			_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, &e.gr[g][ch], &e.bestScratch, e.cfg.FastRateControl)
 		}
 	}
 
@@ -989,7 +994,7 @@ func (e *Encoder) escTryBudget(i, budget int) {
 		*gc = rec.gc
 		excess, ratio, over = rec.excess, rec.ratio, rec.over
 	} else {
-		_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, gc, &e.bestScratch)
+		_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, gc, &e.bestScratch, e.cfg.FastRateControl)
 		var noise [39]float64
 		noiseGranule(&e.xr[g][ch], &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
 		excess, ratio, over = maskingMetrics(&noise, &e.xminXr[g][ch], lay)
@@ -1397,7 +1402,7 @@ func diagFloorBound(xr *[576]float64, lay *bandLayout, budget int, gc *granuleCo
 		return true // no budget to even try the bump
 	}
 	huffBudget := min(budget, maxPart23Length) - part2
-	codeGranule(xr, huffBudget, lay, &trial)
+	codeGranule(xr, huffBudget, lay, &trial, false) // diagnostic: exact search
 	trial.scfCompress, trial.part2Bits = idx, part2
 
 	var noiseTrial [39]float64

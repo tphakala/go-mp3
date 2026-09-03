@@ -27,27 +27,41 @@ func BenchmarkEscalationFrame(b *testing.B) {
 		{"stereo-32k-48000", Config{SampleRate: 48000, Channels: 2, BitrateKbps: 32}},
 	}
 	for _, tc := range cases {
-		b.Run(tc.name, func(b *testing.B) {
-			e, err := New(tc.cfg)
-			if err != nil {
-				b.Fatalf("New: %v", err)
-			}
-			seed := uint64(1)
-			samples := planarSamples(&seed, tc.cfg.Channels, 0.7)
-			dst := make([]byte, 0, 4096)
-			for range 2 {
-				if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
-					b.Fatalf("warmup EncodeFrame: %v", err)
+		for _, rc := range rateControlModes {
+			cfg := tc.cfg
+			cfg.FastRateControl = rc.fast
+			b.Run(tc.name+"/"+rc.name, func(b *testing.B) {
+				e, err := New(cfg)
+				if err != nil {
+					b.Fatalf("New: %v", err)
 				}
-			}
-			b.ReportAllocs()
-			for b.Loop() {
-				if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
-					b.Fatalf("EncodeFrame: %v", err)
+				seed := uint64(1)
+				samples := planarSamples(&seed, cfg.Channels, 0.7)
+				dst := make([]byte, 0, 4096)
+				for range 2 {
+					if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
+						b.Fatalf("warmup EncodeFrame: %v", err)
+					}
 				}
-			}
-		})
+				b.ReportAllocs()
+				for b.Loop() {
+					if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
+						b.Fatalf("EncodeFrame: %v", err)
+					}
+				}
+			})
+		}
 	}
+}
+
+// rateControlModes drives the frame benchmarks in both global_gain search
+// modes so benchstat can read the fast path's speedup directly off one run.
+var rateControlModes = []struct {
+	name string
+	fast bool
+}{
+	{"exact", false},
+	{"fast", true},
 }
 
 // transientSamples builds an nch x 1152 planar float32 buffer with a loud
@@ -89,30 +103,34 @@ func BenchmarkTransientFrame(b *testing.B) {
 		{"stereo-128k-transient-44100", Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128}, true},
 	}
 	for _, tc := range cases {
-		b.Run(tc.name, func(b *testing.B) {
-			e, err := New(tc.cfg)
-			if err != nil {
-				b.Fatalf("New: %v", err)
-			}
-			seed := uint64(1)
-			var samples [][]float32
-			if tc.transient {
-				samples = transientSamples(&seed, tc.cfg.Channels, 0.8)
-			} else {
-				samples = planarSamples(&seed, tc.cfg.Channels, 0.7)
-			}
-			dst := make([]byte, 0, 4096)
-			for range 2 {
-				if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
-					b.Fatalf("warmup EncodeFrame: %v", err)
+		for _, rc := range rateControlModes {
+			cfg := tc.cfg
+			cfg.FastRateControl = rc.fast
+			b.Run(tc.name+"/"+rc.name, func(b *testing.B) {
+				e, err := New(cfg)
+				if err != nil {
+					b.Fatalf("New: %v", err)
 				}
-			}
-			b.ReportAllocs()
-			for b.Loop() {
-				if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
-					b.Fatalf("EncodeFrame: %v", err)
+				seed := uint64(1)
+				var samples [][]float32
+				if tc.transient {
+					samples = transientSamples(&seed, cfg.Channels, 0.8)
+				} else {
+					samples = planarSamples(&seed, cfg.Channels, 0.7)
 				}
-			}
-		})
+				dst := make([]byte, 0, 4096)
+				for range 2 {
+					if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
+						b.Fatalf("warmup EncodeFrame: %v", err)
+					}
+				}
+				b.ReportAllocs()
+				for b.Loop() {
+					if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
+						b.Fatalf("EncodeFrame: %v", err)
+					}
+				}
+			})
+		}
 	}
 }

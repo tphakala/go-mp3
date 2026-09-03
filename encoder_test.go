@@ -80,6 +80,10 @@ func TestEncoderConfigValidation(t *testing.T) {
 		{"negative bitrate", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: -128000}, false},
 		{"bitrate not a multiple of 1000 (128500 trap)", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: 128500}, false},
 		{"bitrate multiple of 1000 but illegal (129000)", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: 129000}, false},
+		{"valid RateControlExact", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, RateControl: mp3.RateControlExact}, true},
+		{"valid RateControlFast", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, RateControl: mp3.RateControlFast}, true},
+		{"invalid RateControl (out of range)", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, RateControl: 99}, false},
+		{"invalid RateControl (negative)", mp3.EncoderConfig{SampleRate: 44100, Channels: 2, RateControl: -1}, false},
 	}
 
 	for _, c := range cases {

@@ -147,7 +147,7 @@ func TestCodeGranuleFits(t *testing.T) {
 	budgets := []int{120, 300, 3000}
 	for _, budget := range budgets {
 		var gc granuleCoding
-		codeGranule(&xr, budget, lay, &gc)
+		codeGranule(&xr, budget, lay, &gc, false)
 		if gc.ri.bits > budget {
 			t.Fatalf("budget %d: ri.bits = %d, exceeds budget", budget, gc.ri.bits)
 		}
@@ -172,7 +172,7 @@ func TestCodeGranuleBudgetCap(t *testing.T) {
 	lay := &layoutLong[2] // 32000 Hz, matching the worked example's rate
 
 	var gc granuleCoding
-	codeGranule(&xr, 5676, lay, &gc)
+	codeGranule(&xr, 5676, lay, &gc, false)
 	if gc.ri.bits > maxPart23Length {
 		t.Fatalf("budgetBits=5676: ri.bits = %d, want <= %d (the part_2_3_length field cap)", gc.ri.bits, maxPart23Length)
 	}
@@ -209,7 +209,7 @@ func TestAssembleFrameLength(t *testing.T) {
 					var gr [2][2]granuleCoding
 					for g := range 2 {
 						for ch := range m.nch {
-							codeGranule(&xr, budget, lay, &gr[g][ch])
+							codeGranule(&xr, budget, lay, &gr[g][ch], false)
 						}
 					}
 
@@ -376,7 +376,7 @@ func frameTestCodings(t *testing.T) *[2][2]granuleCoding {
 	seed := uint64(2026)
 	for g := range 2 {
 		xr := fullScaleSpectrum(&seed, 12000)
-		codeGranule(&xr, budget, lay, &gr[g][0])
+		codeGranule(&xr, budget, lay, &gr[g][0], false)
 	}
 	return &gr
 }

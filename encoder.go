@@ -76,6 +76,43 @@ var (
 	errFrameTooLong          = errors.New("go-mp3: channel sample count exceeds FrameSize")
 )
 
+// RateControl selects the encoder's inner rate-loop strategy for choosing each
+// granule's global_gain, trading encode speed against exactness. The zero value
+// is RateControlExact, so the default costs nothing and never changes output.
+type RateControl int
+
+const (
+	// RateControlExact selects the smallest global_gain whose Huffman coding
+	// fits the frame's bit budget, by an upward linear scan: the finest
+	// quantization within budget, hence the best quality this encoder
+	// produces, and the historical behavior. On frames that need a large gain
+	// increase (loud, broadband, or transient material) that scan is the
+	// encoder's dominant cost. This is the default.
+	RateControlExact RateControl = iota
+	// RateControlFast binary-searches global_gain instead of scanning,
+	// roughly an order of magnitude faster on escalation-heavy frames. Because
+	// the coded bit count is not strictly monotone in the gain, the search can
+	// occasionally settle one or a few steps above the exact choice: a
+	// slightly coarser quantization on the affected granules (never finer), a
+	// small and bounded quality reduction. Its output is therefore not
+	// bit-identical to RateControlExact. Prefer it when encode throughput
+	// matters more than the last fraction of quality.
+	RateControlFast
+)
+
+// String returns the mode's identifier, e.g. "RateControlFast", or
+// "RateControl(n)" for an out-of-range value.
+func (rc RateControl) String() string {
+	switch rc {
+	case RateControlExact:
+		return "RateControlExact"
+	case RateControlFast:
+		return "RateControlFast"
+	default:
+		return fmt.Sprintf("RateControl(%d)", int(rc))
+	}
+}
+
 // EncoderConfig configures a new or reset Encoder.
 type EncoderConfig struct {
 	// SampleRate is the input sample rate in Hz: 32000, 44100, or 48000.
@@ -89,9 +126,14 @@ type EncoderConfig struct {
 	// Bitrate is the CBR target for the whole stream, in bits per second:
 	// one of 32000, 40000, 48000, 56000, 64000, 80000, 96000, 112000,
 	// 128000, 160000, 192000, 224000, 256000, or 320000. Zero selects
-	// DefaultBitrate. This encoder is CBR-only; there is no quality or VBR
-	// setting.
+	// DefaultBitrate. This encoder is CBR-only; there is no VBR setting, and
+	// RateControl trades encode speed against exactness rather than bitrate.
 	Bitrate int
+	// RateControl selects the inner rate loop's global_gain search strategy:
+	// RateControlExact (the zero value and default) for the best quality, or
+	// RateControlFast for a large speedup at a small, bounded quality cost on
+	// some frames. See RateControl.
+	RateControl RateControl
 }
 
 // toEncConfig validates cfg and maps it to the internal enc.Config, in the
@@ -121,7 +163,17 @@ func (cfg EncoderConfig) toEncConfig() (enc.Config, error) {
 		return enc.Config{}, fmt.Errorf("go-mp3: invalid bitrate %d, want one of the 14 MPEG-1 Layer III CBR rates", bitrate)
 	}
 
-	return enc.Config{SampleRate: cfg.SampleRate, Channels: cfg.Channels, BitrateKbps: kbps}, nil
+	var fastRateControl bool
+	switch cfg.RateControl {
+	case RateControlExact:
+		fastRateControl = false
+	case RateControlFast:
+		fastRateControl = true
+	default:
+		return enc.Config{}, fmt.Errorf("go-mp3: invalid RateControl %d, want RateControlExact or RateControlFast", cfg.RateControl)
+	}
+
+	return enc.Config{SampleRate: cfg.SampleRate, Channels: cfg.Channels, BitrateKbps: kbps, FastRateControl: fastRateControl}, nil
 }
 
 // Encoder is a stateful CBR MPEG-1 Layer III encoder: a thin validated

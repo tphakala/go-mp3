@@ -302,15 +302,48 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 	}
 
 	// Non-escape tables: each has its own codes slice, so cost them
-	// individually (abs already hoisted).
+	// individually (abs already hoisted). pairCostDirect's per-table
+	// invariants (its codes-nil guard and maxDirect = dim-1) do not depend on
+	// the pair, so lift them out of the per-pair loop and inline the rest,
+	// instead of re-deriving them on each of the up to 288 pairs per table
+	// (issue #56; pairCostDirect stays the shared helper for its other
+	// callers). Every nonEscBigTables member has non-nil codes and dim >= 1
+	// (TestEscFamilyTablePartition pins linbits == 0 and dim >= 1; tables 4 and
+	// 14, the only nil-codes slots, are excluded), so the nil branch is
+	// unreachable for these tables; it stays to match pairCostDirect's graceful
+	// impossibleCost (rather than a nil-index panic) if that ever changes.
 	for _, t := range nonEscBigTables {
 		bt := bigTables[t]
+		codes := bt.codes
+		dim := bt.dim
+		maxDirect := int32(dim - 1)
 		cost := 0
 		p := 0
+		if codes == nil {
+			for k := range lay.nBands {
+				end := pb[k+1]
+				cost += (end - p) * impossibleCost
+				p = end
+				prefixCost[t][k+1] = cost
+			}
+			continue
+		}
 		for k := range lay.nBands {
 			end := pb[k+1]
 			for ; p < end; p++ {
-				cost += pairCostDirect(bt, ax[p], ay[p])
+				x, y := ax[p], ay[p]
+				if x > maxDirect || y > maxDirect {
+					cost += impossibleCost
+					continue
+				}
+				c := int(codes[int(x)*dim+int(y)].len)
+				if x != 0 {
+					c++
+				}
+				if y != 0 {
+					c++
+				}
+				cost += c
 			}
 			prefixCost[t][k+1] = cost
 		}

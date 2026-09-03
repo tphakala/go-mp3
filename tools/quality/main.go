@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tphakala/go-mp3/internal/enc"
 	"github.com/tphakala/go-mp3/internal/quality"
 )
 
@@ -64,6 +65,7 @@ type options struct {
 	jobs                     int
 	lame, visqol, peaq, work string
 	keep                     bool
+	crosscheck               bool
 	out, jsonOut             string
 }
 
@@ -82,6 +84,7 @@ func parseFlags(args []string) (*options, error) {
 	fs.StringVar(&o.peaq, "peaq", "", "PEAQ binary printing 'Objective Difference Grade:' (default: peaq-odg on PATH; skipped when absent)")
 	fs.StringVar(&o.work, "work", "", "work directory for intermediate files (default: a temp dir next to -out)")
 	fs.BoolVar(&o.keep, "keep", false, "keep the work directory")
+	fs.BoolVar(&o.crosscheck, "crosscheck", false, "decode each stream through ffmpeg too and warn when it diverges from the pcm decode (needs ffmpeg; diagnostic only, never fails a case)")
 	fs.StringVar(&o.out, "out", "tools/quality/out/report.md", "markdown report path")
 	fs.StringVar(&o.jsonOut, "json", "tools/quality/out/report.json", "JSON report path")
 	if err := fs.Parse(args); err != nil {
@@ -113,9 +116,12 @@ func parseFlags(args []string) (*options, error) {
 			return nil, fmt.Errorf("-rates: unsupported sample rate %d (want 32000, 44100, or 48000)", r)
 		}
 	}
+	// Validate against the encoder's own legality source rather than just
+	// rejecting non-positive values: an out-of-set bitrate (say 100 or 500)
+	// would otherwise pass setup and fail every case at encode time.
 	for _, kbps := range o.bitrates {
-		if kbps <= 0 {
-			return nil, fmt.Errorf("-bitrates: %d is not a positive bitrate", kbps)
+		if !enc.ValidBitrateKbps(kbps) {
+			return nil, fmt.Errorf("-bitrates: %d is not a legal MPEG-1 Layer III CBR bitrate (want one of 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320)", kbps)
 		}
 	}
 	if o.programs, err = selectPrograms(*programs, *corpus, o.rates); err != nil {
@@ -143,6 +149,12 @@ func run(ctx context.Context, args []string, errw io.Writer) int {
 		if t.flag != "" && t.got == "" {
 			return fail(errw, fmt.Errorf("%s %q not found", t.name, t.flag))
 		}
+	}
+	// -crosscheck is an explicit request for the ffmpeg second decode, so a
+	// missing ffmpeg is a setup error here too rather than a silently skipped
+	// check.
+	if o.crosscheck && tl.ffmpeg == "" {
+		return fail(errw, errors.New("-crosscheck needs ffmpeg on PATH"))
 	}
 	// Both report directories, before the grid: creating only one meant a
 	// completed run could discard its JSON at the final syscall.
@@ -276,6 +288,13 @@ func genRef(p quality.Program, sampleRate, seconds int) [][]float64 {
 func runGrid(ctx context.Context, tl tools, o *options, workDir string, rep *report, errw io.Writer) (int, error) {
 	jobs := buildJobs(ctx, o, errw)
 	total := len(jobs)
+	// Every program was skipped (for instance a corpus whose files match none
+	// of -rates): with nothing to run the harness would otherwise write empty
+	// reports and exit 0, which reads as a clean pass. A cancelled build is a
+	// different case; run() turns that into the interrupted exit code.
+	if total == 0 && ctx.Err() == nil {
+		return 0, errors.New("no cases to run: every program was skipped (check -rates against the corpus and -programs)")
+	}
 
 	// Cancel the shared context on a setup error so in-flight workers stop.
 	ctx, cancel := context.WithCancel(ctx)
@@ -325,7 +344,7 @@ dispatch:
 				return
 			}
 			start := time.Now()
-			res, err := runCase(ctx, tl, dir, j.spec, j.ref, logw)
+			res, err := runCase(ctx, tl, dir, j.spec, j.ref, o.crosscheck, logw)
 			if err != nil {
 				failedFlags[ji] = true
 				logf(logw, "[%d/%d] %s %d Hz %d kbps: FAILED: %v\n", j.idx, total, j.spec.Program.Name, j.spec.SampleRate, j.spec.Kbps, err)

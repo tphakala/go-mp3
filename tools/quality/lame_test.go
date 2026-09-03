@@ -43,7 +43,7 @@ func TestQualityHarnessLame(t *testing.T) {
 		t.Fatal("tone-click program missing")
 	}
 	spec := caseSpec{Program: prog, SampleRate: 44100, Kbps: 128, Seconds: 2}
-	res, err := runCase(t.Context(), tl, t.TempDir(), spec, caseRef(spec), io.Discard)
+	res, err := runCase(t.Context(), tl, t.TempDir(), spec, caseRef(spec), false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestQualityHarnessStereoShortTail(t *testing.T) {
 	}
 	// 1 s at 44.1 kHz is 38.28 frames: the last go-mp3 frame is short.
 	spec := caseSpec{Program: prog, SampleRate: 44100, Kbps: 192, Seconds: 1}
-	res, err := runCase(t.Context(), tools{lame: lame}, t.TempDir(), spec, caseRef(spec), io.Discard)
+	res, err := runCase(t.Context(), tools{lame: lame}, t.TempDir(), spec, caseRef(spec), false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +107,29 @@ func TestDetectToolsMissing(t *testing.T) {
 	tl := detectTools("/nonexistent/lame", "/nonexistent/visqol", "/nonexistent/peaq")
 	if tl.lame != "" || tl.visqol != "" || tl.peaq != "" {
 		t.Fatalf("expected empty paths, got %+v", tl)
+	}
+}
+
+// TestLameVersion: an empty or unresolvable lame path yields unknownVersion
+// rather than an error or a crash (the provenance line degrades gracefully).
+func TestLameVersion(t *testing.T) {
+	if v := lameVersion(t.Context(), ""); v != unknownVersion {
+		t.Fatalf("empty lame path: %q, want %q", v, unknownVersion)
+	}
+	if v := lameVersion(t.Context(), "/nonexistent-lame-binary-xyz"); v != unknownVersion {
+		t.Fatalf("bogus lame path: %q, want %q", v, unknownVersion)
+	}
+}
+
+// TestTo48k covers the two branches that need no ffmpeg: a 48 kHz input is
+// returned unchanged, and a non-48 kHz rate with ffmpeg absent is an error
+// rather than a silent skip that would hand a scorer an unresampled file.
+func TestTo48k(t *testing.T) {
+	if out, err := to48k(t.Context(), tools{}, t.TempDir(), "x.wav", 48000); err != nil || out != "x.wav" {
+		t.Fatalf("48 kHz bypass: out=%q err=%v", out, err)
+	}
+	if _, err := to48k(t.Context(), tools{}, t.TempDir(), "x.wav", 44100); err == nil {
+		t.Fatal("44.1 kHz without ffmpeg must error")
 	}
 }
 
@@ -142,7 +165,7 @@ func TestAlignTrim(t *testing.T) {
 	const testLag = 733
 	copy(deg[0][testLag:], ref[0])
 	copy(deg[1][testLag:], ref[1])
-	r, d, lag := alignTrim(ref, deg)
+	r, d, lag := alignTrim(ref, deg, alignMinLag, alignMaxLag)
 	if lag != testLag || len(r[0]) != 5000 || len(d[1]) != 5000 {
 		t.Fatalf("lag=%d lens=%d/%d", lag, len(r[0]), len(d[1]))
 	}
@@ -150,7 +173,7 @@ func TestAlignTrim(t *testing.T) {
 		t.Fatal("aligned second channel must be identical")
 	}
 	lead := [][]float64{ref[0][20:], ref[1][20:]}
-	r, d, lag = alignTrim(ref, lead)
+	r, d, lag = alignTrim(ref, lead, alignMinLag, alignMaxLag)
 	if lag != -20 || len(r[0]) != 4980 || quality.SNR(r[0], d[0]) != quality.SNRCap {
 		t.Fatalf("negative lag: lag=%d len=%d", lag, len(r[0]))
 	}

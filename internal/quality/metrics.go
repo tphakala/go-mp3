@@ -68,13 +68,17 @@ func Compare(ref, deg [][]float64, sampleRate int) Metrics {
 	for c := range ref {
 		m.SNR += SNR(ref[c], deg[c]) / nch
 		m.SegSNR += SegmentalSNR(ref[c], deg[c], SegSNRSegment) / nch
-		b, l := SpectralMetrics(ref[c], deg[c], sampleRate)
+		// compareSpectra yields band-limited SNR, LSD, and bandwidth from a
+		// single STFT pass; its results are bit-identical to SpectralMetrics
+		// plus Bandwidth called separately (which the grid ran as four STFT
+		// passes per channel, transforming deg twice).
+		b, l, bw := compareSpectra(ref[c], deg[c], sampleRate)
 		m.BandSNR += b / nch
 		m.LSD += l / nch
+		m.Bandwidth = max(m.Bandwidth, bw)
 		p, n := PreEcho(ref[c], deg[c], sampleRate)
 		m.PreEcho += p / nch
 		m.PreEchoN += n
-		m.Bandwidth = max(m.Bandwidth, Bandwidth(deg[c], sampleRate))
 	}
 	return m
 }
@@ -250,6 +254,106 @@ func SpectralMetrics(ref, deg []float64, sampleRate int) (bandSNR, lsd float64) 
 	return bandSNR, lsdSum / float64(active)
 }
 
+// compareSpectra computes, in a single STFT pass, the three spectral figures
+// Compare needs from one channel pair: band-limited SNR, mean log-spectral
+// distance over active frames, and the degraded signal's bandwidth. It is the
+// fused equivalent of SpectralMetrics(ref, deg) plus Bandwidth(deg): each
+// frame windows ref, deg, and their difference with the same stftWindow and
+// transforms them with the same fft in the same frame order, so every
+// accumulator sees its summands in the identical sequence and the three
+// results are bit-for-bit what those two functions return. Fusing them drops
+// the whole-signal error buffer and the per-frame reference-power slices
+// SpectralMetrics allocated, and transforms deg once rather than twice.
+//
+// Like SpectralMetrics, it measures the common leading window
+// min(len(ref), len(deg)); Compare's inputs are equal length in practice, so
+// the bandwidth here matches Bandwidth(deg) too. They differ only for a caller
+// that passes unequal slices, where this measures deg's common window while a
+// bare Bandwidth(deg) would also pool deg's trailing frames.
+func compareSpectra(ref, deg []float64, sampleRate int) (bandSNR, lsd, bandwidth float64) {
+	n := min(len(ref), len(deg))
+	ref, deg = ref[:n], deg[:n]
+	nb := bandBins(sampleRate)
+
+	w := stftWindow
+	refRe := make([]float64, stftSize)
+	refIm := make([]float64, stftSize)
+	degRe := make([]float64, stftSize)
+	degIm := make([]float64, stftSize)
+	errRe := make([]float64, stftSize)
+	errIm := make([]float64, stftSize)
+	refP := make([]float64, stftSize/2+1)
+	degP := make([]float64, stftSize/2+1)
+	errP := make([]float64, stftSize/2+1)
+	degAcc := make([]float64, stftSize/2+1) // long-term deg PSD, for bandwidth
+
+	// The active-frame floor in the unnormalized power domain; see
+	// SpectralMetrics for the derivation.
+	frameFloor := activeFloor * (3.0 * stftSize / 8) * float64(nb)
+	var sig, errE, lsdSum float64
+	var frames, active int
+
+	for lo := 0; lo+stftSize <= n; lo += stftHop {
+		for i := range stftSize {
+			refRe[i], refIm[i] = ref[lo+i]*w[i], 0
+			degRe[i], degIm[i] = deg[lo+i]*w[i], 0
+			// ref[lo+i]-deg[lo+i] is the same float64 SpectralMetrics formed in
+			// its errSig buffer before windowing, so the transformed frame, and
+			// thus errP, is identical.
+			errRe[i], errIm[i] = (ref[lo+i]-deg[lo+i])*w[i], 0
+		}
+		fft(refRe, refIm)
+		fft(degRe, degIm)
+		fft(errRe, errIm)
+		for k := range refP {
+			refP[k] = refRe[k]*refRe[k] + refIm[k]*refIm[k]
+			degP[k] = degRe[k]*degRe[k] + degIm[k]*degIm[k]
+			errP[k] = errRe[k]*errRe[k] + errIm[k]*errIm[k]
+		}
+		frames++
+
+		// Bandwidth pools the deg PSD over EVERY frame, active or not, so this
+		// accumulation runs before the active-frame gate below: moving it past
+		// the gate would silently drop silent-reference frames from bandwidth.
+		for k := range degAcc {
+			degAcc[k] += degP[k]
+		}
+		// Band-limited SNR: in-band reference and error power pooled over all
+		// frames, added bin by bin in the order SpectralMetrics used.
+		for k := range nb {
+			sig += refP[k]
+			errE += errP[k]
+		}
+		// LSD over active frames only (in-band reference power above the floor).
+		var frameSig float64
+		for k := range nb {
+			frameSig += refP[k]
+		}
+		if frameSig < frameFloor {
+			continue
+		}
+		var acc float64
+		for k := range nb {
+			d := 10 * math.Log10((refP[k]+epsilon)/(degP[k]+epsilon))
+			acc += d * d
+		}
+		lsdSum += math.Sqrt(acc / float64(nb))
+		active++
+	}
+
+	if frames == 0 {
+		// Shorter than one STFT frame: SpectralMetrics returns NaN for both of
+		// its figures, and Bandwidth reports 0.
+		return math.NaN(), math.NaN(), 0
+	}
+	bandSNR = snrFrom(sig, errE)
+	lsd = math.NaN()
+	if active > 0 {
+		lsd = lsdSum / float64(active)
+	}
+	return bandSNR, lsd, bandwidthFrom(degAcc, sampleRate)
+}
+
 // Bandwidth returns the frequency in Hz of the highest bin whose long-term
 // average power spectrum lies within BandwidthFloorDB of the spectrum's
 // peak. It reports 0 for an all-silent or too-short signal.
@@ -263,6 +367,13 @@ func Bandwidth(x []float64, sampleRate int) float64 {
 	if frames == 0 {
 		return 0
 	}
+	return bandwidthFrom(acc, sampleRate)
+}
+
+// bandwidthFrom returns the rolloff frequency in Hz of a long-term power
+// spectrum acc (bins 0..stftSize/2): the highest bin within BandwidthFloorDB
+// of the peak, or 0 when the spectrum has no energy.
+func bandwidthFrom(acc []float64, sampleRate int) float64 {
 	peak := 0.0
 	for _, v := range acc {
 		peak = max(peak, v)

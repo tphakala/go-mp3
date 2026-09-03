@@ -146,3 +146,19 @@ func TestBuildJobsSkipsRateMismatchAndEmpty(t *testing.T) {
 		t.Fatalf("buildJobs skipped incorrectly: got %d jobs %+v", len(jobs), jobs)
 	}
 }
+
+// TestParseFlagsRejectsIllegalBitrate: an out-of-set bitrate is rejected at
+// setup by the encoder's own legality source, rather than passing setup and
+// failing every case at encode time. A legal set parses.
+func TestParseFlagsRejectsIllegalBitrate(t *testing.T) {
+	if _, err := parseFlags([]string{"-bitrates", "100"}); err == nil {
+		t.Fatal("an out-of-set bitrate (100) must be rejected at setup")
+	}
+	o, err := parseFlags([]string{"-bitrates", "128,320"})
+	if err != nil {
+		t.Fatalf("legal bitrates rejected: %v", err)
+	}
+	if len(o.bitrates) != 2 {
+		t.Fatalf("got %d bitrates, want 2", len(o.bitrates))
+	}
+}

@@ -60,6 +60,26 @@ func TestRunGridCancelled(t *testing.T) {
 	}
 }
 
+// TestRunGridEmptyIsSetupError: a run where every program is skipped (here the
+// only program is pinned to a rate the run does not request) must be a setup
+// error, not a silent 0-case success that writes empty reports and exits 0.
+func TestRunGridEmptyIsSetupError(t *testing.T) {
+	o := &options{
+		rates:    []int{44100},
+		bitrates: []int{128},
+		jobs:     2,
+		seconds:  1,
+		programs: []quality.Program{{Name: "p48", Channels: 1, SampleRate: 48000, Gen: func(_, n int) [][]float64 { return [][]float64{make([]float64, n)} }}},
+	}
+	rep := &report{}
+	if _, err := runGrid(t.Context(), tools{}, o, t.TempDir(), rep, io.Discard); err == nil {
+		t.Fatal("an all-skipped grid must be a setup error, not a silent 0-case success")
+	}
+	if len(rep.Cases) != 0 {
+		t.Fatalf("empty grid must produce no cases, got %d", len(rep.Cases))
+	}
+}
+
 // TestRunGridOrderAndReclaim exercises the concurrent path end to end: it pins
 // that rep.Cases lands in deterministic grid order (program-major, then
 // bitrate) regardless of which worker finishes first, that all cases succeed,

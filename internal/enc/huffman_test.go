@@ -272,10 +272,32 @@ func sha256Sum(b []byte) []byte {
 	return sum[:]
 }
 
+// prefixCostMatchesRef reports whether the production band-major int32 result
+// got ([k][t], issue #57's transpose) holds, in every valid-table column, the
+// same value as the frozen table-major reference want ([t][k]). Only the
+// validBigTables columns are compared: the invalid slots 4 and 14 deliberately
+// diverge, since production fills them with the all-impossible ramp the SIMD
+// reduction needs while the reference leaves them zero. Comparing across the
+// transpose keeps bigValuesPrefixCostRef frozen and proves the layout change is
+// value-neutral where it matters.
+func prefixCostMatchesRef(got *[40][32]int32, want *[32][40]int) bool {
+	for _, t := range validBigTables {
+		for k := range 40 {
+			if int(got[k][t]) != want[t][k] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // bigValuesPrefixCostRef is a frozen, never-optimized copy of
 // bigValuesPrefixCost as it stood before issue #37's inner-cost work. It is
 // the golden-neutral oracle for TestBigValuesPrefixCostEquivalence: every
 // optimization of the production function must reproduce this byte for byte.
+// It stays in the original table-major int ([t][k]) layout even after the
+// production function transposed to band-major int32 (issue #57);
+// prefixCostMatchesRef bridges the two over the valid-table columns.
 func bigValuesPrefixCostRef(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCost *[32][40]int) {
 	for _, t := range validBigTables {
 		bt := bigTables[t]
@@ -293,8 +315,9 @@ func bigValuesPrefixCostRef(ix *[576]int32, pb *[40]int, lay *bandLayout, prefix
 
 // TestBigValuesPrefixCostEquivalence fuzzes ix across every long and short
 // layout and a spread of magnitude scales, requiring the production
-// bigValuesPrefixCost to equal the frozen reference for the full [32][40]
-// table. The high scales (255, maxQuant) sweep magnitudes continuously
+// bigValuesPrefixCost to equal the frozen reference over every valid-table
+// column (compared across the band-major transpose by prefixCostMatchesRef).
+// The high scales (255, maxQuant) sweep magnitudes continuously
 // through and past the escape threshold, so this catches most divergences.
 // Deterministic coverage of the exact escape boundary and the impossibleCost
 // branch lives in TestBigValuesPrefixCostEscapeBoundary; together they are
@@ -332,10 +355,11 @@ func TestBigValuesPrefixCostEquivalence(t *testing.T) {
 				part := partitionSpectrum(&ix)
 				pb := pairBoundaries(lay, part.bigValues)
 
-				var got, want [32][40]int
+				var got [40][32]int32
+				var want [32][40]int
 				bigValuesPrefixCost(&ix, &pb, lay, &got)
 				bigValuesPrefixCostRef(&ix, &pb, lay, &want)
-				if got != want {
+				if !prefixCostMatchesRef(&got, &want) {
 					t.Fatalf("layout=%d (short=%v) scale=%d trial=%d: bigValuesPrefixCost diverged from frozen reference", li, lay.short, scale, trial)
 				}
 			}
@@ -631,10 +655,11 @@ func TestBigValuesPrefixCostEscapeBoundary(t *testing.T) {
 	}
 	for _, lay := range layouts {
 		pb := pairBoundaries(lay, part.bigValues)
-		var got, want [32][40]int
+		var got [40][32]int32
+		var want [32][40]int
 		bigValuesPrefixCost(&ix, &pb, lay, &got)
 		bigValuesPrefixCostRef(&ix, &pb, lay, &want)
-		if got != want {
+		if !prefixCostMatchesRef(&got, &want) {
 			t.Fatalf("lay.short=%v: bigValuesPrefixCost diverged from frozen reference on escape-boundary magnitudes", lay.short)
 		}
 	}

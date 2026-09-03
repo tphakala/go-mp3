@@ -42,6 +42,28 @@ jobs:
       # 10-11 min here; 20m (down from 25m) keeps roughly 2x headroom over that.
       - run: go test ./... -timeout 20m
 
+  test-noasm:
+    name: Test (noasm fallback)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both arches again: the noasm build drops the AVX2/NEON region-cost
+        # kernels for their pure-Go reference, and the encoder goldens must stay
+        # bit-exact without the SIMD path just as they do with it. internal/enc
+        # is the only package the tag changes, so the suite is scoped to it.
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: go build -tags noasm ./...
+      - run: go vet -tags noasm ./internal/enc
+      - run: go test -tags noasm ./internal/enc -timeout 20m
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

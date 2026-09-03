@@ -281,14 +281,21 @@ func accumEscFamilyCost(acc, linb *[8]int, maxv *[8]int32, codes []codeEntry, ax
 	}
 }
 
-// bigValuesPrefixCost fills prefixCost[t][k]: the bits needed to encode
+// bigValuesPrefixCost fills prefixCost[k][t]: the bits needed to encode
 // pairs [0, pb[k]) of ix using table t, for every table t in
 // validBigTables and every coding-band prefix k in [0,lay.nBands]. Fills a
 // caller-owned array in place rather than returning by value, since it runs
 // up to 150x per granule inside the outer loop's masking escalation and the
-// [32][40]int result is large enough that a by-value return costs a
+// [40][32]int32 result is large enough that a by-value return costs a
 // measurable copy on every call.
-func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCost *[32][40]int) {
+//
+// The layout is band-major ([k][t], band prefix outermost) and int32 so
+// rangeCost's SIMD min-reduce reads a contiguous 32-wide band row per prefix
+// (issue #57). Values are bit costs; the worst-case cumulative (about 3e8,
+// bounded by impossibleCost times 288 pairs) is far inside int32. The invalid
+// table columns 4 and 14 are filled with an all-impossible ramp so a fixed
+// 32-wide reduction still equals the min over valid tables (see the ramp fill).
+func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCost *[40][32]int32) {
 	// Pre-hoist the per-pair absolute values once (issue #37): the per-table
 	// loop below otherwise recomputes abs32 of the same two int32s 30 times
 	// per pair. ax/ay are fixed-size local arrays, stack-allocated, so this
@@ -324,7 +331,7 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 				end := pb[k+1]
 				cost += (end - p) * impossibleCost
 				p = end
-				prefixCost[t][k+1] = cost
+				prefixCost[k+1][t] = int32(cost)
 			}
 			continue
 		}
@@ -345,7 +352,7 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 				}
 				cost += c
 			}
-			prefixCost[t][k+1] = cost
+			prefixCost[k+1][t] = int32(cost)
 		}
 	}
 
@@ -367,11 +374,25 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 			accumEscFamilyCost(&acc24, &escFam24Linbits, &escFam24MaxVal, table24Codes, x, y)
 		}
 		for j, t := range escFam16Tables {
-			prefixCost[t][k+1] = acc16[j]
+			prefixCost[k+1][t] = int32(acc16[j])
 		}
 		for j, t := range escFam24Tables {
-			prefixCost[t][k+1] = acc24[j]
+			prefixCost[k+1][t] = int32(acc24[j])
 		}
+	}
+
+	// Invalid table slots 4 and 14 carry no codes and are never selected, but
+	// rangeCost's SIMD min-reduce scans the full 32-wide band row rather than
+	// only validBigTables. Fill them with the all-impossible ramp
+	// pb[k]*impossibleCost, exactly what a table that cannot represent any pair
+	// would sum to, so their range difference (pb[b]-pb[a])*impossibleCost can
+	// never undercut a representable table: the 32-wide min then equals the min
+	// over the valid tables (which the scalar rangeCost still computes directly).
+	// Row 0 (the empty prefix) stays zero for every table.
+	for k := range lay.nBands {
+		ramp := int32(pb[k+1] * impossibleCost)
+		prefixCost[k+1][4] = ramp
+		prefixCost[k+1][14] = ramp
 	}
 }
 
@@ -380,19 +401,41 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 // per-table per-band-prefix sums. An empty range (pb[a]==pb[b]) costs 0
 // bits with table 0, the "region empty/all-zero" convention regionInfo
 // documents.
-func rangeCost(prefixCost *[32][40]int, pb *[40]int, a, b int) (cost int, table uint8) {
+//
+// This is the table-returning form the three final region costings need. The
+// hot memo path in chooseRegions, which needs only the minimum cost and not the
+// table, uses rangeCostMin instead, whose SIMD reduction is the payoff of the
+// band-major layout.
+func rangeCost(prefixCost *[40][32]int32, pb *[40]int, a, b int) (cost int, table uint8) {
 	if pb[a] == pb[b] {
 		return 0, 0
 	}
 	best := impossibleCost
 	var bestT uint8
+	rb := &prefixCost[b]
+	ra := &prefixCost[a]
 	for _, t := range validBigTables {
-		c := prefixCost[t][b] - prefixCost[t][a]
+		c := int(rb[t] - ra[t])
 		if c < best {
 			best, bestT = c, t
 		}
 	}
 	return best, bestT
+}
+
+// rangeCostMin returns just the cheapest table's cost for pairs [pb[a], pb[b]),
+// without identifying which table. It is rangeCost's inner minimization with the
+// table tracking dropped, so the whole 32-wide band-difference reduces through
+// the fused SIMD kernel (subMinReduce) over contiguous int32 rows. The invalid
+// table columns 4 and 14 carry the all-impossible ramp bigValuesPrefixCost
+// fills, so the 32-wide minimum equals the minimum over validBigTables that
+// rangeCost computes, keeping the memo search and the final costing in exact
+// agreement. An empty range costs 0 (the regionInfo all-zero convention).
+func rangeCostMin(prefixCost *[40][32]int32, pb *[40]int, a, b int) int {
+	if pb[a] == pb[b] {
+		return 0
+	}
+	return int(subMinReduce(prefixCost[b][:], prefixCost[a][:]))
 }
 
 // count1Cost returns the bit cost of the count1 (quad) region under the
@@ -474,7 +517,7 @@ func regionBounds(region0Count, region1Count, nBands int) (a, c int) {
 // lay.nBands via pairBoundaries' clamp, so nothing optimal is excluded.
 func chooseRegions(ix *[576]int32, part spectrumPartition, lay *bandLayout) regionInfo {
 	pb := pairBoundaries(lay, part.bigValues)
-	var prefixCost [32][40]int
+	var prefixCost [40][32]int32
 	bigValuesPrefixCost(ix, &pb, lay, &prefixCost)
 
 	// rangeCost is re-evaluated for every (r0, r1) combo below, but a and c
@@ -503,7 +546,7 @@ func chooseRegions(ix *[576]int32, part spectrumPartition, lay *bandLayout) regi
 		if rcSeen[a][b] {
 			return rcCost[a][b]
 		}
-		c, _ := rangeCost(&prefixCost, &pb, a, b)
+		c := rangeCostMin(&prefixCost, &pb, a, b)
 		rcCost[a][b], rcSeen[a][b] = c, true
 		return c
 	}
@@ -570,7 +613,7 @@ func chooseRegionsWS(ix *[576]int32, part spectrumPartition, lay *bandLayout, bl
 	a = min(a, lay.nBands)
 
 	pb := pairBoundaries(lay, part.bigValues)
-	var prefixCost [32][40]int
+	var prefixCost [40][32]int32
 	bigValuesPrefixCost(ix, &pb, lay, &prefixCost)
 
 	cost0, t0 := rangeCost(&prefixCost, &pb, 0, a)

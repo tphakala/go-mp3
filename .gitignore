@@ -35,6 +35,10 @@ coverage.txt
 .codegraph/
 cache/
 
+# Local-only assistant notes: private tooling and host setup, never commit
+CLAUDE.local.md
+*.local.md
+
 # Editor and OS noise
 .DS_Store
 *.swp

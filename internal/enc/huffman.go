@@ -46,6 +46,28 @@ var (
 	escFam24Linbits = [8]int{4, 5, 6, 7, 8, 9, 11, 13}
 )
 
+// escFam16MaxVal / escFam24MaxVal are each family's per-table maxVal bound,
+// escMaxDirect + (1<<linbits) - 1: the largest magnitude that table can
+// escape to before a pair becomes unrepresentable. They depend only on the
+// fixed linbits list, not on the pair being costed, so accumEscFamilyCost
+// reads them instead of recomputing the shift for every pair (issue #37's
+// escape-family factoring, taken one step further). Pure hoisting: the same
+// int32 arithmetic as the inline form, evaluated once at package init.
+var (
+	escFam16MaxVal = escFamMaxVals(&escFam16Linbits)
+	escFam24MaxVal = escFamMaxVals(&escFam24Linbits)
+)
+
+// escFamMaxVals derives a family's maxVal table from its linbits list,
+// matching accumEscFamilyCost's former inline expression exactly.
+func escFamMaxVals(linb *[8]int) [8]int32 {
+	var mv [8]int32
+	for j, l := range linb {
+		mv[j] = escMaxDirect + (int32(1) << uint(l)) - 1
+	}
+	return mv
+}
+
 // Escape codebooks 16-31 share a common 16x16 geometry: the codeword table is
 // indexed by the clamped magnitudes with stride escTableDim, and any magnitude
 // at or above escMaxDirect is coded via the linbits escape rather than a direct
@@ -224,7 +246,9 @@ func accumEscFamilyFlat(acc *[8]int, codes []codeEntry, ax, ay int32) {
 // two comparisons here. The loop below still computes the same answer for
 // such a pair, just more slowly, so a caller that does not pre-check is
 // correct rather than wrong.
-func accumEscFamilyCost(acc, linb *[8]int, codes []codeEntry, ax, ay int32) {
+// maxv is the family's precomputed per-table maxVal bounds (escFam16MaxVal /
+// escFam24MaxVal), passed in rather than recomputed per pair.
+func accumEscFamilyCost(acc, linb *[8]int, maxv *[8]int32, codes []codeEntry, ax, ay int32) {
 	ix, iy := ax, ay
 	if ix > escMaxDirect {
 		ix = escMaxDirect
@@ -241,13 +265,12 @@ func accumEscFamilyCost(acc, linb *[8]int, codes []codeEntry, ax, ay int32) {
 	}
 	escX, escY := ax >= escMaxDirect, ay >= escMaxDirect
 	for j := range linb {
-		l := linb[j]
-		maxVal := escMaxDirect + (int32(1) << uint(l)) - 1
-		if ax > maxVal || ay > maxVal {
+		if ax > maxv[j] || ay > maxv[j] {
 			acc[j] += impossibleCost
 			continue
 		}
 		c := base
+		l := linb[j]
 		if escX {
 			c += l
 		}
@@ -279,15 +302,48 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 	}
 
 	// Non-escape tables: each has its own codes slice, so cost them
-	// individually (abs already hoisted).
+	// individually (abs already hoisted). pairCostDirect's per-table
+	// invariants (its codes-nil guard and maxDirect = dim-1) do not depend on
+	// the pair, so lift them out of the per-pair loop and inline the rest,
+	// instead of re-deriving them on each of the up to 288 pairs per table
+	// (issue #56; pairCostDirect stays the shared helper for its other
+	// callers). Every nonEscBigTables member has non-nil codes and dim >= 1
+	// (TestEscFamilyTablePartition pins linbits == 0 and dim >= 1; tables 4 and
+	// 14, the only nil-codes slots, are excluded), so the nil branch is
+	// unreachable for these tables; it stays to match pairCostDirect's graceful
+	// impossibleCost (rather than a nil-index panic) if that ever changes.
 	for _, t := range nonEscBigTables {
 		bt := bigTables[t]
+		codes := bt.codes
+		dim := bt.dim
+		maxDirect := int32(dim - 1)
 		cost := 0
 		p := 0
+		if codes == nil {
+			for k := range lay.nBands {
+				end := pb[k+1]
+				cost += (end - p) * impossibleCost
+				p = end
+				prefixCost[t][k+1] = cost
+			}
+			continue
+		}
 		for k := range lay.nBands {
 			end := pb[k+1]
 			for ; p < end; p++ {
-				cost += pairCostDirect(bt, ax[p], ay[p])
+				x, y := ax[p], ay[p]
+				if x > maxDirect || y > maxDirect {
+					cost += impossibleCost
+					continue
+				}
+				c := int(codes[int(x)*dim+int(y)].len)
+				if x != 0 {
+					c++
+				}
+				if y != 0 {
+					c++
+				}
+				cost += c
 			}
 			prefixCost[t][k+1] = cost
 		}
@@ -307,8 +363,8 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 				accumEscFamilyFlat(&acc24, table24Codes, x, y)
 				continue
 			}
-			accumEscFamilyCost(&acc16, &escFam16Linbits, table16Codes, x, y)
-			accumEscFamilyCost(&acc24, &escFam24Linbits, table24Codes, x, y)
+			accumEscFamilyCost(&acc16, &escFam16Linbits, &escFam16MaxVal, table16Codes, x, y)
+			accumEscFamilyCost(&acc24, &escFam24Linbits, &escFam24MaxVal, table24Codes, x, y)
 		}
 		for j, t := range escFam16Tables {
 			prefixCost[t][k+1] = acc16[j]

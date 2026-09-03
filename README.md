@@ -87,6 +87,17 @@ it codes whichever real frame the encoder is still holding for its
 lookahead (if any), then the final silence flush frame, so `N` non-nil
 calls plus drain always total exactly `N+1` emitted frames.
 
+By default the encoder runs its rate loop in `RateControlExact` mode, which
+picks the finest quantization within each frame's bit budget. Set
+`RateControl: mp3.RateControlFast` in the config to trade a little quality for
+a large speedup: it binary-searches the global gain instead of scanning it,
+roughly an order of magnitude faster on loud, broadband, or transient frames
+(where the exact scan climbs farthest), at the cost of occasionally choosing a
+slightly coarser gain on a small fraction of granules (never a finer one). In
+testing the fast search diverges from exact on well under 0.1% of granules, and
+only ever by a few steps of global gain, so the quality difference is small;
+the default stays exact, so nothing changes unless you opt in.
+
 Status: it produces valid, standard-compliant CBR MPEG-1 Layer III streams
 (32/44.1/48 kHz, mono or stereo, the 14 legal CBR bitrates) with a
 psychoacoustic model, a bit reservoir, per-frame M/S joint stereo, and

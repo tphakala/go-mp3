@@ -257,7 +257,7 @@ func testMaskingContractCase(t *testing.T, sr, kbps, nch int, prog string) {
 		failed := false
 		for _, budget := range [2]int{maxGrant, min(currentFlatShare, maxGrant)} {
 			var trial, trialBest granuleCoding
-			outerLoop(&diag.Xr, &diag.XminXr, budget, lay, &trial, &trialBest)
+			outerLoop(&diag.Xr, &diag.XminXr, budget, lay, &trial, &trialBest, false)
 			var trialNoise [39]float64
 			noiseGranule(&diag.Xr, &trial.ix, trial.globalGain, &trial.sf, lay, &trialNoise)
 			reExcess, reRatio, reOver := maskingMetrics(&trialNoise, &diag.XminXr, lay)

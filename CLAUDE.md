@@ -25,16 +25,22 @@ are all complete.
   truncation detection, and bit-exact `SeekToSample`.
 - **Encoder** (package `mp3`: `NewEncoder`, `EncodeFrame`, `Reset`, `Drained`,
   `Delay`, `TotalDelay`, `Stats`, `EncoderConfig`; constants `FrameSize`=1152,
-  `DefaultBitrate`=128000, `EncoderDelay`=528, `TotalDelay`=1057; sentinels
-  `ErrEncoderNotInitialized`, `ErrEncoderFinalized`): a fixed-bitrate CBR
-  MPEG-1 Layer III encoder at 32/44.1/48 kHz, mono or L/R stereo, the 14 legal
-  CBR bitrates. The pipeline covers the analysis filterbank, forward MDCT and
-  alias reduction, a power-law quantizer with ISO B.7 Huffman, framing plus
+  `DefaultBitrate`=128000, `EncoderDelay`=528, `TotalDelay`=1057; the
+  `RateControl` mode `RateControlExact` (default) or `RateControlFast`;
+  sentinels `ErrEncoderNotInitialized`, `ErrEncoderFinalized`): a fixed-bitrate
+  CBR MPEG-1 Layer III encoder at 32/44.1/48 kHz, mono or L/R stereo, the 14
+  legal CBR bitrates. The pipeline covers the analysis filterbank, forward MDCT
+  and alias reduction, a power-law quantizer with ISO B.7 Huffman, framing plus
   inner rate control plus a bit reservoir, psychoacoustic model 2, per-frame
-  M/S joint stereo, and attack-driven short blocks. Output is bit-exact
-  cross-arch, round-trip SNR gated, and accepted by ffmpeg and mpg123. The
-  stream is tagless (no Xing or LAME header). VBR is not planned. Quality at a
-  given bitrate still lags a fully tuned encoder like LAME; further tuning is
+  M/S joint stereo, and attack-driven short blocks. The inner rate loop picks
+  each granule's global_gain by an exact upward scan (`RateControlExact`, the
+  default) or an opt-in binary search (`RateControlFast`, about an order of
+  magnitude faster on escalation-heavy frames, rarely and only slightly
+  coarser, never finer). Default-mode output is bit-exact cross-arch, round-trip
+  SNR gated, and accepted by ffmpeg and mpg123; `RateControlFast` is likewise
+  cross-arch deterministic (integer selection) but not bit-identical to exact.
+  The stream is tagless (no Xing or LAME header). VBR is not planned. Quality at
+  a given bitrate still lags a fully tuned encoder like LAME; further tuning is
   the main open work, measured with the quality harness.
 - **Quality harness** (`tools/quality`, metrics in `internal/quality`): `task
   quality` compares the encoder against the `lame` binary (black box only) on a

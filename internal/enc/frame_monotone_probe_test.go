@@ -22,8 +22,35 @@ func linearFirstFit(bits []int, gg0, budget int) int {
 // lower_bound over the same table. gg0 already fitting, or gg0 already at 255,
 // returns gg0, which mirrors codeGranule's `gc.ri.bits <= effBudget || gg >= 255`
 // short-circuit in searchGlobalGainFast, so the model agrees with production at
-// that boundary rather than running off the end of the table.
+// that boundary rather than running off the end of the table. When the
+// lower_bound lands on a non-fitting gg (a top-of-range bump, or nothing fits),
+// production falls back to the exact scan, so the model returns linearFirstFit
+// there too.
 func bisectFirstFit(bits []int, gg0, budget int) int {
+	if bits[0] <= budget || gg0 >= 255 {
+		return gg0
+	}
+	lo, hi := gg0+1, 255
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if bits[mid-gg0] <= budget {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	if bits[lo-gg0] > budget {
+		return linearFirstFit(bits, gg0, budget)
+	}
+	return lo
+}
+
+// rawLowerBound is the binary-search lower_bound WITHOUT searchGlobalGainFast's
+// non-fitting fallback: the pre-fix behavior. It exists only so the probe can
+// spot the top-of-range-bump cases where the raw search lands on a non-fitting
+// gg (rawLowerBound != bisectFirstFit), which are exactly the cases the fix
+// recovers.
+func rawLowerBound(bits []int, gg0, budget int) int {
 	if bits[0] <= budget || gg0 >= 255 {
 		return gg0
 	}
@@ -93,15 +120,17 @@ func sweepBits(xr *[576]float64, sf *scfState, lay *bandLayout, blockType int) (
 
 // probeStats accumulates monotonicity and fast-vs-exact selection statistics.
 type probeStats struct {
-	inputs       int
-	bumpInputs   int
-	bumpCount    int
-	worstBump    int
-	budgetCheck  int
-	diverged     int // model: fast selected a coarser gg than exact
-	worstGGDelta int // largest fast_gg - exact_gg
-	finerViol    int // model: fast selected a FINER gg than exact (must stay 0)
-	prodDiverged int // production codeGranule(fast) confirmed coarser than exact
+	inputs        int
+	bumpInputs    int
+	bumpCount     int
+	worstBump     int
+	budgetCheck   int
+	diverged      int // model: fast selected a coarser gg than exact
+	worstGGDelta  int // largest fast_gg - exact_gg
+	finerViol     int // model: fast selected a FINER gg than exact (must stay 0)
+	prodDiverged  int // production codeGranule(fast) confirmed coarser than exact
+	recovered     int // model: a top-of-range bump the non-fitting fallback fixed
+	prodRecovered int // production confirmed the fallback restored the exact gg
 }
 
 // countBumps records the non-monotonicity of one bits(gg) sweep.
@@ -119,6 +148,67 @@ func (s *probeStats) countBumps(bits []int) {
 	}
 	if hadBump {
 		s.bumpInputs++
+	}
+}
+
+// checkSelection compares the fast and exact global_gain selection for one
+// (input, budget). Only two shapes need a real codeGranule re-run: a divergence
+// (fast settles coarser than exact, rawGG == fastGG) and a top-bump recovery (a
+// bump near 255 made the raw lower_bound land on a non-fitting gg and the
+// fallback restored the exact choice, rawGG != fastGG == exactGG). For those it
+// runs both modes and asserts the contract (model matches production, never
+// finer, still fits, and a recovery reproduces the exact coding), recording the
+// outcome in s.
+func (s *probeStats) checkSelection(t *testing.T, blkName string, bt, srIndex int, lay *bandLayout, xr *[576]float64, sf *scfState, gg0 int, bits []int, budget int) {
+	t.Helper()
+	eff := min(budget, maxPart23Length)
+	s.budgetCheck++
+	exactGG := linearFirstFit(bits, gg0, eff)
+	fastGG := bisectFirstFit(bits, gg0, eff)
+	rawGG := rawLowerBound(bits, gg0, eff)
+	if fastGG < exactGG {
+		s.finerViol++
+		return
+	}
+	isDiverge := fastGG > exactGG
+	isRecovery := rawGG != fastGG
+	if !isDiverge && !isRecovery {
+		return
+	}
+
+	var ex, fa granuleCoding
+	ex.blockType, fa.blockType = bt, bt
+	ex.sf, fa.sf = *sf, *sf
+	x1, x2 := *xr, *xr
+	codeGranule(&x1, budget, lay, &ex, false)
+	codeGranule(&x2, budget, lay, &fa, true)
+	if ex.globalGain != exactGG || fa.globalGain != fastGG {
+		t.Fatalf("model/production disagree at blk=%s sr=%d budget=%d: model exact=%d fast=%d, production exact=%d fast=%d",
+			blkName, srIndex, budget, exactGG, fastGG, ex.globalGain, fa.globalGain)
+	}
+	if fa.globalGain < ex.globalGain {
+		t.Fatalf("production fast selected a FINER gg than exact at blk=%s sr=%d budget=%d: fast=%d exact=%d",
+			blkName, srIndex, budget, fa.globalGain, ex.globalGain)
+	}
+	if fa.ri.bits > eff {
+		t.Fatalf("production fast overflowed budget at blk=%s sr=%d budget=%d: ri.bits=%d > %d",
+			blkName, srIndex, budget, fa.ri.bits, eff)
+	}
+
+	if isDiverge {
+		s.diverged++
+		if d := fastGG - exactGG; d > s.worstGGDelta {
+			s.worstGGDelta = d
+		}
+		s.prodDiverged++
+	}
+	if isRecovery {
+		if fa.globalGain != ex.globalGain {
+			t.Fatalf("production fast did not recover the exact gg on a top bump at blk=%s sr=%d budget=%d rawGG=%d: fast=%d exact=%d",
+				blkName, srIndex, budget, rawGG, fa.globalGain, ex.globalGain)
+		}
+		s.recovered++
+		s.prodRecovered++
 	}
 }
 
@@ -164,45 +254,7 @@ func TestCodeGranuleFastDivergence(t *testing.T) {
 				stats.countBumps(bits)
 
 				for _, budget := range budgets {
-					eff := min(budget, maxPart23Length)
-					stats.budgetCheck++
-					exactGG := linearFirstFit(bits, gg0, eff)
-					fastGG := bisectFirstFit(bits, gg0, eff)
-					if fastGG < exactGG {
-						stats.finerViol++
-						continue
-					}
-					if fastGG == exactGG {
-						continue
-					}
-					// Model divergence (fast coarser). Re-run the REAL codeGranule
-					// on this exact input and assert it diverges the same way and
-					// honors its contract, so the production fast search is guarded
-					// on inputs it actually diverges on, not only where it equals
-					// exact (the coverage gap a prior review found).
-					stats.diverged++
-					if d := fastGG - exactGG; d > stats.worstGGDelta {
-						stats.worstGGDelta = d
-					}
-					var ex, fa granuleCoding
-					ex.blockType, fa.blockType = blk.bt, blk.bt
-					ex.sf, fa.sf = sf, sf
-					x1, x2 := xr, xr
-					codeGranule(&x1, budget, lay, &ex, false)
-					codeGranule(&x2, budget, lay, &fa, true)
-					if ex.globalGain != exactGG || fa.globalGain != fastGG {
-						t.Fatalf("model/production disagree at blk=%s sr=%d budget=%d: model exact=%d fast=%d, production exact=%d fast=%d",
-							blk.name, srIndex, budget, exactGG, fastGG, ex.globalGain, fa.globalGain)
-					}
-					if fa.globalGain < ex.globalGain {
-						t.Fatalf("production fast selected a FINER gg than exact at blk=%s sr=%d budget=%d: fast=%d exact=%d",
-							blk.name, srIndex, budget, fa.globalGain, ex.globalGain)
-					}
-					if fa.ri.bits > eff {
-						t.Fatalf("production fast overflowed budget at blk=%s sr=%d budget=%d: ri.bits=%d > %d",
-							blk.name, srIndex, budget, fa.ri.bits, eff)
-					}
-					stats.prodDiverged++
+					stats.checkSelection(t, blk.name, blk.bt, srIndex, lay, &xr, &sf, gg0, bits, budget)
 				}
 			}
 		}
@@ -211,8 +263,8 @@ func TestCodeGranuleFastDivergence(t *testing.T) {
 	t.Logf("inputs=%d  bumpInputs=%d (%.1f%%)  bumpCount=%d  worstBump=%d bits",
 		stats.inputs, stats.bumpInputs, 100*float64(stats.bumpInputs)/float64(stats.inputs),
 		stats.bumpCount, stats.worstBump)
-	t.Logf("selection checks=%d  diverged=%d (%.3f%%)  worst gg delta=%d  production divergences verified=%d",
-		stats.budgetCheck, stats.diverged, 100*float64(stats.diverged)/float64(stats.budgetCheck), stats.worstGGDelta, stats.prodDiverged)
+	t.Logf("selection checks=%d  diverged=%d (%.3f%%)  worst gg delta=%d  prod divergences verified=%d  top-bump recoveries verified=%d",
+		stats.budgetCheck, stats.diverged, 100*float64(stats.diverged)/float64(stats.budgetCheck), stats.worstGGDelta, stats.prodDiverged, stats.prodRecovered)
 
 	if stats.finerViol > 0 {
 		t.Errorf("fast selected a FINER gg than exact in %d cases: the never-finer contract is broken", stats.finerViol)
@@ -226,6 +278,11 @@ func TestCodeGranuleFastDivergence(t *testing.T) {
 	if stats.prodDiverged == 0 {
 		t.Fatal("no production divergence verified: the fast search contract was never checked on a real divergence")
 	}
+	// Top-of-range-bump recoveries are corpus-fragile (they need minGlobalGain
+	// high with a fit only just below 255), so this probe only reports them and
+	// verifies any it hits; the hard guard that the fallback recovers rather
+	// than truncates is TestCodeGranuleFastRecoversTopBump.
+	t.Logf("top-of-range-bump recoveries hit and verified by the probe: %d", stats.prodRecovered)
 }
 
 // TestProbeModelsMatchProduction ties the cheap table-based models
@@ -272,5 +329,66 @@ func TestProbeModelsMatchProduction(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestCodeGranuleFastRecoversTopBump is the regression for the top-of-range
+// bump reported on PR #60: a granule whose bits(gg) fits at gg 253 but rises
+// again at 254 and 255, so the plain binary-search lower_bound overshoots to a
+// non-fitting 255 and, left alone, the truncation fallback would zero a
+// scalefactor band even though gg 253 codes within budget. searchGlobalGainFast
+// must instead recover the exact gg. This pins a concrete such granule (a single
+// very loud short-block line, minGlobalGain 206) and asserts the fast coding
+// equals the exact coding and fits, plus a positive control that the case
+// really is a top bump the raw lower_bound mishandles, so it cannot pass
+// vacuously if the corpus or region costs shift.
+func TestCodeGranuleFastRecoversTopBump(t *testing.T) {
+	lay := layoutFor(blockShort, 0)
+	const budget = 19
+
+	// Reconstruct the deterministic granule: one loud line, scalefac_scale=1.
+	seed := uint64(188)*2654435761 + 12345
+	var xr [576]float64
+	idx := int(testsignal.LCG(&seed) * 60)
+	xr[idx] = testsignal.LCGSigned(&seed) * 3e6
+	var sf scfState
+	if testsignal.LCG(&seed) < 0.5 {
+		sf.scalefacScale = 1
+	}
+
+	// Positive control: confirm this is genuinely a top-of-range bump, so the
+	// raw lower_bound lands on a non-fitting gg while a fit exists below 255.
+	gg0 := minGlobalGain(&xr, &sf, lay)
+	bits := make([]int, 0, 256-gg0)
+	var probe granuleCoding
+	probe.sf, probe.lay, probe.blockType = sf, lay, blockShort
+	for gg := gg0; gg <= 255; gg++ {
+		recode(&xr, gg, lay, &probe)
+		bits = append(bits, probe.ri.bits)
+	}
+	raw := rawLowerBound(bits, gg0, budget)
+	exactSel := linearFirstFit(bits, gg0, budget)
+	if bits[raw-gg0] <= budget || exactSel >= 255 || bits[exactSel-gg0] > budget {
+		t.Fatalf("input is no longer a top-of-range bump (gg0=%d rawGG=%d bits=%d exactGG=%d bits=%d); pick a new regression case",
+			gg0, raw, bits[raw-gg0], exactSel, bits[exactSel-gg0])
+	}
+
+	// The fix: fast recovers the exact within-budget coding instead of
+	// overshooting to 255 and truncating.
+	var ex, fa granuleCoding
+	ex.blockType, fa.blockType = blockShort, blockShort
+	ex.sf, fa.sf = sf, sf
+	x1, x2 := xr, xr
+	codeGranule(&x1, budget, lay, &ex, false)
+	codeGranule(&x2, budget, lay, &fa, true)
+
+	if fa.globalGain != ex.globalGain {
+		t.Fatalf("fast did not recover the exact gg on a top bump: fast globalGain=%d, exact=%d (the pre-fix search would truncate at 255)", fa.globalGain, ex.globalGain)
+	}
+	if fa != ex {
+		t.Fatalf("recovered fast coding differs from exact at globalGain %d: the fallback must reproduce the exact coding exactly", fa.globalGain)
+	}
+	if fa.ri.bits > budget {
+		t.Fatalf("recovered fast coding does not fit: ri.bits=%d > budget=%d", fa.ri.bits, budget)
 	}
 }

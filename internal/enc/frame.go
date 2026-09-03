@@ -159,6 +159,16 @@ func searchGlobalGainExact(xr *[576]float64, effBudget, gg int, lay *bandLayout,
 // reduction traded for the speed. Its output is therefore not bit-identical to
 // the exact scan, which is why RateControlFast is opt-in and the encoder
 // defaults to RateControlExact.
+//
+// One case is corrected rather than accepted: a bump at the very TOP of the
+// range (bits fitting at some gg but rising again above it, e.g. gg 253 fits
+// while 254 and 255 do not) makes the lower_bound converge to a non-fitting
+// gg 255. Left alone, codeGranule's truncation fallback would then zero
+// spectral lines even though a within-budget coding exists lower down. So when
+// the search lands on a gg that does not fit, it re-runs the exact scan from
+// the minimum gain, which recovers the true smallest fitting gg (or reaches
+// 255 only when nothing fits). The fast path therefore never forces truncation
+// unless the exact path also would.
 func searchGlobalGainFast(xr *[576]float64, effBudget, gg int, lay *bandLayout, gc *granuleCoding) int {
 	if gc.ri.bits <= effBudget || gg >= 255 {
 		return gg
@@ -174,6 +184,13 @@ func searchGlobalGainFast(xr *[576]float64, effBudget, gg int, lay *bandLayout, 
 		}
 	}
 	recode(xr, lo, lay, gc)
+	if gc.ri.bits > effBudget {
+		// The lower_bound did not find a fitting gg: either nothing in
+		// [gg, 255] fits, or a top-of-range bump hid a lower fit. Recover the
+		// exact result rather than truncating a coding that fits at some gg.
+		recode(xr, gg, lay, gc)
+		return searchGlobalGainExact(xr, effBudget, gg, lay, gc)
+	}
 	return lo
 }
 

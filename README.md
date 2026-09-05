@@ -116,6 +116,39 @@ For the interleaved output that means discarding the first
 `TotalDelay * Channels` sample values (not `TotalDelay` values) to align
 the decoded audio back to the original input.
 
+## Audio quality
+
+go-mp3 is the newest and least-tuned encoder in this family. It reproduces the
+waveform faithfully (high SNR), but its psychoacoustic model is less mature than
+LAME's, so its PEAQ score can trail LAME, most visibly on dense material and at
+low bitrate. At 128 kbps on typical content the two are close; the gap widens as
+the bitrate drops, and go-mp3 is slower than LAME. The encoder is actively being
+tuned, and the harness below measures it against LAME on every run.
+
+Quality is measured objectively, not by ear: real 48 kHz recordings are encoded,
+decoded, and scored against the original.
+
+- ViSQOL (MOS, 1-5, higher is better): predicted listening-test score; 4.5+ is
+  effectively transparent.
+- PEAQ (ITU-R BS.1387 ODG, 0 to -4, closer to 0 is better): audibility of
+  impairment; 0 imperceptible, -1 audible but not annoying, -2 slightly
+  annoying.
+- SNR and spectral distance (dB): raw fidelity. A high SNR alone does not
+  guarantee good perceived quality.
+
+Snapshot (2026-09-05), 128 kbps, decoded output scored against the source:
+
+| Clip              | go-mp3 ViSQOL / PEAQ | LAME ViSQOL / PEAQ |
+|-------------------|----------------------|--------------------|
+| nature soundscape | 4.66 / -0.91         | 4.62 / -0.06       |
+| pygmy owl         | 4.47 / -0.13         | 4.38 / -0.11       |
+
+ViSQOL sometimes favours go-mp3 while PEAQ favours LAME; the PEAQ gap is the
+honest signal that go-mp3's noise shaping still lags LAME. This is a small
+directional sample, not a full benchmark; results vary with material and
+bitrate. The harness below reproduces this against a full corpus, and a CI
+regression gate is planned (#64).
+
 ## Quality measurement against LAME
 
 `task quality` (or `go run ./tools/quality`) encodes a deterministic

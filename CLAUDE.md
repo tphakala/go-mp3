@@ -83,12 +83,14 @@ are all complete.
 - SIMD kernels (currently the region-cost reduction `subMinReduce` in
   `internal/enc`, an AVX2 kernel plus a NEON kernel with a pure-Go reference)
   are gated by the `noasm` build tag: the default build links the SIMD path,
-  `-tags noasm` compiles the pure-Go dispatcher with no assembly and no
-  `golang.org/x/sys/cpu` import. mp3-specific kernels live in this repo; the
-  `github.com/tphakala/simd` library is reserved for generic primitives and is
-  not a dependency. The goldens must stay bit-exact with AND without the tag on
-  amd64 and arm64 (CI runs a `Test (noasm fallback)` job on both arches), and
-  each kernel carries a differential parity/fuzz test against its reference.
+  `-tags noasm` compiles the pure-Go dispatcher with no assembly. The
+  `github.com/tphakala/simd` library provides generic, architecture-neutral
+  SIMD building blocks that this project may depend on when a generic primitive
+  fits. mp3-specific fused kernels (bit-exact Huffman and DSP logic) live in
+  this repo and are NEVER pushed up into the simd library; they belong here.
+  The goldens must stay bit-exact with AND without the tag on amd64 and arm64
+  (CI runs a `Test (noasm fallback)` job on both arches), and each kernel
+  carries a differential parity/fuzz test against its reference.
 
 ## Hard rules
 

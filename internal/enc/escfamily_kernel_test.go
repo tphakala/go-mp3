@@ -171,7 +171,8 @@ func TestEscFamilyAccumParity(t *testing.T) {
 // path) agree.
 func TestEscFamilyAccumExtremes(t *testing.T) {
 	mags := []int32{0, 1, 14, 15, 16, 100, 8205, 8206, 8207, 9000}
-	var ax, ay []int32
+	ax := make([]int32, 0, len(mags)*len(mags))
+	ay := make([]int32, 0, len(mags)*len(mags))
 	for _, a := range mags {
 		for _, b := range mags {
 			ax = append(ax, a)

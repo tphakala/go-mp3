@@ -110,8 +110,9 @@ type regionInfo struct {
 // dispatcher (issue #48). bigValuesPrefixCost's per-pair loop therefore
 // calls pairCostDirect, not pairCost: it costs only nonEscBigTables, every
 // one of which has linbits == 0 (TestEscFamilyTablePartition pins that), and
-// the escape families reach their costs through accumEscFamilyFlat and
-// accumEscFamilyCost instead.
+// the escape families reach their costs through escFamilyAccum (issue #66;
+// accumEscFamilyFlat and accumEscFamilyCost now survive only as its test
+// oracle).
 //
 // pairCost itself therefore has no production caller left. It is not dead:
 // it stays the one entry point that is correct for an arbitrary table, and
@@ -201,11 +202,12 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 	return pb
 }
 
-// accumEscFamilyFlat is accumEscFamilyCost's non-escaping case, split out so
-// it can inline: with neither magnitude at or above escMaxDirect, no table in
-// the family applies a linbits addend and none can find the pair
-// unrepresentable, so every one of the eight costs is the same shared
-// codeword-plus-sign total.
+// accumEscFamilyFlat is accumEscFamilyCost's non-escaping case: with neither
+// magnitude at or above escMaxDirect, no table in the family applies a linbits
+// addend and none can find the pair unrepresentable, so every one of the eight
+// costs is the same shared codeword-plus-sign total. Since issue #66 folded the
+// production escape-family cost into escFamilyAccum, this and accumEscFamilyCost
+// survive only as the differential test oracle (escFamilyAccumScalarOld).
 //
 // Callers must test that themselves; this half does not re-check it, and
 // the way it fails is worth knowing before adding a caller. At exactly
@@ -238,14 +240,12 @@ func accumEscFamilyFlat(acc *[8]int, codes []codeEntry, ax, ay int32) {
 // addend linbits (index 15 is the escape marker, ISO 2.4.2.7), and a value
 // beyond 15 + (1<<linbits) - 1 makes the pair unrepresentable (impossibleCost).
 //
-// This function stays correct for any pair, but bigValuesPrefixCost routes
-// only ESCAPING pairs here (issue #48). Neither magnitude escaping is the
-// common case at ordinary quantization and it makes every per-table test
-// statically true, so that case goes to accumEscFamilyFlat, which the
-// compiler can inline, instead of paying a call plus a per-table shift and
-// two comparisons here. The loop below still computes the same answer for
-// such a pair, just more slowly, so a caller that does not pre-check is
-// correct rather than wrong.
+// This function stays correct for any pair. It once split escaping from
+// non-escaping pairs (routing the flat case to accumEscFamilyFlat for an
+// inlinable fast path, issue #48); since issue #66 folded the production path
+// into escFamilyAccum, both halves now serve only as the differential test
+// oracle (escFamilyAccumScalarOld), so the split is kept for that oracle's
+// fidelity to the historical scalar path, not for hot-path performance.
 // maxv is the family's precomputed per-table maxVal bounds (escFam16MaxVal /
 // escFam24MaxVal), passed in rather than recomputed per pair.
 func accumEscFamilyCost(acc, linb *[8]int, maxv *[8]int32, codes []codeEntry, ax, ay int32) {

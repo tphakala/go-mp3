@@ -21,6 +21,7 @@ tools/quality/out/
 *.exe
 *.test
 *.out
+*.o
 
 # Coverage and profiling
 coverage.out

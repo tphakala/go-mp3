@@ -11,8 +11,8 @@ var (
 )
 
 // escFamImpossible is impossibleCost as an addressable int32 the fused kernels
-// broadcast into a lane vector (VPBROADCASTD / VDUP take memory, not an
-// assembler immediate).
+// broadcast into a lane vector (VPBROADCASTD on amd64, VLD1R on arm64, both take
+// memory, not an assembler immediate).
 var escFamImpossible = int32(impossibleCost)
 
 func linbitsI32(l *[8]int) [8]int32 {
@@ -46,8 +46,26 @@ func linbitsI32(l *[8]int) [8]int32 {
 // running sum overflows (it never does here: the worst case is about
 // 288*impossibleCost ~ 3e8, far inside int32).
 func escFamilyAccumGo(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32) {
+	// Reslice to the common length so the bounds-check prover clears the ay,
+	// base16 and base24 accesses from the single len(ax) fact (they are distinct
+	// backing arrays). The kernels' contract requires all four to have length n;
+	// a shorter slice panics here exactly as the old per-pair index would.
+	n := len(ax)
+	ay, base16, base24 = ay[:n], base16[:n], base24[:n]
 	for p := range ax {
 		axp, ayp := ax[p], ay[p]
+		b16, b24 := base16[p], base24[p]
+		if axp < escMaxDirect && ayp < escMaxDirect {
+			// Non-escaping pair (the common case): escCount is 0 and no table's
+			// maxVal can bind (the smallest is escMaxDirect+1), so every lane
+			// just adds base. This mirrors the former accumEscFamilyFlat and
+			// keeps the scalar path (noasm, non-AVX2, non-amd64/arm64) cheap.
+			for j := range 8 {
+				acc16[j] += b16
+				acc24[j] += b24
+			}
+			continue
+		}
 		var escCount int32
 		if axp >= escMaxDirect {
 			escCount++
@@ -55,7 +73,6 @@ func escFamilyAccumGo(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32) {
 		if ayp >= escMaxDirect {
 			escCount++
 		}
-		b16, b24 := base16[p], base24[p]
 		for j := range 8 {
 			if axp > escFam16MaxVal[j] || ayp > escFam16MaxVal[j] {
 				acc16[j] += impossibleCost

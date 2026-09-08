@@ -15,7 +15,7 @@
 // stay resident in Y0/Y1 across the whole run and are written back once.
 //
 // Requires len(ay)==len(base16)==len(base24)==n. n>=0 is safe (n==0 stores the
-// accumulators unchanged); the Go dispatcher only routes here for n>=4.
+// accumulators unchanged); the Go dispatcher routes every non-empty run here.
 TEXT ·escFamilyAccumAVX2(SB), NOSPLIT, $0-112
 	MOVQ acc16+0(FP), R13
 	MOVQ acc24+8(FP), R14

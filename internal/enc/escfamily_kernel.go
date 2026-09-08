@@ -1,7 +1,7 @@
 package enc
 
 // escFam16LinbitsI32 / escFam24LinbitsI32 are the int32 forms of the two escape
-// families' per-table linbits (escFam16Linbits / escFam24Linbits are []int for
+// families' per-table linbits (escFam16Linbits / escFam24Linbits are [8]int for
 // the scalar accumEscFamily* path). The fused kernels read these as 8-wide int32
 // constant vectors; deriving them here keeps them from drifting out of sync with
 // the []int originals.

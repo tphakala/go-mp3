@@ -591,7 +591,8 @@ func quantRefNoSkip(x, is float64) int32 {
 // quantZeroMax to or past t0 (for example the round value 0.5) reddens it, then
 // sweeps scaled magnitudes and checks quantizeGranule matches quantRefNoSkip on
 // every line: a broad [0.35, 0.65] pass plus a fine pass densely straddling t0,
-// both signs, over the full global-gain range. quantizeGranule and the
+// both signs, across global gains 150 to 255 (a range spanning is from about
+// 2^16 down to 2^-10). quantizeGranule and the
 // reference compute the identical t = math.Abs(x)*is, so any divergence would be
 // a line the skip zeroed that the full chain would not (issue #62).
 func TestQuantizeZeroSkipExact(t *testing.T) {

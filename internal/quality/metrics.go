@@ -49,7 +49,7 @@ type Metrics struct {
 	SegSNR    float64 // dB, mean per-segment SNR clamped to [SegSNRMin, SegSNRMax]; NaN when no active segment
 	LSD       float64 // dB, mean log-spectral distance over active frames; NaN when no active frame
 	PreEcho   float64 // dB, pre-attack error energy relative to attack energy; NaN when no channel had an attack
-	PreEchoN  int     // attacks PreEcho was averaged over (across the attack-bearing channels); >0 iff PreEcho is finite
+	PreEchoN  int     // total attacks over the attack-bearing channels (a count, not PreEcho's channel-averaging denominator); >0 iff PreEcho is finite
 	Bandwidth float64 // Hz, highest long-term PSD bin within BandwidthFloorDB of the peak
 }
 
@@ -88,9 +88,9 @@ func Compare(ref, deg [][]float64, sampleRate int) Metrics {
 		m.LSD += l / nch
 		m.Bandwidth = max(m.Bandwidth, bw)
 		// PreEcho returns (NaN, 0) for a channel with no attack. Skipping those
-		// channels keeps a channel that did have transients from being averaged
-		// into NaN, and keeps PreEchoN counting exactly the attacks the finite
-		// mean was computed over: PreEchoN > 0 iff PreEcho is finite.
+		// channels averages PreEcho over the attack-bearing channels only (the
+		// denominator is preChans, the channel count, not PreEchoN), and sums
+		// their attack counts into PreEchoN: PreEchoN > 0 iff PreEcho is finite.
 		if p, ev := PreEcho(ref[c], deg[c], sampleRate); ev > 0 {
 			preSum += p
 			preChans++

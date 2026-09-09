@@ -124,10 +124,11 @@ pair_next:
 	ADD $1, R6
 	B pair_loop
 band_store:
-	ADD $64, R10, R9                     // col16 base = row + 64
-	VST1 [V0.S4, V1.S4], (R9)            // prefixCost[k+1][16..23]
-	ADD $96, R10, R9                     // col24 base = row + 96
-	VST1 [V2.S4, V3.S4], (R9)            // prefixCost[k+1][24..31]
+	ADD $64, R10, R9                     // cols 16..31 base = row + 64
+	// acc16 (V0/V1) and acc24 (V2/V3) are consecutive registers, and cols
+	// 16..31 are the contiguous 64 bytes at row+64, so one 4-register store
+	// writes exactly the same bytes as two 2-register stores (issue #68 review).
+	VST1 [V0.S4, V1.S4, V2.S4, V3.S4], (R9) // prefixCost[k+1][16..31]
 	ADD $8, R0                           // &pb[k+2]
 	ADD $128, R10                        // next prefixCost row
 	ADD $1, R8                           // k++

@@ -9,7 +9,7 @@ const maxQuant = 8206
 // quantZeroMax is a conservative lower bound on the scaled magnitude t =
 // |xr|*is below which the power-law quantizer always rounds to exactly 0.
 // A line quantizes to 0 iff sqrt(t*sqrt(t)) + 0.4054 < 1, i.e. iff t is below
-// the true boundary t0 = 0.5946^(4/3) ~= 0.4999996. quantZeroMax sits well
+// the true boundary t0 = 0.5946^(4/3) ~= 0.4999960. quantZeroMax sits well
 // under t0 (margin ~0.01, far above any float64 rounding), so every line the
 // zero fast path skips would quantize to 0 by the full sqrt chain too: the
 // skip is bit-identical, only cheaper. quantizeGranule uses it to avoid the two

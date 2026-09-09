@@ -88,27 +88,21 @@ func escFamilyAccumGo(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32) {
 	}
 }
 
-
-// escFamilyPrefix fuses the whole escape-family phase of bigValuesPrefixCost
-// into ONE call per granule big-values run (issue #68). It walks the coding
-// bands 0..nBands-1 internally, keeping the two 8-lane accumulators resident
-// across the whole run, and after each band k writes the CUMULATIVE prefix cost
-// for escape tables 16..23 into prefixCost[k+1][16..23] and 24..31 into
-// prefixCost[k+1][24..31]. Band k covers big-values pairs [pb[k], pb[k+1]);
-// pb[0] is 0. A zero-width band still writes the (unchanged) running
-// accumulator. Rows 0 and columns 0..15 are never touched, so the caller's
-// non-escape table costs and the empty-prefix row 0 survive.
-//
-// This replaces the former ~20-39 per-band escFamilyAccum calls plus the Go
-// snapshot loop with a single call: the SIMD kernels load their loop-invariant
-// constant vectors once and store the snapshots in place. The base16/base24
-// codebook gather stays a Go pre-pass in the caller (kept out of the vector
-// path, as before).
-
-// escFamilyPrefixGo is the pure-Go reference and the noasm/non-amd64/arm64
-// fallback for escFamilyPrefix: the exact band loop bigValuesPrefixCost used
-// before the fused kernels, so it is output-neutral by construction and serves
-// as the differential oracle the AVX2/NEON kernels are pinned against.
+// escFamilyPrefixGo is the pure-Go reference for escFamilyPrefix and its
+// noasm/non-amd64/arm64 fallback. escFamilyPrefix fuses the whole escape-family
+// phase of bigValuesPrefixCost into ONE call per granule big-values run (issue
+// #68): it walks the coding bands 0..nBands-1, keeping the two 8-lane
+// accumulators resident across the whole run, and after each band k writes the
+// CUMULATIVE prefix cost for escape tables 16..23 into prefixCost[k+1][16..23]
+// and 24..31 into prefixCost[k+1][24..31]. Band k covers big-values pairs
+// [pb[k], pb[k+1]); pb[0] is 0. A zero-width band still writes the (unchanged)
+// running accumulator. Row 0 and columns 0..15 are never touched, so the
+// caller's non-escape table costs and the empty-prefix row 0 survive. This is
+// the exact band loop bigValuesPrefixCost used before the fused kernels, so it
+// is output-neutral by construction and is the differential oracle the AVX2/NEON
+// kernels are pinned against. The base16/base24 codebook gather stays a Go
+// pre-pass in the caller, kept out of the vector path (the arch dispatchers
+// carry the same summary).
 func escFamilyPrefixGo(prefixCost *[40][32]int32, pb *[40]int, nBands int, ax, ay, base16, base24 *[288]int32) {
 	var acc16, acc24 [8]int32
 	p := 0

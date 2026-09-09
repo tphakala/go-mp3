@@ -110,7 +110,7 @@ type regionInfo struct {
 // dispatcher (issue #48). bigValuesPrefixCost's per-pair loop therefore
 // calls pairCostDirect, not pairCost: it costs only nonEscBigTables, every
 // one of which has linbits == 0 (TestEscFamilyTablePartition pins that), and
-// the escape families reach their costs through escFamilyAccum (issue #66;
+// the escape families reach their costs through escFamilyPrefix (issue #66;
 // accumEscFamilyFlat and accumEscFamilyCost now survive only as its test
 // oracle).
 //
@@ -206,7 +206,8 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 // magnitude at or above escMaxDirect, no table in the family applies a linbits
 // addend and none can find the pair unrepresentable, so every one of the eight
 // costs is the same shared codeword-plus-sign total. Since issue #66 folded the
-// production escape-family cost into escFamilyAccum, this and accumEscFamilyCost
+// production escape-family cost into escFamilyAccumGo (reached through the fused
+// escFamilyPrefix), this and accumEscFamilyCost
 // survive only as the differential test oracle (escFamilyAccumScalarOld).
 //
 // Callers must test that themselves; this half does not re-check it, and
@@ -243,7 +244,8 @@ func accumEscFamilyFlat(acc *[8]int, codes []codeEntry, ax, ay int32) {
 // This function stays correct for any pair. It once split escaping from
 // non-escaping pairs (routing the flat case to accumEscFamilyFlat for an
 // inlinable fast path, issue #48); since issue #66 folded the production path
-// into escFamilyAccum, both halves now serve only as the differential test
+// into escFamilyAccumGo (reached through the fused escFamilyPrefix), both halves
+// now serve only as the differential test
 // oracle (escFamilyAccumScalarOld), so the split is kept for that oracle's
 // fidelity to the historical scalar path, not for hot-path performance.
 // maxv is the family's precomputed per-table maxVal bounds (escFam16MaxVal /

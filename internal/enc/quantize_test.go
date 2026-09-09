@@ -529,3 +529,86 @@ func TestQuantizeShortKnownAnswers(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkQuantizeGranule isolates the power-law quantizer's per-granule cost
+// on a full broadband granule (all 576 lines non-zero, the escalation-heavy
+// regime issue #62 targets), where the two math.Sqrt per line dominate. The
+// four-way unroll's latency hiding shows here without the wall-clock noise of a
+// whole frame encode.
+func BenchmarkQuantizeGranule(b *testing.B) {
+	lay := &layoutLong[0]
+	var sf scfState
+	var xr [576]float64
+	seed := uint64(1)
+	for i := range xr {
+		xr[i] = (float64(testsignal.LCG(&seed))*2 - 1) * 2000
+	}
+	var ix [576]int32
+	// dense: gg=quantGainBase makes is~=1, so every line is non-zero, the worst
+	// case for the zero fast path (it must not regress here). sparse: a higher
+	// gg shrinks is until roughly half the spectrum falls below the zero
+	// boundary, the low-bitrate escalation regime the skip targets (issue #62).
+	cases := []struct {
+		name string
+		gg   int
+	}{
+		{"dense", quantGainBase},
+		{"sparse", quantGainBase + 44},
+	}
+	for _, c := range cases {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				quantizeGranule(&xr, c.gg, &sf, lay, &ix)
+			}
+		})
+	}
+}
+
+// quantRefNoSkip is quantizeGranule's exact per-line body WITHOUT the zero fast
+// path, the reference TestQuantizeZeroSkipExact checks the skip against.
+func quantRefNoSkip(x, is float64) int32 {
+	tt := math.Abs(x) * is
+	v := math.Sqrt(tt * math.Sqrt(tt))
+	var m int32
+	if nint := v + 0.4054; nint <= float64(maxQuant) {
+		m = int32(nint)
+	} else {
+		m = maxQuant
+	}
+	if x < 0 {
+		m = -m
+	}
+	return m
+}
+
+// TestQuantizeZeroSkipExact pins quantizeGranule's zero fast path bit-for-bit
+// against the full sqrt chain. The skip can only change a line's result near
+// the quantizer's zero boundary (t = |xr|*is ~= 0.5), so it sweeps scaled
+// magnitudes densely across [0.35, 0.65] at both signs over the full global
+// gain range and asserts every line matches quantRefNoSkip. quantizeGranule and
+// the reference compute the identical t = math.Abs(x)*is, so any divergence
+// would be a line the skip zeroed that the full chain would not (issue #62).
+func TestQuantizeZeroSkipExact(t *testing.T) {
+	lay := &layoutLong[0]
+	var sf scfState
+	for gg := 150; gg <= 255; gg++ {
+		is := stepQ(quantGainBase - gg) // sf zero: uniform is across bands
+		var xr [576]float64
+		for i := range xr {
+			tt := 0.35 + float64(i)*(0.30/575.0)
+			mag := tt / is
+			if i&1 == 0 {
+				mag = -mag
+			}
+			xr[i] = mag
+		}
+		var got [576]int32
+		quantizeGranule(&xr, gg, &sf, lay, &got)
+		for i := range xr {
+			if want := quantRefNoSkip(xr[i], is); got[i] != want {
+				t.Fatalf("gg=%d i=%d xr=%g is=%g: got %d want %d", gg, i, xr[i], is, got[i], want)
+			}
+		}
+	}
+}

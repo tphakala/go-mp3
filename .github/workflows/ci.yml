@@ -40,7 +40,20 @@ jobs:
       # escalation cost, but the suite total is dominated by packages it does
       # not touch, so the slower shared amd64 runner still measures about
       # 10-11 min here; 20m (down from 25m) keeps roughly 2x headroom over that.
+      #
+      # MP3_QUALITY_BASELINE=1 turns on the quality regression gate
+      # (TestQualityBaseline in tools/quality): it re-measures go-mp3's own
+      # objective quality on a small deterministic corpus and fails when a
+      # metric regresses past tolerance against
+      # tools/quality/testdata/baseline.json. It needs no external binary
+      # (go-mp3 encode plus this repo's pcm decode only), so it runs here rather
+      # than in the compat job, and on both arches: the metrics differ
+      # cross-arch only at the ~1e-13 level, far under the dB tolerances, so the
+      # amd64-frozen baseline gates arm64 too. A quality-tuning PR refreshes the
+      # baseline deliberately.
       - run: go test ./... -timeout 20m
+        env:
+          MP3_QUALITY_BASELINE: '1'
 
   test-noasm:
     name: Test (noasm fallback)

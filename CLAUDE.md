@@ -49,8 +49,14 @@ are all complete.
   SNR, band-limited SNR (at or below 16 kHz), segmental SNR, log-spectral
   distance, pre-echo, bandwidth, and (when the optional `visqol` and `peaq-odg`
   scorers plus `ffmpeg` are on PATH) ViSQOL MOS-LQO and PEAQ ODG, as Markdown
-  plus JSON under the gitignored `tools/quality/out/`. CI runs only the
-  `TestQualityHarness*` smoke cases with `lame` installed.
+  plus JSON under the gitignored `tools/quality/out/`. CI runs the
+  `TestQualityHarness*` smoke cases with `lame` installed (compat job) and a
+  lame-free regression gate (`TestQualityBaseline`, `task quality:gate`) in the
+  test job on both arches: it re-measures go-mp3's own objective quality on a
+  small deterministic corpus and fails when a metric regresses past tolerance
+  against the committed `tools/quality/testdata/baseline.json`. Refresh that
+  baseline deliberately with `task quality:gate:update` (on amd64, review the
+  diff); a quality-tuning PR re-freezes it like the encoder goldens.
   - Gotcha: a perfectly stationary periodic program cannot be aligned by
     cross-correlation (every lag one period apart scores the same), which is why
     the corpus gives its tonal programs a slow amplitude envelope and why the

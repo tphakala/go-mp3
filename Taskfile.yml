@@ -50,3 +50,9 @@ tasks:
   quality:smoke:
     desc: End-to-end smoke test of the quality harness against lame, mono plus stereo (fails if lame is missing)
     cmds: ["MP3_REQUIRE_LAME=1 go test ./tools/quality -run 'TestQualityHarness' -v -timeout 10m"]
+  quality:gate:
+    desc: Run the go-mp3 quality regression gate against the committed baseline (no lame needed; this is what CI runs)
+    cmds: ["MP3_QUALITY_BASELINE=1 go test ./tools/quality -run TestQualityBaseline -v -timeout 10m"]
+  quality:gate:update:
+    desc: Refresh the committed quality baseline (a deliberate, reviewed action; run on amd64, review the diff)
+    cmds: ["UPDATE_QUALITY_BASELINE=1 go test ./tools/quality -run TestQualityBaseline -v -timeout 10m"]

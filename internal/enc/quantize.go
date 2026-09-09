@@ -6,6 +6,18 @@ import "math"
 // (linbits 13 escape).
 const maxQuant = 8206
 
+// quantZeroMax is a conservative lower bound on the scaled magnitude t =
+// |xr|*is below which the power-law quantizer always rounds to exactly 0.
+// A line quantizes to 0 iff sqrt(t*sqrt(t)) + 0.4054 < 1, i.e. iff t is below
+// the true boundary t0 = 0.5946^(4/3) ~= 0.4999960. quantZeroMax sits well
+// under t0 (margin ~0.01, far above any float64 rounding), so every line the
+// zero fast path skips would quantize to 0 by the full sqrt chain too: the
+// skip is bit-identical, only cheaper. quantizeGranule uses it to avoid the two
+// math.Sqrt on the zero tail, which is most of the spectrum in the low-bitrate
+// escalation regime (issue #62). TestQuantizeZeroSkipExact and the encoder
+// goldens pin the bit-exactness.
+const quantZeroMax = 0.49
+
 // pow2Quarter holds 2^0, 2^(1/4), 2^(1/2) and 2^(3/4) as exact hex float
 // literals, the four quarter-integer steps stepQ interpolates between
 // powers of two. Hard-coded rather than computed with math.Pow at init, per
@@ -149,6 +161,18 @@ func quantizeGranule(xr *[576]float64, gg int, sf *scfState, lay *bandLayout, ix
 		end := i + lay.width[sfb]
 		for ; i < end; i++ {
 			t := math.Abs(xr[i]) * is
+			// Zero fast path: a scaled magnitude below quantZeroMax always
+			// rounds to 0, so skip the two math.Sqrt that would only confirm
+			// it (issue #62). In the escalation regime the high-frequency tail
+			// is mostly such lines, and quantizeGranule runs once per
+			// global_gain candidate, so this removes the bulk of the sqrt work.
+			// The bound is held safely below the true zero boundary, so the
+			// skipped lines are exactly the ones the full chain zeros too:
+			// bit-identical output (quantZeroMax's doc comment proves it).
+			if t < quantZeroMax {
+				ix[i] = 0
+				continue
+			}
 			v := math.Sqrt(t * math.Sqrt(t))
 
 			var m int32

@@ -2,18 +2,16 @@
 
 package enc
 
-// escFamilyAccum on arm64 uses the fused NEON kernel (NEON is baseline on arm64,
-// so no runtime feature check) for every non-empty band: the kernel vectorizes
-// across the 8 tables and walks one pair per iteration, so it beats the scalar
-// reference at every run length down to a single pair. Only a genuinely empty
-// band skips it (its cumulative prefix cost is unchanged). Built into the
-// default (SIMD) build; the noasm tag selects the pure-Go dispatcher instead.
-func escFamilyAccum(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32) {
-	if len(ax) == 0 {
-		return // zero-width band: cumulative prefix cost unchanged
-	}
-	escFamilyAccumNEON(acc16, acc24, ax, ay, base16, base24)
+// escFamilyPrefix computes the whole escape-family phase of one
+// bigValuesPrefixCost call in a single fused kernel (issue #68). On arm64 it
+// uses the fused NEON kernel (NEON is baseline on arm64, so no runtime feature
+// check). The kernel walks the coding bands internally, keeps the two 8-lane
+// accumulators resident, and writes each band's cumulative prefix cost straight
+// into prefixCost, so the former per-band call overhead and Go snapshot loop are
+// gone. The base16/base24 codebook gather stays a Go pre-pass in the caller.
+func escFamilyPrefix(prefixCost *[40][32]int32, pb *[40]int, nBands int, ax, ay, base16, base24 *[288]int32) {
+	escFamilyPrefixNEON(prefixCost, pb, nBands, ax, ay, base16, base24)
 }
 
 //go:noescape
-func escFamilyAccumNEON(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32)
+func escFamilyPrefixNEON(prefixCost *[40][32]int32, pb *[40]int, nBands int, ax, ay, base16, base24 *[288]int32)

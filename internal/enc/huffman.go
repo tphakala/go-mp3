@@ -358,7 +358,7 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 
 	// Escape families 16-23 and 24-31: the shared codeword and sign cost for
 	// each family is computed once per pair here (the codes[] gather, kept in Go
-	// so the fused kernel stays gather-free), then escFamilyAccum folds in each
+	// so the fused kernel stays gather-free), then escFamilyPrefix folds in each
 	// table's linbits escape term across the family's 8 lanes (issue #66,
 	// generalizing issue #37's per-family factoring). base16/base24 hold the
 	// per-pair codeword-plus-sign totals; ax/ay carry the unclamped magnitudes
@@ -384,19 +384,7 @@ func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCos
 		base24[p] = int32(table24Codes[int(cx)*escTableDim+int(cy)].len) + sign
 	}
 
-	var acc16, acc24 [8]int32
-	p := 0
-	for k := range lay.nBands {
-		end := pb[k+1]
-		escFamilyAccum(&acc16, &acc24, ax[p:end], ay[p:end], base16[p:end], base24[p:end])
-		p = end
-		for j, t := range escFam16Tables {
-			prefixCost[k+1][t] = acc16[j]
-		}
-		for j, t := range escFam24Tables {
-			prefixCost[k+1][t] = acc24[j]
-		}
-	}
+	escFamilyPrefix(prefixCost, pb, lay.nBands, &ax, &ay, &base16, &base24)
 
 	// Invalid table slots 4 and 14 carry no codes and are never selected, but
 	// rangeCost's SIMD min-reduce scans the full 32-wide band row rather than

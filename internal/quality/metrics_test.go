@@ -221,6 +221,50 @@ func TestCompareAveragesChannels(t *testing.T) {
 	}
 }
 
+// TestComparePreEchoMixedChannels: a stereo pair with a transient attack in one
+// channel and none in the other must report a finite PreEcho (the attack
+// channel's value, not NaN) and a PreEchoN counting exactly that channel's
+// attacks. This is issue #65: before the fix Compare averaged the no-attack
+// channel's NaN into the mean, yielding PreEcho=NaN while PreEchoN>0.
+func TestComparePreEchoMixedChannels(t *testing.T) {
+	const sr = 48000
+	const n = sr // 1 s
+	// Left: silence then a 50 ms burst at 0.5 s (one attack). Right: a steady
+	// tone (no attack: constant per-window energy never exceeds preEchoRatio
+	// times the previous window). deg is a clean copy of ref, so the left
+	// channel's pre-attack error is far below 0 dB and finite while the right
+	// channel yields (NaN, 0) from PreEcho.
+	left := make([]float64, n)
+	copy(left[sr/2:], genNoise(2400, 0.8, 3))
+	right := genTone(n, sr, 440, 0.5)
+	ref := [][]float64{left, right}
+	deg := [][]float64{slices.Clone(left), slices.Clone(right)}
+
+	wantDB, wantN := PreEcho(left, deg[0], sr)
+	if wantN == 0 || math.IsNaN(wantDB) {
+		t.Fatalf("test setup: left channel produced no attack (%v, %d)", wantDB, wantN)
+	}
+	if _, ev := PreEcho(right, deg[1], sr); ev != 0 {
+		t.Fatalf("test setup: right (steady tone) channel has %d attacks, want 0", ev)
+	}
+
+	m := Compare(ref, deg, sr)
+	if math.IsNaN(m.PreEcho) {
+		t.Fatal("mixed-attack stereo: PreEcho is NaN, want the attack channel's finite value")
+	}
+	if m.PreEchoN != wantN {
+		t.Fatalf("PreEchoN = %d, want %d (only the attack channel's attacks)", m.PreEchoN, wantN)
+	}
+	// One channel contributed, so the pair mean is that channel's own mean.
+	if math.Abs(m.PreEcho-wantDB) > 1e-9 {
+		t.Fatalf("PreEcho = %v, want the sole attack channel's mean %v", m.PreEcho, wantDB)
+	}
+	// The contract Compare documents: PreEchoN > 0 iff PreEcho is finite.
+	if (m.PreEchoN > 0) != !math.IsNaN(m.PreEcho) {
+		t.Fatalf("invariant broken: PreEchoN=%d PreEcho=%v", m.PreEchoN, m.PreEcho)
+	}
+}
+
 // sameBits reports whether a and b are the identical float64, treating any two
 // NaNs as equal (their payloads are irrelevant here) and requiring bit
 // equality otherwise. It is the strict test the fused/reference comparison

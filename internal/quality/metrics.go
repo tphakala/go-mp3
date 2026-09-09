@@ -48,16 +48,22 @@ type Metrics struct {
 	BandSNR   float64 // dB, STFT bins at or below BandLimitHz
 	SegSNR    float64 // dB, mean per-segment SNR clamped to [SegSNRMin, SegSNRMax]; NaN when no active segment
 	LSD       float64 // dB, mean log-spectral distance over active frames; NaN when no active frame
-	PreEcho   float64 // dB, pre-attack error energy relative to attack energy; NaN when no attack
-	PreEchoN  int     // attacks PreEcho averaged over
+	PreEcho   float64 // dB, pre-attack error energy relative to attack energy; NaN when no channel had an attack
+	PreEchoN  int     // attacks PreEcho was averaged over (across the attack-bearing channels); >0 iff PreEcho is finite
 	Bandwidth float64 // Hz, highest long-term PSD bin within BandwidthFloorDB of the peak
 }
 
 // Compare measures deg against ref (planar channels of equal length, already
 // aligned) and averages every metric over channels, except Bandwidth, which
-// is the maximum over channels, and PreEchoN, which is the total. NaN
-// channel values propagate: a metric undefined on one channel is undefined
-// for the pair.
+// is the maximum over channels, and PreEchoN, which is the total. For SNR,
+// BandSNR, SegSNR, and LSD a NaN channel value propagates: those NaNs mark a
+// silent (no-data) reference channel, so a metric undefined on one channel is
+// undefined for the pair. PreEcho is the exception: a channel with no detected
+// attack (its NaN means "no transient here", not "no data") is skipped rather
+// than propagated, so PreEcho is the mean over the channels that had attacks
+// and PreEchoN is the total over those same channels. PreEcho is NaN with
+// PreEchoN 0 only when no channel had an attack; PreEchoN > 0 iff PreEcho is
+// finite.
 func Compare(ref, deg [][]float64, sampleRate int) Metrics {
 	var m Metrics
 	if len(ref) == 0 || len(deg) != len(ref) {
@@ -65,6 +71,11 @@ func Compare(ref, deg [][]float64, sampleRate int) Metrics {
 			LSD: math.NaN(), PreEcho: math.NaN()}
 	}
 	nch := float64(len(ref))
+	// PreEcho is averaged only over the channels that actually had a detected
+	// attack, not poisoned to NaN by a channel that had none: see the field
+	// comment and preSum/preChans below.
+	var preSum float64
+	var preChans int
 	for c := range ref {
 		m.SNR += SNR(ref[c], deg[c]) / nch
 		m.SegSNR += SegmentalSNR(ref[c], deg[c], SegSNRSegment) / nch
@@ -76,9 +87,20 @@ func Compare(ref, deg [][]float64, sampleRate int) Metrics {
 		m.BandSNR += b / nch
 		m.LSD += l / nch
 		m.Bandwidth = max(m.Bandwidth, bw)
-		p, n := PreEcho(ref[c], deg[c], sampleRate)
-		m.PreEcho += p / nch
-		m.PreEchoN += n
+		// PreEcho returns (NaN, 0) for a channel with no attack. Skipping those
+		// channels keeps a channel that did have transients from being averaged
+		// into NaN, and keeps PreEchoN counting exactly the attacks the finite
+		// mean was computed over: PreEchoN > 0 iff PreEcho is finite.
+		if p, ev := PreEcho(ref[c], deg[c], sampleRate); ev > 0 {
+			preSum += p
+			preChans++
+			m.PreEchoN += ev
+		}
+	}
+	if preChans > 0 {
+		m.PreEcho = preSum / float64(preChans)
+	} else {
+		m.PreEcho = math.NaN()
 	}
 	return m
 }

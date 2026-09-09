@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "seconds": 2,
+  "note": "go-mp3 objective quality regression baseline; refresh with UPDATE_QUALITY_BASELINE=1 (a deliberate, reviewed action). Generated on amd64.",
+  "cases": [
+    {
+      "program": "multitone",
+      "sample_rate": 44100,
+      "kbps": 128,
+      "lag": 1057,
+      "snr": 68.72674068264152,
+      "band_snr": 77.4401800825064,
+      "seg_snr": 35,
+      "lsd": 9.627973859049682,
+      "pre_echo": null,
+      "pre_echo_events": 0
+    },
+    {
+      "program": "multitone",
+      "sample_rate": 44100,
+      "kbps": 320,
+      "lag": 1057,
+      "snr": 75.41292443268142,
+      "band_snr": 77.73125035510178,
+      "seg_snr": 35,
+      "lsd": 9.193091694173953,
+      "pre_echo": null,
+      "pre_echo_events": 0
+    },
+    {
+      "program": "pink-noise",
+      "sample_rate": 44100,
+      "kbps": 128,
+      "lag": 1057,
+      "snr": 16.7746787138887,
+      "band_snr": 18.064252602481773,
+      "seg_snr": 17.09940817577265,
+      "lsd": 2.768492296132555,
+      "pre_echo": null,
+      "pre_echo_events": 0
+    },
+    {
+      "program": "pink-noise",
+      "sample_rate": 44100,
+      "kbps": 320,
+      "lag": 1057,
+      "snr": 37.09315740428734,
+      "band_snr": 39.08032791413672,
+      "seg_snr": 34.859293432028004,
+      "lsd": 0.33666185474164084,
+      "pre_echo": null,
+      "pre_echo_events": 0
+    },
+    {
+      "program": "tone-click",
+      "sample_rate": 44100,
+      "kbps": 128,
+      "lag": 1057,
+      "snr": 18.305230732153863,
+      "band_snr": 19.093083839189074,
+      "seg_snr": 21.723981446870642,
+      "lsd": 10.105844216586798,
+      "pre_echo": -19.59328874387218,
+      "pre_echo_events": 18
+    },
+    {
+      "program": "tone-click",
+      "sample_rate": 44100,
+      "kbps": 320,
+      "lag": 1057,
+      "snr": 31.66644966975909,
+      "band_snr": 33.29496598694816,
+      "seg_snr": 33.299398815368555,
+      "lsd": 4.48005135834128,
+      "pre_echo": -44.30398690467812,
+      "pre_echo_events": 18
+    },
+    {
+      "program": "bird-chirps",
+      "sample_rate": 44100,
+      "kbps": 128,
+      "lag": 1057,
+      "snr": 59.292784311620395,
+      "band_snr": 59.25588294135711,
+      "seg_snr": 35,
+      "lsd": 3.8916401143369113,
+      "pre_echo": -73.65926902495855,
+      "pre_echo_events": 7
+    },
+    {
+      "program": "bird-chirps",
+      "sample_rate": 44100,
+      "kbps": 320,
+      "lag": 1057,
+      "snr": 70.85222974521213,
+      "band_snr": 71.23346195427973,
+      "seg_snr": 35,
+      "lsd": 1.7066066794101826,
+      "pre_echo": -76.81956962357094,
+      "pre_echo_events": 7
+    },
+    {
+      "program": "stereo-decorrelated",
+      "sample_rate": 44100,
+      "kbps": 128,
+      "lag": 1057,
+      "snr": 54.1023484831218,
+      "band_snr": 67.18980368342037,
+      "seg_snr": 34.970523237244194,
+      "lsd": 28.9042100379232,
+      "pre_echo": null,
+      "pre_echo_events": 0
+    },
+    {
+      "program": "stereo-decorrelated",
+      "sample_rate": 44100,
+      "kbps": 320,
+      "lag": 1057,
+      "snr": 67.29979108220107,
+      "band_snr": 76.90062948276133,
+      "seg_snr": 35,
+      "lsd": 9.309135633035236,
+      "pre_echo": null,
+      "pre_echo_events": 0
+    }
+  ]
+}

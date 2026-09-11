@@ -40,14 +40,16 @@ func detectTools(lameFlag, visqolFlag, peaqFlag string) tools {
 	}
 }
 
-// lameVersion returns the first line of `lame --version`, or unknownVersion.
-func lameVersion(ctx context.Context, lame string) string {
-	if lame == "" {
+// firstVersionLine returns the first line of `bin flag`, or unknownVersion when
+// bin is empty, cannot be run, or prints nothing. Shared by lameVersion and
+// ffmpegVersion, which differ only in the version flag.
+func firstVersionLine(ctx context.Context, bin, flag string) string {
+	if bin == "" {
 		return unknownVersion
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, lame, "--version").Output()
+	out, err := exec.CommandContext(ctx, bin, flag).Output()
 	if err != nil {
 		return unknownVersion
 	}
@@ -56,6 +58,63 @@ func lameVersion(ctx context.Context, lame string) string {
 		return unknownVersion // a build that prints its banner elsewhere
 	}
 	return line
+}
+
+// lameVersion returns the first line of `lame --version`, or unknownVersion.
+func lameVersion(ctx context.Context, lame string) string {
+	return firstVersionLine(ctx, lame, "--version")
+}
+
+// refKind names how the LAME-family reference MP3 is produced. libmp3lame is
+// the LAME library either way; the difference is only which binary drives it.
+type refKind int
+
+const (
+	refNone       refKind = iota // no reference producer available
+	refLameBinary                // the standalone `lame` binary
+	refFFmpegLAME                // ffmpeg's libmp3lame encoder
+)
+
+// refEncoder is the resolved reference producer: which kind, and the path of
+// the binary that runs it.
+type refEncoder struct {
+	kind refKind
+	bin  string
+}
+
+// chooseReference picks the reference producer from the resolved binaries: the
+// standalone `lame` binary when present (the canonical CLI, and what the
+// committed comparisons were taken against), otherwise ffmpeg's libmp3lame, so
+// a run is not tied to the `lame` binary being installed. refNone when neither
+// is available; the caller turns that into a setup error.
+func chooseReference(lame, ffmpeg string) refEncoder {
+	switch {
+	case lame != "":
+		return refEncoder{kind: refLameBinary, bin: lame}
+	case ffmpeg != "":
+		return refEncoder{kind: refFFmpegLAME, bin: ffmpeg}
+	default:
+		return refEncoder{kind: refNone}
+	}
+}
+
+// ffmpegVersion returns the first line of `ffmpeg -version`, or unknownVersion.
+func ffmpegVersion(ctx context.Context, ffmpeg string) string {
+	return firstVersionLine(ctx, ffmpeg, "-version")
+}
+
+// referenceVersion describes the resolved reference producer for the report's
+// provenance line: the lame binary's version, or ffmpeg's when its libmp3lame
+// stands in, so a reader can tell which encoder produced the reference column.
+func referenceVersion(ctx context.Context, r refEncoder) string {
+	switch r.kind {
+	case refLameBinary:
+		return lameVersion(ctx, r.bin)
+	case refFFmpegLAME:
+		return "ffmpeg libmp3lame: " + ffmpegVersion(ctx, r.bin)
+	default:
+		return unknownVersion
+	}
 }
 
 // Result-line patterns of the external tools. Both can print nan (PEAQ

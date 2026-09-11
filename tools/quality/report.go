@@ -61,15 +61,19 @@ const reportSchemaVersion = 1
 
 // report is the whole run: provenance header plus every case.
 type report struct {
-	SchemaVersion int          `json:"schema_version"`
-	GeneratedUTC  string       `json:"generated_utc"`
-	GoMP3Rev      string       `json:"gomp3_rev"`
-	LAMEVersion   string       `json:"lame_version"`
-	Tools         []string     `json:"tools"`
-	Seconds       int          `json:"seconds"`
-	Attempted     int          `json:"attempted"`
-	Failed        int          `json:"failed"`
-	Cases         []caseResult `json:"cases"`
+	SchemaVersion int    `json:"schema_version"`
+	GeneratedUTC  string `json:"generated_utc"`
+	GoMP3Rev      string `json:"gomp3_rev"`
+	// LAMEVersion is the reference producer's version string: the lame binary's,
+	// or "ffmpeg libmp3lame: <ver>" when ffmpeg's libmp3lame stands in. The JSON
+	// key stays lame_version for schema stability; the reference is the LAME
+	// library either way.
+	LAMEVersion string       `json:"lame_version"`
+	Tools       []string     `json:"tools"`
+	Seconds     int          `json:"seconds"`
+	Attempted   int          `json:"attempted"`
+	Failed      int          `json:"failed"`
+	Cases       []caseResult `json:"cases"`
 }
 
 // summaryKey groups the summary by BOTH sample rate and bitrate. Keying on
@@ -168,7 +172,7 @@ func cell(s string) string {
 func writeMarkdown(w io.Writer, r *report) error {
 	var b strings.Builder
 	b.WriteString("# go-mp3 versus LAME quality report\n\n")
-	fmt.Fprintf(&b, "- Generated: %s\n- go-mp3: %s\n- LAME: %s\n- External metrics: %s\n- Program length: %d s\n- Cases: %d attempted, %d failed\n\n",
+	fmt.Fprintf(&b, "- Generated: %s\n- go-mp3: %s\n- Reference encoder: %s\n- External metrics: %s\n- Program length: %d s\n- Cases: %d attempted, %d failed\n\n",
 		r.GeneratedUTC, r.GoMP3Rev, r.LAMEVersion, orNone(r.Tools), r.Seconds, r.Attempted, r.Failed)
 	fmt.Fprintf(&b, "Metrics: SNR, BandSNR (bins at or below %.0f kHz), SegSNR, MOS (ViSQOL MOS-LQO), ODG (PEAQ basic): higher is better. LSD, PreEcho: lower is better. Bandwidth (kHz) is informational and is not scored. delta is go-mp3 minus LAME. Lag is the measured alignment in samples: %d for this project's tagless streams, 0 for a gapless-trimmed LAME stream. n/a means the figure was not measured (the external tool was absent) or is undefined for that program (no attack detected, no active frame).\n\n",
 		quality.BandLimitHz/1000, mp3TotalDelay)

@@ -99,9 +99,9 @@ func runCase(ctx context.Context, tl tools, dir string, spec caseSpec, ref [][]f
 	if err := os.WriteFile(filepath.Join(dir, "gomp3.mp3"), goStream, 0o644); err != nil {
 		return caseResult{}, err
 	}
-	lameStream, err := encodeLAME(ctx, tl.lame, dir, "ref.wav", "lame.mp3", spec.Kbps)
+	lameStream, err := chooseReference(tl.lame, tl.ffmpeg).encode(ctx, dir, "ref.wav", "lame.mp3", spec.Kbps)
 	if err != nil {
-		return caseResult{}, fmt.Errorf("lame encode: %w", err)
+		return caseResult{}, fmt.Errorf("reference encode: %w", err)
 	}
 
 	res := caseResult{Program: spec.Program.Name, Channels: len(ref), SampleRate: spec.SampleRate, Kbps: spec.Kbps}
@@ -208,19 +208,34 @@ func encodeGoMP3(ref [][]float64, sampleRate, kbps int) ([]byte, error) {
 	return e.EncodeFrame(out, nil)
 }
 
-// encodeLAME runs the lame binary on wavName inside dir, writing mp3Name,
-// and returns the stream bytes. CBR at kbps; every other setting is LAME's
-// default (joint stereo for stereo input, its own lowpass and tuning), which
-// is exactly the "fully tuned encoder" baseline being measured against.
-func encodeLAME(ctx context.Context, lame, dir, wavName, mp3Name string, kbps int) ([]byte, error) {
-	if lame == "" {
-		return nil, errors.New("lame binary not configured")
-	}
+// encode runs the resolved reference producer on wavName inside dir, writing
+// mp3Name, and returns the stream bytes. Both producers emit CBR at kbps and
+// otherwise take the producer's own defaults (joint stereo for stereo input,
+// its lowpass and tuning): the "fully tuned encoder" baseline being measured
+// against. The two paths are not byte-identical (the lame binary and ffmpeg's
+// libmp3lame ship different CLI defaults), which is why the report names which
+// producer generated the reference.
+func (r refEncoder) encode(ctx context.Context, dir, wavName, mp3Name string, kbps int) ([]byte, error) {
 	// runTool runs inside dir with the shared timeout and combined-output
-	// capture; --quiet keeps stdout empty, so its output on failure is LAME's
-	// diagnostics. The stream is read back from the file LAME wrote.
-	if out, err := runTool(ctx, dir, lame, "--quiet", "--cbr", "-b", fmt.Sprint(kbps), wavName, mp3Name); err != nil {
-		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
+	// capture; the quiet flags keep stdout empty, so the captured output on
+	// failure is the tool's own diagnostics. The stream is read back from the
+	// file the tool wrote.
+	switch r.kind {
+	case refLameBinary:
+		if out, err := runTool(ctx, dir, r.bin, "--quiet", "--cbr", "-b", fmt.Sprint(kbps), wavName, mp3Name); err != nil {
+			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
+		}
+	case refFFmpegLAME:
+		// libmp3lame driven by -b:a with no VBR/quality flag is constant
+		// bitrate (measured: uniform-size frames and a CBR Info tag rather than
+		// a VBR Xing tag); -v error keeps stdout empty and -y overwrites a
+		// stale file.
+		if out, err := runTool(ctx, dir, r.bin, "-v", "error", "-y", "-i", wavName,
+			"-c:a", "libmp3lame", "-b:a", fmt.Sprintf("%dk", kbps), mp3Name); err != nil {
+			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
+		}
+	default:
+		return nil, errors.New("no reference encoder configured")
 	}
 	return os.ReadFile(filepath.Join(dir, mp3Name))
 }

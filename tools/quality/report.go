@@ -174,7 +174,7 @@ func writeMarkdown(w io.Writer, r *report) error {
 	b.WriteString("# go-mp3 versus LAME quality report\n\n")
 	fmt.Fprintf(&b, "- Generated: %s\n- go-mp3: %s\n- Reference encoder: %s\n- External metrics: %s\n- Program length: %d s\n- Cases: %d attempted, %d failed\n\n",
 		r.GeneratedUTC, r.GoMP3Rev, r.LAMEVersion, orNone(r.Tools), r.Seconds, r.Attempted, r.Failed)
-	fmt.Fprintf(&b, "Metrics: SNR, BandSNR (bins at or below %.0f kHz), SegSNR, MOS (ViSQOL MOS-LQO), ODG (PEAQ basic): higher is better. LSD, PreEcho: lower is better. Bandwidth (kHz) is informational and is not scored. delta is go-mp3 minus LAME. Lag is the measured alignment in samples: %d for this project's tagless streams, 0 for a gapless-trimmed LAME stream. n/a means the figure was not measured (the external tool was absent) or is undefined for that program (no attack detected, no active frame).\n\n",
+	fmt.Fprintf(&b, "Metrics: SNR, BandSNR (bins at or below %.0f kHz), SegSNR, MOS (ViSQOL MOS-LQO), ODG (PEAQ basic): higher is better. LSD, PreEcho: lower is better. Bandwidth (kHz) is informational and is not scored. delta is go-mp3 minus LAME. Lag is the measured alignment in samples: %d for this project's tagless streams, 0 for a gapless-trimmed reference stream. n/a means the figure was not measured (the external tool was absent) or is undefined for that program (no attack detected, no active frame).\n\n",
 		quality.BandLimitHz/1000, mp3TotalDelay)
 
 	rates := map[int]bool{}

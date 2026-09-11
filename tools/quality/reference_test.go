@@ -149,3 +149,22 @@ func TestRunNoReferenceEncoder(t *testing.T) {
 		t.Fatalf("expected a 'no reference encoder' setup error, got: %q", errbuf.String())
 	}
 }
+
+// TestQualityHarnessFFmpegLibmp3lame pins the libmp3lame capability probe: an
+// empty or unresolvable ffmpeg reports the encoder absent (so run() degrades to
+// a clear setup error rather than failing every case cryptically), and a real
+// ffmpeg build reports it present. Named "TestQualityHarness*" so the CI compat
+// job (which installs ffmpeg) exercises the positive case; the empty and bogus
+// cases run first and need no binary.
+func TestQualityHarnessFFmpegLibmp3lame(t *testing.T) {
+	if ffmpegHasLibmp3lame(t.Context(), "") {
+		t.Fatal("empty ffmpeg path must report libmp3lame absent")
+	}
+	if ffmpegHasLibmp3lame(t.Context(), "/nonexistent-ffmpeg-binary-xyz") {
+		t.Fatal("bogus ffmpeg path must report libmp3lame absent")
+	}
+	ffmpeg := requireFFmpeg(t) // the positive case needs a real ffmpeg build
+	if !ffmpegHasLibmp3lame(t.Context(), ffmpeg) {
+		t.Fatal("system ffmpeg should report libmp3lame present")
+	}
+}

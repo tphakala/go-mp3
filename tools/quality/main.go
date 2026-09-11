@@ -156,6 +156,12 @@ func run(ctx context.Context, args []string, errw io.Writer) int {
 	if ref.kind == refNone {
 		return fail(errw, errors.New("no reference encoder found: install lame (preferred), or ffmpeg for its libmp3lame, or pass -lame"))
 	}
+	// ffmpeg can be built without libmp3lame. Probe once here so that case ends
+	// in one clear setup error rather than every reference encode failing later
+	// with a cryptic "Unknown encoder" and the run reporting exitCases.
+	if ref.kind == refFFmpegLAME && !ffmpegHasLibmp3lame(ctx, ref.bin) {
+		return fail(errw, errors.New("ffmpeg is present but its build lacks the libmp3lame encoder: install lame, or an ffmpeg built with --enable-libmp3lame"))
+	}
 	// -crosscheck is an explicit request for the ffmpeg second decode, so a
 	// missing ffmpeg is a setup error here too rather than a silently skipped
 	// check.

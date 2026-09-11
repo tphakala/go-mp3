@@ -10,7 +10,7 @@ import (
 // gateActivationRe matches the ci.yml env line that turns the quality
 // regression gate on: MP3_QUALITY_BASELINE set to 1. It is anchored to a whole
 // line (a YAML mapping entry, optional leading indent) and admits the usual
-// quotings ('1', "1", 1), so a harmless requoting does not red it. The colon
+// quoting styles ('1', "1", 1), so a harmless requoting does not red it. The colon
 // is what distinguishes the live mapping from the comment block above it, which
 // spells the variable "MP3_QUALITY_BASELINE=1" (equals form, no colon).
 var gateActivationRe = regexp.MustCompile(`(?m)^\s*MP3_QUALITY_BASELINE:\s*['"]?1['"]?\s*$`)

@@ -103,6 +103,25 @@ func ffmpegVersion(ctx context.Context, ffmpeg string) string {
 	return firstVersionLine(ctx, ffmpeg, "-version")
 }
 
+// ffmpegHasLibmp3lame reports whether the ffmpeg binary was built with the
+// libmp3lame encoder. ffmpeg can be present without it (a build without
+// --enable-libmp3lame), so choosing it as the reference producer without this
+// check would let setup succeed and then fail every case with a cryptic
+// per-encode "Unknown encoder" error instead of one clear setup error. An empty
+// path, or an ffmpeg that cannot be run, reports absent.
+func ffmpegHasLibmp3lame(ctx context.Context, ffmpeg string) bool {
+	if ffmpeg == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-encoders").Output()
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(out, []byte("libmp3lame"))
+}
+
 // referenceVersion describes the resolved reference producer for the report's
 // provenance line: the lame binary's version, or ffmpeg's when its libmp3lame
 // stands in, so a reader can tell which encoder produced the reference column.

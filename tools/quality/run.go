@@ -99,7 +99,7 @@ func runCase(ctx context.Context, tl tools, dir string, spec caseSpec, ref [][]f
 	if err := os.WriteFile(filepath.Join(dir, "gomp3.mp3"), goStream, 0o644); err != nil {
 		return caseResult{}, err
 	}
-	lameStream, err := chooseReference(tl.lame, tl.ffmpeg).encode(ctx, dir, "ref.wav", "lame.mp3", spec.Kbps)
+	refStream, err := chooseReference(tl.lame, tl.ffmpeg).encode(ctx, dir, "ref.wav", "lame.mp3", spec.Kbps)
 	if err != nil {
 		return caseResult{}, fmt.Errorf("reference encode: %w", err)
 	}
@@ -109,7 +109,7 @@ func runCase(ctx context.Context, tl tools, dir string, spec caseSpec, ref [][]f
 	if err != nil {
 		return caseResult{}, err
 	}
-	res.LAME, err = measure(ctx, tl, dir, "lame", "lame", ref, lameStream, spec.SampleRate, crosscheck, errw)
+	res.LAME, err = measure(ctx, tl, dir, "lame", "lame", ref, refStream, spec.SampleRate, crosscheck, errw)
 	if err != nil {
 		return caseResult{}, err
 	}

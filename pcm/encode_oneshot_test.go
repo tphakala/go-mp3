@@ -10,12 +10,14 @@ import (
 
 // TestEncodeInterleavedMatchesStreaming proves the one-shot is exactly
 // Reset+Write+Close: it must produce byte-identical output to the streaming
-// Encoder fed the whole buffer in one Write.
+// Encoder fed the whole buffer in one Write. The streaming side uses a seekable
+// sink so it writes the same gapless tag the one-shot prepends; a plain
+// io.Writer would produce a tagless stream (covered by TestStreamingTaglessOnPlainWriter).
 func TestEncodeInterleavedMatchesStreaming(t *testing.T) {
 	cfg := Config{SampleRate: 44100, Channels: 2, Bitrate: 128000}
 	pcm := genSineS16(mp3.FrameSize*4+123, 2, 1000, 44100)
 
-	var stream bytes.Buffer
+	var stream memWriteSeeker
 	e, err := NewEncoder(&stream, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +34,7 @@ func TestEncodeInterleavedMatchesStreaming(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(stream.Bytes(), oneshot.Bytes()) {
-		t.Fatalf("one-shot and streaming differ: %d vs %d bytes", oneshot.Len(), stream.Len())
+		t.Fatalf("one-shot and seekable-streaming differ: %d vs %d bytes", oneshot.Len(), len(stream.Bytes()))
 	}
 }
 

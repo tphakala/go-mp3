@@ -19,12 +19,20 @@ var ErrEncoderClosed = errors.New("go-mp3/pcm: encoder is closed")
 // sibling pcm.Encoders in go-flac, go-aac and go-opus: a flat Config,
 // NewEncoder(w, cfg), Reset(w, cfg) for pooling, and Write/Close.
 //
-// MP3 frames are self-framing, so the Encoder needs no seeking and no stream
-// finalization beyond Close, which flushes the final partial frame and drains
-// the root encoder's one-frame attack-detection lookahead. Because the encoder
-// emits a tagless CBR stream (no LAME gapless tag), the decoded output carries
-// mp3.TotalDelay leading samples of algorithmic delay; a caller aligning decoded
-// audio back to the original input must drop them (see the root mp3.TotalDelay).
+// MP3 frames are self-framing, so the Encoder needs no stream finalization
+// beyond Close, which flushes the final partial frame and drains the root
+// encoder's one-frame attack-detection lookahead.
+//
+// By default the Encoder writes a leading Xing/Info + LAME gapless tag frame
+// carrying the encoder delay and padding, so a decoder trims the stream to a
+// sample-accurate round trip. The leading frame's counts are known only after
+// the last frame, so the tag is written only when the sink w is an
+// io.WriteSeeker: a placeholder is written first and back-patched at Close.
+// With a plain io.Writer (or when Config.OmitGaplessTag is set) the stream is
+// tagless, and the decoded output then carries mp3.TotalDelay leading samples
+// of algorithmic delay that a caller aligning back to the original input must
+// drop itself (see the root mp3.TotalDelay). The one-shot EncodeInterleaved
+// always writes the tag, since it holds the whole input.
 //
 // An Encoder is not safe for concurrent use.
 type Encoder struct {
@@ -42,13 +50,26 @@ type Encoder struct {
 	carry []byte // buffered interleaved bytes, always < frameBytes, reused
 	out   []byte // reused EncodeFrame append target
 
+	// Gapless tag state, set in Reset and used by Close. seeker is non-nil
+	// only when the tag is being written (tagging enabled and w is seekable);
+	// tagOff is the byte offset of the placeholder Info frame; kbps is the
+	// resolved bitrate for the tag header; samplesIn accumulates the real
+	// (unpadded) input samples per channel for the padding computation.
+	seeker    io.WriteSeeker
+	tagOff    int64
+	kbps      int
+	samplesIn int64
+
 	closed bool
 }
 
 var _ io.WriteCloser = (*Encoder)(nil)
 
 // NewEncoder validates cfg and returns an Encoder writing a CBR MP3 stream to w.
-// A config error returns immediately, before any byte is written.
+// A config error returns immediately, before any byte is written. When tagging
+// is enabled (the default) and w is an io.WriteSeeker, NewEncoder reserves the
+// leading Xing/Info tag frame with a placeholder that Close back-patches, so a
+// successful NewEncoder has already written that one frame to w.
 func NewEncoder(w io.Writer, cfg Config) (*Encoder, error) {
 	e := &Encoder{}
 	if err := e.Reset(w, cfg); err != nil {
@@ -97,6 +118,33 @@ func (e *Encoder) Reset(w io.Writer, cfg Config) error {
 	e.planarView[1] = e.planarBuf[1][:]
 	e.planar = e.planarView[:cfg.Channels]
 	e.carry = e.carry[:0]
+
+	// Reset gapless-tag state, then, when tagging is enabled and the sink is
+	// seekable, reserve the leading Info frame with a placeholder to be
+	// back-patched at Close. A plain io.Writer cannot be back-patched, so the
+	// stream stays tagless (seeker left nil). Clearing seeker unconditionally
+	// here is required for pooling reuse: a prior stream on this Encoder may
+	// have been seekable while this one is not.
+	e.samplesIn = 0
+	e.seeker = nil
+	e.tagOff = 0
+	e.kbps = 0
+	if !cfg.OmitGaplessTag {
+		if ws, ok := w.(io.WriteSeeker); ok {
+			e.kbps = cfg.resolvedKbps()
+			pos, serr := ws.Seek(0, io.SeekCurrent)
+			if serr != nil {
+				return serr
+			}
+			placeholder := buildInfoFrame(cfg.SampleRate, e.kbps, cfg.Channels, 0, 0, mp3.EncoderDelay, 0)
+			if _, werr := ws.Write(placeholder); werr != nil {
+				return werr
+			}
+			e.tagOff = pos
+			e.seeker = ws
+		}
+	}
+
 	e.closed = false
 	return nil
 }
@@ -160,6 +208,7 @@ func (e *Encoder) emitFrame(chunk []byte, n int) error {
 		e.planar[c] = e.planar[c][:n]
 	}
 	deinterleaveS16(e.planar, chunk, n, e.cfg.Channels)
+	e.samplesIn += int64(n) // real (unpadded) input samples per channel, for the gapless tag
 
 	var err error
 	e.out, err = e.enc.EncodeFrame(e.out[:0], e.planar)
@@ -219,5 +268,44 @@ func (e *Encoder) Close() error {
 			firstErr = werr
 		}
 	}
+
+	// Back-patch the leading Info tag frame now that the final counts are
+	// known, but only when a seekable sink reserved a placeholder in Reset and
+	// the stream is otherwise healthy: a failed stream is abandoned, not
+	// finalized with a header claiming a frame count it never wrote.
+	if e.seeker != nil && firstErr == nil {
+		if perr := e.patchInfoFrame(); perr != nil {
+			firstErr = perr
+		}
+	}
 	return firstErr
+}
+
+// patchInfoFrame rewrites the leading Info tag frame with the final audio-frame
+// count, total stream size, and end padding, then restores the sink to the end
+// of the stream. It runs from Close after the drain, only when a seekable sink
+// reserved the placeholder in Reset. The rewritten frame is byte-identical to
+// the tag EncodeInterleaved prepends for the same input, so one-shot and
+// seekable-streaming output match exactly.
+func (e *Encoder) patchInfoFrame() error {
+	audioFrames := e.enc.Stats().Frames
+	padding := lamePadding(audioFrames, e.samplesIn)
+
+	// Capture the true end of the STREAM (via SeekCurrent), not the end of the
+	// file: the sink may be positioned mid-file. Restore to it after patching.
+	endOff, err := e.seeker.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	totalBytes := endOff - e.tagOff
+
+	tag := buildInfoFrame(e.cfg.SampleRate, e.kbps, e.cfg.Channels, audioFrames, totalBytes, mp3.EncoderDelay, padding)
+	if _, err := e.seeker.Seek(e.tagOff, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := e.seeker.Write(tag); err != nil {
+		return err
+	}
+	_, err = e.seeker.Seek(endOff, io.SeekStart)
+	return err
 }

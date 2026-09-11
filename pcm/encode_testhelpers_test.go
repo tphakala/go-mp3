@@ -2,8 +2,50 @@ package pcm
 
 import (
 	"encoding/binary"
+	"fmt"
+	"io"
 	"math"
 )
+
+// memWriteSeeker is a minimal in-memory io.WriteSeeker for exercising the
+// streaming Encoder's seek-patch (gapless-tag back-patch) path without a real
+// file. Writes past the current end grow the buffer; a seek-back-then-write
+// overwrites in place, exactly as an os.File does.
+type memWriteSeeker struct {
+	buf []byte
+	pos int64
+}
+
+func (m *memWriteSeeker) Write(p []byte) (int, error) {
+	end := m.pos + int64(len(p))
+	if end > int64(len(m.buf)) {
+		m.buf = append(m.buf, make([]byte, end-int64(len(m.buf)))...)
+	}
+	copy(m.buf[m.pos:end], p)
+	m.pos = end
+	return len(p), nil
+}
+
+func (m *memWriteSeeker) Seek(offset int64, whence int) (int64, error) {
+	var abs int64
+	switch whence {
+	case io.SeekStart:
+		abs = offset
+	case io.SeekCurrent:
+		abs = m.pos + offset
+	case io.SeekEnd:
+		abs = int64(len(m.buf)) + offset
+	default:
+		return 0, fmt.Errorf("memWriteSeeker: invalid whence %d", whence)
+	}
+	if abs < 0 {
+		return 0, fmt.Errorf("memWriteSeeker: negative position %d", abs)
+	}
+	m.pos = abs
+	return abs, nil
+}
+
+func (m *memWriteSeeker) Bytes() []byte { return m.buf }
 
 // genSineS16 returns nSamplesPerCh inter-channel samples of a full-scale-safe
 // sine wave, interleaved little-endian S16, for the given channel count. Every

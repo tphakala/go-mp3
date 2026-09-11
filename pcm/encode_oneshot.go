@@ -1,9 +1,12 @@
 package pcm
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"sync"
+
+	mp3 "github.com/tphakala/go-mp3"
 )
 
 // encoderPool recycles Encoders for EncodeInterleaved so back-to-back one-shot
@@ -39,11 +42,43 @@ func EncodeInterleaved(w io.Writer, cfg Config, pcm []byte) error {
 		e.w = nil
 		encoderPool.Put(e)
 	}()
-	if err := e.Reset(w, cfg); err != nil {
+
+	if cfg.OmitGaplessTag {
+		// Bare tagless stream: encode straight to w.
+		if err := e.Reset(w, cfg); err != nil {
+			return err
+		}
+		if _, err := e.Write(pcm); err != nil {
+			return err
+		}
+		return e.Close()
+	}
+
+	// Default: prepend a Xing/Info + LAME gapless tag. Encode the audio into an
+	// in-memory buffer first (a bytes.Buffer is not an io.WriteSeeker, so the
+	// Encoder writes a tagless body), then build the tag from the final counts
+	// and write it ahead of the body. The bytes are identical to streaming the
+	// same input into an io.WriteSeeker.
+	var body bytes.Buffer
+	if err := e.Reset(&body, cfg); err != nil {
 		return err
 	}
 	if _, err := e.Write(pcm); err != nil {
 		return err
 	}
-	return e.Close()
+	if err := e.Close(); err != nil {
+		return err
+	}
+
+	kbps := cfg.resolvedKbps()
+	audioFrames := e.enc.Stats().Frames
+	padding := lamePadding(audioFrames, e.samplesIn)
+	totalBytes := int64(infoFrameLen(cfg.SampleRate, kbps)) + int64(body.Len())
+	tag := buildInfoFrame(cfg.SampleRate, kbps, cfg.Channels, audioFrames, totalBytes, mp3.EncoderDelay, padding)
+
+	if _, err := w.Write(tag); err != nil {
+		return err
+	}
+	_, err := w.Write(body.Bytes())
+	return err
 }

@@ -10,12 +10,14 @@ import (
 
 // TestEncodeInterleavedMatchesStreaming proves the one-shot is exactly
 // Reset+Write+Close: it must produce byte-identical output to the streaming
-// Encoder fed the whole buffer in one Write.
+// Encoder fed the whole buffer in one Write. The streaming side uses a seekable
+// sink so it writes the same gapless tag the one-shot prepends; a plain
+// io.Writer would produce a tagless stream (covered by TestStreamingTaglessOnPlainWriter).
 func TestEncodeInterleavedMatchesStreaming(t *testing.T) {
 	cfg := Config{SampleRate: 44100, Channels: 2, Bitrate: 128000}
 	pcm := genSineS16(mp3.FrameSize*4+123, 2, 1000, 44100)
 
-	var stream bytes.Buffer
+	var stream memWriteSeeker
 	e, err := NewEncoder(&stream, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +34,7 @@ func TestEncodeInterleavedMatchesStreaming(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(stream.Bytes(), oneshot.Bytes()) {
-		t.Fatalf("one-shot and streaming differ: %d vs %d bytes", oneshot.Len(), stream.Len())
+		t.Fatalf("one-shot and seekable-streaming differ: %d vs %d bytes", oneshot.Len(), len(stream.Bytes()))
 	}
 }
 
@@ -47,6 +49,22 @@ func TestEncodeInterleavedRejectsPartialSample(t *testing.T) {
 func TestEncodeInterleavedRejectsBadConfig(t *testing.T) {
 	if err := EncodeInterleaved(io.Discard, Config{SampleRate: 12345, Channels: 2}, nil); err == nil {
 		t.Fatal("expected error for bad sample rate")
+	}
+}
+
+// TestEncodeInterleavedRejectsNilWriter pins that a nil sink returns a clean
+// error rather than panicking. The default (tagged) path encodes into an
+// internal buffer, so it never validates w via Reset; without an up-front check
+// a nil w would panic at the final tag write instead.
+func TestEncodeInterleavedRejectsNilWriter(t *testing.T) {
+	pcm := genSineS16(mp3.FrameSize, 2, 1000, 44100)
+	cfg := Config{SampleRate: 44100, Channels: 2, Bitrate: 128000}
+	if err := EncodeInterleaved(nil, cfg, pcm); err == nil {
+		t.Fatal("expected an error for a nil writer (default tagged path)")
+	}
+	cfg.OmitGaplessTag = true
+	if err := EncodeInterleaved(nil, cfg, pcm); err == nil {
+		t.Fatal("expected an error for a nil writer (tagless path)")
 	}
 }
 

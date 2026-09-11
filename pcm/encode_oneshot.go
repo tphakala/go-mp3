@@ -1,9 +1,12 @@
 package pcm
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"sync"
+
+	mp3 "github.com/tphakala/go-mp3"
 )
 
 // encoderPool recycles Encoders for EncodeInterleaved so back-to-back one-shot
@@ -24,9 +27,23 @@ var encoderPool = sync.Pool{New: func() any { return new(Encoder) }}
 // frame (fewer than mp3.FrameSize samples) is zero-padded internally, exactly as
 // the streaming Close path does, so the buffer need not be a whole number of
 // frames.
+//
+// By default it writes a leading Xing/Info + LAME gapless tag (see the package
+// docs). The tag's frame count and byte total are known only after the last
+// frame, so the default path buffers the whole encoded stream in memory and
+// writes nothing to w until encoding completes (relevant for a slow sink). The
+// buffered stream is smaller than the PCM input this call already holds. Set
+// Config.OmitGaplessTag to stream frames to w as they are produced, with no tag
+// and no buffering.
 func EncodeInterleaved(w io.Writer, cfg Config, pcm []byte) error {
 	if err := cfg.validate(); err != nil {
 		return err
+	}
+	if w == nil {
+		// Both paths below would otherwise reach a nil w only late (the default
+		// path validates the internal buffer, not w), so reject it up front for
+		// the same clean error the streaming Reset returns.
+		return fmt.Errorf("go-mp3/pcm: nil writer")
 	}
 	stride := 2 * cfg.Channels
 	if len(pcm)%stride != 0 {
@@ -39,11 +56,43 @@ func EncodeInterleaved(w io.Writer, cfg Config, pcm []byte) error {
 		e.w = nil
 		encoderPool.Put(e)
 	}()
-	if err := e.Reset(w, cfg); err != nil {
+
+	if cfg.OmitGaplessTag {
+		// Bare tagless stream: encode straight to w.
+		if err := e.Reset(w, cfg); err != nil {
+			return err
+		}
+		if _, err := e.Write(pcm); err != nil {
+			return err
+		}
+		return e.Close()
+	}
+
+	// Default: prepend a Xing/Info + LAME gapless tag. Encode the audio into an
+	// in-memory buffer first (a bytes.Buffer is not an io.WriteSeeker, so the
+	// Encoder writes a tagless body), then build the tag from the final counts
+	// and write it ahead of the body. The bytes are identical to streaming the
+	// same input into an io.WriteSeeker.
+	var body bytes.Buffer
+	if err := e.Reset(&body, cfg); err != nil {
 		return err
 	}
 	if _, err := e.Write(pcm); err != nil {
 		return err
 	}
-	return e.Close()
+	if err := e.Close(); err != nil {
+		return err
+	}
+
+	kbps := cfg.resolvedKbps()
+	audioFrames := e.enc.Stats().Frames
+	padding := lamePadding(audioFrames, e.samplesIn)
+	totalBytes := int64(infoFrameLen(cfg.SampleRate, kbps)) + int64(body.Len())
+	tag := buildInfoFrame(cfg.SampleRate, kbps, cfg.Channels, audioFrames, totalBytes, mp3.EncoderDelay, padding)
+
+	if _, err := w.Write(tag); err != nil {
+		return err
+	}
+	_, err := w.Write(body.Bytes())
+	return err
 }

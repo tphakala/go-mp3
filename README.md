@@ -105,16 +105,24 @@ attack-driven short blocks, but quality at a given bitrate still lags a
 fully tuned encoder like LAME; further tuning is planned and is measured
 with the quality harness described below. VBR is not planned.
 
-The encoded stream is tagless (no Xing/LAME header), so the `pcm` decoder
-below applies no gapless trim to it: the decoded output carries
-`mp3.TotalDelay` (1057) leading samples of algorithmic delay, measured per
-channel, unchanged by the one-frame lookahead above (it shifts when frames
-come back from `EncodeFrame`, not where they land in the decoded stream).
-`Encoder.TotalDelay()` and `Encoder.Delay()` return `mp3.TotalDelay` and
-`mp3.EncoderDelay` respectively for callers that only hold an `*Encoder`.
-For the interleaved output that means discarding the first
-`TotalDelay * Channels` sample values (not `TotalDelay` values) to align
-the decoded audio back to the original input.
+The raw frame encoder (`EncodeFrame`) writes no Xing/LAME header, so decoding
+its output applies no gapless trim: the decoded stream carries `mp3.TotalDelay`
+(1057) leading samples of algorithmic delay, measured per channel, unchanged by
+the one-frame lookahead above (it shifts when frames come back from
+`EncodeFrame`, not where they land in the decoded stream). `Encoder.TotalDelay()`
+and `Encoder.Delay()` return `mp3.TotalDelay` and `mp3.EncoderDelay` respectively
+for callers that only hold an `*Encoder`. For the interleaved output that means
+discarding the first `TotalDelay * Channels` sample values (not `TotalDelay`
+values) to align the decoded audio back to the original input.
+
+The higher-level `pcm` encoder (`pcm.EncodeInterleaved` and the streaming
+`pcm.NewEncoder`) writes a Xing/Info + LAME gapless tag by default, so an
+encode then decode round trip through `pcm`, ffmpeg, or mpg123 is
+sample-accurate with no manual delay drop: the decoded output has exactly the
+input length. `EncodeInterleaved` always writes the tag; the streaming encoder
+writes it when its sink is an `io.WriteSeeker` (it back-patches the leading
+frame at `Close`), and leaves a plain `io.Writer` stream tagless.
+`Config.OmitGaplessTag` opts out.
 
 ## Audio quality
 

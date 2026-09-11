@@ -23,6 +23,18 @@ type Config struct {
 	// 96000, 112000, 128000, 160000, 192000, 224000, 256000, 320000). Zero
 	// selects mp3.DefaultBitrate (128000).
 	Bitrate int
+	// OmitGaplessTag suppresses the leading Xing/Info + LAME header frame. The
+	// zero value writes the tag, which is what LAME and ffmpeg do: it carries
+	// the encoder delay and padding so a decoder trims to a sample-accurate
+	// round trip. Set it true to emit a bare tagless CBR stream (the pre-tag
+	// behavior), whose decode carries mp3.TotalDelay leading samples the caller
+	// must drop itself.
+	//
+	// EncodeInterleaved always writes the tag when this is false, because it
+	// holds the whole input. The streaming Encoder can write it only when its
+	// sink is an io.WriteSeeker (the leading frame is back-patched at Close);
+	// with a plain io.Writer the stream is tagless regardless of this field.
+	OmitGaplessTag bool
 }
 
 // validate reports the first config problem, or nil. SampleRate and Channels
@@ -44,6 +56,18 @@ func (c Config) validate() error {
 		return fmt.Errorf("go-mp3/pcm: negative bitrate %d", c.Bitrate)
 	}
 	return nil
+}
+
+// resolvedKbps returns the effective CBR bitrate in kbps, mapping a zero
+// Bitrate to mp3.DefaultBitrate exactly as the root encoder does. It is used to
+// size and header the Info tag frame; callers reach it only after a successful
+// encoder init, so the value is always one of the 14 legal CBR rates.
+func (c Config) resolvedKbps() int {
+	b := c.Bitrate
+	if b == 0 {
+		b = mp3.DefaultBitrate
+	}
+	return b / 1000
 }
 
 // toEncoderConfig validates c and maps it to the root mp3.EncoderConfig. A zero

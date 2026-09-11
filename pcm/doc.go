@@ -56,10 +56,18 @@
 //
 // Write accepts any chunk size, buffering across calls; Close flushes the final
 // partial frame and drains the encoder's one-frame lookahead. EncodeInterleaved
-// is the one-shot form for a caller that already holds the whole buffer. The
-// stream is tagless CBR (no LAME gapless tag), so a decoder does not trim the
-// encoder's algorithmic delay: decoded output carries mp3.TotalDelay leading
-// samples per channel, which a caller aligning back to the original input drops.
+// is the one-shot form for a caller that already holds the whole buffer.
+//
+// By default the encoder writes a leading Xing/Info + LAME gapless tag carrying
+// the encoder delay and padding, so decoding an encoded stream (with this
+// package, ffmpeg, or mpg123) is sample-accurate: the decoded output has exactly
+// the input length, with the algorithmic delay and final padding trimmed.
+// EncodeInterleaved always writes the tag, since it holds the whole input. The
+// streaming NewEncoder writes it only when the sink is an io.WriteSeeker, since
+// the leading frame's counts are known only at Close and are back-patched then;
+// with a plain io.Writer the stream is tagless and its decode carries
+// mp3.TotalDelay leading samples the caller must drop itself. Config.OmitGaplessTag
+// forces a tagless stream in either case.
 //
 // # Reuse
 //

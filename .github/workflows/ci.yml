@@ -119,7 +119,10 @@ jobs:
       # made compute-heavy by short-block coding, so headroom is kept on
       # shared CI runners, on both amd64 and arm64. This job runs a few
       # minutes; it shares the 20m budget used across all four timeout sites.
-      - run: go test ./ -run Compat -v -timeout 20m
+      # ./pcm carries the gapless-tag cross-check (TestGaplessCompatFfmpegMpg123),
+      # which proves ffmpeg and mpg123 honor the encoder's Xing/Info + LAME tag;
+      # it needs the same black-box binaries and MP3_REQUIRE_COMPAT hard-fail.
+      - run: go test ./ ./pcm -run Compat -v -timeout 20m
         env:
           MP3_REQUIRE_COMPAT: '1'
       # End-to-end runs of the quality harness against lame (a black-box

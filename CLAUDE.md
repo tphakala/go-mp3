@@ -39,9 +39,13 @@ are all complete.
   coarser, never finer). Default-mode output is bit-exact cross-arch, round-trip
   SNR gated, and accepted by ffmpeg and mpg123; `RateControlFast` is likewise
   cross-arch deterministic (integer selection) but not bit-identical to exact.
-  The stream is tagless (no Xing or LAME header). VBR is not planned. Quality at
-  a given bitrate still lags a fully tuned encoder like LAME; further tuning is
-  the main open work, measured with the quality harness.
+  The raw frame encoder's stream is tagless (no Xing or LAME header); the `pcm`
+  streaming encoder (`pcm.EncodeInterleaved`, and `pcm.NewEncoder` when its sink
+  is an `io.WriteSeeker`) writes a Xing/Info + LAME gapless tag by default, so an
+  encode then decode round trip is sample-accurate (`pcm.Config.OmitGaplessTag`
+  opts out). VBR is not planned. Quality at a given bitrate still lags a fully
+  tuned encoder like LAME; further tuning is the main open work, measured with
+  the quality harness.
 - **Quality harness** (`tools/quality`, metrics in `internal/quality`): `task
   quality` compares the encoder against the `lame` binary (black box only) on a
   deterministic synthetic corpus plus optional WAVs (`-corpus DIR`), decoding

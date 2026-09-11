@@ -52,6 +52,22 @@ func TestEncodeInterleavedRejectsBadConfig(t *testing.T) {
 	}
 }
 
+// TestEncodeInterleavedRejectsNilWriter pins that a nil sink returns a clean
+// error rather than panicking. The default (tagged) path encodes into an
+// internal buffer, so it never validates w via Reset; without an up-front check
+// a nil w would panic at the final tag write instead.
+func TestEncodeInterleavedRejectsNilWriter(t *testing.T) {
+	pcm := genSineS16(mp3.FrameSize, 2, 1000, 44100)
+	cfg := Config{SampleRate: 44100, Channels: 2, Bitrate: 128000}
+	if err := EncodeInterleaved(nil, cfg, pcm); err == nil {
+		t.Fatal("expected an error for a nil writer (default tagged path)")
+	}
+	cfg.OmitGaplessTag = true
+	if err := EncodeInterleaved(nil, cfg, pcm); err == nil {
+		t.Fatal("expected an error for a nil writer (tagless path)")
+	}
+}
+
 func TestEncodeInterleavedEmpty(t *testing.T) {
 	// Empty but valid: whole-sample check passes (0 % stride == 0); the drain
 	// still emits the flush frame, so output is non-empty and decodable.

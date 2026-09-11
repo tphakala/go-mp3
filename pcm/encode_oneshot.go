@@ -27,9 +27,23 @@ var encoderPool = sync.Pool{New: func() any { return new(Encoder) }}
 // frame (fewer than mp3.FrameSize samples) is zero-padded internally, exactly as
 // the streaming Close path does, so the buffer need not be a whole number of
 // frames.
+//
+// By default it writes a leading Xing/Info + LAME gapless tag (see the package
+// docs). The tag's frame count and byte total are known only after the last
+// frame, so the default path buffers the whole encoded stream in memory and
+// writes nothing to w until encoding completes (relevant for a slow sink). The
+// buffered stream is smaller than the PCM input this call already holds. Set
+// Config.OmitGaplessTag to stream frames to w as they are produced, with no tag
+// and no buffering.
 func EncodeInterleaved(w io.Writer, cfg Config, pcm []byte) error {
 	if err := cfg.validate(); err != nil {
 		return err
+	}
+	if w == nil {
+		// Both paths below would otherwise reach a nil w only late (the default
+		// path validates the internal buffer, not w), so reject it up front for
+		// the same clean error the streaming Reset returns.
+		return fmt.Errorf("go-mp3/pcm: nil writer")
 	}
 	stride := 2 * cfg.Channels
 	if len(pcm)%stride != 0 {

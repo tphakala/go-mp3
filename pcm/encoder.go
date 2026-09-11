@@ -60,6 +60,12 @@ type Encoder struct {
 	kbps      int
 	samplesIn int64
 
+	// streamErr latches the first error from emitFrame (a sink write failure or
+	// an encode error), even one a caller ignored after Write returned it. Close
+	// uses it to avoid back-patching a confident Info tag over a stream whose
+	// bytes on the sink do not match the tag's frame count. Cleared in Reset.
+	streamErr error
+
 	closed bool
 }
 
@@ -129,6 +135,7 @@ func (e *Encoder) Reset(w io.Writer, cfg Config) error {
 	e.seeker = nil
 	e.tagOff = 0
 	e.kbps = 0
+	e.streamErr = nil
 	if !cfg.OmitGaplessTag {
 		if ws, ok := w.(io.WriteSeeker); ok {
 			e.kbps = cfg.resolvedKbps()
@@ -213,10 +220,12 @@ func (e *Encoder) emitFrame(chunk []byte, n int) error {
 	var err error
 	e.out, err = e.enc.EncodeFrame(e.out[:0], e.planar)
 	if err != nil {
+		e.streamErr = err // latch: the stream is now broken even if the caller ignores this
 		return err
 	}
 	if len(e.out) > 0 {
 		if _, werr := e.w.Write(e.out); werr != nil {
+			e.streamErr = werr // latch the sink error for Close's patch decision
 			return werr
 		}
 	}
@@ -267,6 +276,15 @@ func (e *Encoder) Close() error {
 		if _, werr := e.w.Write(e.out); werr != nil && firstErr == nil {
 			firstErr = werr
 		}
+	}
+
+	// A sink error during an earlier Write (which the caller may have ignored,
+	// though the contract says to abandon the stream) leaves the bytes on the
+	// sink out of step with the encoder's frame count. Surface it so it is not
+	// lost, and, crucially, so the patch below is skipped: a confident tag over
+	// a broken stream is worse than no tag.
+	if firstErr == nil {
+		firstErr = e.streamErr
 	}
 
 	// Back-patch the leading Info tag frame now that the final counts are

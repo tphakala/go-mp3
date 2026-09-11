@@ -47,6 +47,25 @@ func (m *memWriteSeeker) Seek(offset int64, whence int) (int64, error) {
 
 func (m *memWriteSeeker) Bytes() []byte { return m.buf }
 
+// flakyWriteSeeker wraps memWriteSeeker to fail a single Write once the buffer
+// has grown past failAfterBytes, then succeed again, simulating a transient sink
+// error mid-stream. It drives the Close path where a Write error was latched but
+// the later drain succeeds.
+type flakyWriteSeeker struct {
+	memWriteSeeker
+	failAfterBytes int
+	err            error
+	failed         bool
+}
+
+func (f *flakyWriteSeeker) Write(p []byte) (int, error) {
+	if !f.failed && len(f.buf) >= f.failAfterBytes {
+		f.failed = true
+		return 0, f.err
+	}
+	return f.memWriteSeeker.Write(p)
+}
+
 // genSineS16 returns nSamplesPerCh inter-channel samples of a full-scale-safe
 // sine wave, interleaved little-endian S16, for the given channel count. Every
 // channel carries the same tone at amplitude 0.5 (well inside [-1, 1] so no

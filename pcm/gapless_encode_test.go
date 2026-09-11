@@ -2,6 +2,7 @@ package pcm
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	mp3 "github.com/tphakala/go-mp3"
@@ -187,5 +188,33 @@ func TestStreamingSeekPatchMidFile(t *testing.T) {
 	}
 	if got := len(bytesToS16(decoded)) / cfg.Channels; got != n {
 		t.Fatalf("decoded %d samples/ch, want exactly %d", got, n)
+	}
+}
+
+// TestStreamingCloseDoesNotPatchAfterWriteError guards a data-integrity hazard:
+// if a sink Write fails mid-stream (a transient error the caller ignores) but the
+// Close drain then succeeds, Close must surface the latched error and must NOT
+// back-patch a confident Info tag whose frame count and byte total would not
+// match the bytes actually on the sink.
+func TestStreamingCloseDoesNotPatchAfterWriteError(t *testing.T) {
+	cfg := Config{SampleRate: 44100, Channels: 2, Bitrate: 128000}
+	pcm := genSineS16(mp3.FrameSize*10, cfg.Channels, 1000, cfg.SampleRate)
+	boom := errors.New("sink boom")
+	// Fail one write after the placeholder frame plus about one audio frame, so
+	// earlier frames, later frames, and the Close drain all still reach the sink.
+	f := &flakyWriteSeeker{failAfterBytes: 500, err: boom}
+
+	e, err := NewEncoder(f, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a caller that ignores the Write error (the contract says to
+	// abandon the stream) and calls Close anyway.
+	_, _ = e.Write(pcm)
+	if cerr := e.Close(); !errors.Is(cerr, boom) {
+		t.Fatalf("Close = %v, want the latched sink error surfaced (a broken stream must not be finalized with a confident tag)", cerr)
+	}
+	if !f.failed {
+		t.Fatal("the flaky sink never actually failed a write; adjust failAfterBytes")
 	}
 }

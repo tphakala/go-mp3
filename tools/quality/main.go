@@ -23,7 +23,8 @@ import (
 )
 
 // Exit codes: success is 0, a run where some case failed is 1, setup errors
-// (flags, missing lame) are 2, and an interrupted run (Ctrl-C) is 3.
+// (bad flags, or no reference encoder found) are 2, and an interrupted run
+// (Ctrl-C) is 3.
 const (
 	exitOK          = 0
 	exitCases       = 1
@@ -138,9 +139,6 @@ func run(ctx context.Context, args []string, errw io.Writer) int {
 		return fail(errw, err)
 	}
 	tl := detectTools(o.lame, o.visqol, o.peaq)
-	if tl.lame == "" {
-		return fail(errw, errors.New("lame binary not found (install lame or pass -lame)"))
-	}
 	// An explicitly named tool that does not resolve is a setup error, not a
 	// reason to quietly omit its column: the user asked for that measurement.
 	for _, t := range []struct{ flag, name, got string }{
@@ -149,6 +147,20 @@ func run(ctx context.Context, args []string, errw io.Writer) int {
 		if t.flag != "" && t.got == "" {
 			return fail(errw, fmt.Errorf("%s %q not found", t.name, t.flag))
 		}
+	}
+	// The reference producer: the standalone lame binary when present (the
+	// canonical CLI), else ffmpeg's libmp3lame, so a run does not require the
+	// lame binary specifically. Resolved once; runCase derives the same choice
+	// from tl for each case.
+	ref := chooseReference(tl.lame, tl.ffmpeg)
+	if ref.kind == refNone {
+		return fail(errw, errors.New("no reference encoder found: install lame (preferred), or ffmpeg for its libmp3lame, or pass -lame"))
+	}
+	// ffmpeg can be built without libmp3lame. Probe once here so that case ends
+	// in one clear setup error rather than every reference encode failing later
+	// with a cryptic "Unknown encoder" and the run reporting exitCases.
+	if ref.kind == refFFmpegLAME && !ffmpegHasLibmp3lame(ctx, ref.bin) {
+		return fail(errw, errors.New("ffmpeg is present but its build lacks the libmp3lame encoder: install lame, or an ffmpeg built with --enable-libmp3lame"))
 	}
 	// -crosscheck is an explicit request for the ffmpeg second decode, so a
 	// missing ffmpeg is a setup error here too rather than a silently skipped
@@ -178,7 +190,7 @@ func run(ctx context.Context, args []string, errw io.Writer) int {
 		SchemaVersion: reportSchemaVersion,
 		GeneratedUTC:  time.Now().UTC().Format(time.RFC3339),
 		GoMP3Rev:      vcsRevision(),
-		LAMEVersion:   lameVersion(ctx, tl.lame),
+		LAMEVersion:   referenceVersion(ctx, ref),
 		Seconds:       o.seconds,
 	}
 	if tl.visqol != "" {

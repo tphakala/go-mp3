@@ -83,10 +83,7 @@ func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
 	}
 	targetFrame := rawTarget / spf
 	intra := rawTarget % spf
-	primeFrame := targetFrame - seekPrimeFrames
-	if primeFrame < 0 {
-		primeFrame = 0
-	}
+	primeFrame := max(targetFrame-seekPrimeFrames, 0)
 
 	// Capture the source position so the non-poisoning ErrSeekUnsupported return
 	// below can restore it: frameOffsets seeks the raw source directly, and
@@ -115,10 +112,7 @@ func (d *Decoder) SeekToSample(sampleIndex int64) (int64, error) {
 		// The stream ends before the target frame: a seek past the true end of an
 		// unknown-length stream (a known length would have clamped above). Land at
 		// the end, reporting the playable samples that do exist.
-		end := avail*spf - int64(d.gaplessStart) //nolint:gosec // G115: the small LAME delay plus the 529-sample decoder delay.
-		if end < 0 {
-			end = 0
-		}
+		end := max(avail*spf-int64(d.gaplessStart), 0) //nolint:gosec // G115: the small LAME delay plus the 529-sample decoder delay.
 		return d.seekToEnd(end)
 	}
 	if err := d.reseek(primeOff); err != nil {
@@ -163,10 +157,7 @@ func (d *Decoder) frameOffsets(prime, target int64) (primeOff, avail int64, reac
 	// after it exactly as a cold walk would. prime < start means frames 0..prime
 	// were all sized on an earlier walk, so the cold walk would have reached
 	// iteration prime and set primeOff to this same cached offset.
-	start := int64(len(d.frameOff)) - 1
-	if start > target {
-		start = target
-	}
+	start := min(int64(len(d.frameOff))-1, target)
 	if prime < start {
 		primeOff = d.frameOff[prime]
 	}

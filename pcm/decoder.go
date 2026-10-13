@@ -732,10 +732,7 @@ func (d *Decoder) applyLAME(delay, padding int) {
 		return // total unknown: head-only trim, tail left open, TotalSamples 0
 	}
 
-	tail := uint64(tailTrim)
-	if tail > preTrim {
-		tail = preTrim
-	}
+	tail := min(uint64(tailTrim), preTrim)
 	d.gaplessEnd = preTrim - tail
 
 	if head+tail > preTrim {

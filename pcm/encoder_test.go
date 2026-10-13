@@ -70,10 +70,7 @@ func TestEncoderChunkBoundaryInvariance(t *testing.T) {
 			t.Fatal(err)
 		}
 		for off := 0; off < len(pcm); off += chunk {
-			end := off + chunk
-			if end > len(pcm) {
-				end = len(pcm)
-			}
+			end := min(off+chunk, len(pcm))
 			if _, err := e.Write(pcm[off:end]); err != nil {
 				t.Fatal(err)
 			}

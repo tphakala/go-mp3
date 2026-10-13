@@ -109,7 +109,12 @@ New behaviour gets a test. Bug fixes get a regression test that fails before the
 
 ## Commands
 
-Go 1.27, golangci-lint v2.13.2 (pinned in `GOLANGCI_LINT_VERSION` in `.github/workflows/ci.yml`). Tasks are in `Taskfile.yml`.
+Go 1.27, golangci-lint v2.14.0 (pinned in `GOLANGCI_LINT_VERSION` in `.github/workflows/ci.yml`). Tasks are in `Taskfile.yml`.
+
+The project targets the latest stable Go release and the latest tooling, not the oldest version that still works:
+
+- `go.mod` says `go 1.27` with no patch release and no `toolchain` line, and CI's `GO_VERSION: '1.27'` (in both `ci.yml` and `oracle.yml`) resolves to the newest patch on every run. Never pin a patch release. When a new minor ships, bump `go.mod` and both workflows together.
+- golangci-lint is pinned to its newest release in `GOLANGCI_LINT_VERSION` in `ci.yml` and in this file, and bumped by hand when a release ships. Fix any new findings in the same change rather than disabling the linter.
 
 ```
 task check               # build, vet, golangci-lint, test (must be green before every commit)

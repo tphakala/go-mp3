@@ -149,10 +149,6 @@ func TestQualityBaseline(t *testing.T) {
 		t.Fatal("set only one of UPDATE_QUALITY_BASELINE (refresh) or MP3_QUALITY_BASELINE (gate); with both set, refreshing would overwrite the baseline instead of checking against it")
 	}
 
-	if !update {
-		baselineGateRan.Store(true) // lets TestMain tell a filtered-out gate from a run one
-	}
-
 	specs := baselineSpecs(t)
 	cur := make([]baselineCase, len(specs))
 	for i, spec := range specs {
@@ -182,6 +178,7 @@ func TestQualityBaseline(t *testing.T) {
 	if len(cur) != len(base.Cases) {
 		t.Errorf("measured %d cases but baseline has %d: refresh with UPDATE_QUALITY_BASELINE=1", len(cur), len(base.Cases))
 	}
+	checked := 0
 	for _, cc := range cur {
 		bc, ok := byKey[caseKey(cc.Program, cc.SampleRate, cc.Kbps)]
 		if !ok {
@@ -189,8 +186,15 @@ func TestQualityBaseline(t *testing.T) {
 			continue
 		}
 		t.Run(fmt.Sprintf("%s_%d_%d", cc.Program, cc.SampleRate, cc.Kbps), func(t *testing.T) {
+			checked++
 			checkRegression(t, &bc, &cc)
 		})
+	}
+	// Only a gate whose every case was checked counts as run: a subtest-level
+	// -run or -skip filter leaves some regression subtests out, and TestMain
+	// must still fail the CI step for it.
+	if checked == len(cur) {
+		baselineGateRan.Store(true)
 	}
 }
 

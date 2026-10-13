@@ -237,6 +237,27 @@ func writeFakeBin(t *testing.T, dir, name, script string) string {
 	return p
 }
 
+// TestRunUsesExplicitLame: an explicit -lame path that is not on PATH is the
+// binary run() encodes the reference with, under -reference auto and lame. The
+// fake fails with a marker, so the case error in stderr shows which binary ran;
+// with the path dropped, an empty PATH would make it a setup error instead.
+func TestRunUsesExplicitLame(t *testing.T) {
+	fakeLame := writeFakeBin(t, t.TempDir(), "lame", "echo FAKE-EXPLICIT-LAME >&2; exit 1")
+	t.Setenv("PATH", t.TempDir())
+	for _, mode := range []refMode{refModeAuto, refModeLame} {
+		t.Run(string(mode), func(t *testing.T) {
+			var errbuf bytes.Buffer
+			code := run(t.Context(), gridArgs("1", t.TempDir(), "-reference="+string(mode), "-lame="+fakeLame), &errbuf)
+			if code != exitCases {
+				t.Fatalf("run() exit %d, want exitCases %d; stderr:\n%s", code, exitCases, errbuf.String())
+			}
+			if !strings.Contains(errbuf.String(), "FAKE-EXPLICIT-LAME") {
+				t.Fatalf("reference was not encoded with the -lame binary; stderr:\n%s", errbuf.String())
+			}
+		})
+	}
+}
+
 // TestRunCaseUsesResolvedReference: runCase encodes the reference with tl.ref
 // only. With both fake binaries on PATH and ref pointing at ffmpeg, a per-case
 // re-derivation (which prefers lame) would surface FAKE-LAME instead.

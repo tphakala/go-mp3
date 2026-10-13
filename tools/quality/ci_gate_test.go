@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -13,10 +15,10 @@ import (
 // baselineGateRan is set by TestQualityBaseline once it passes its skip and
 // mutual-exclusion checks, so TestMain can tell a filtered-out gate from a
 // run one.
+var baselineGateRan atomic.Bool
+
 // ghaTrue is the value GitHub Actions sets GITHUB_ACTIONS to.
 const ghaTrue = "true"
-
-var baselineGateRan atomic.Bool
 
 // gateSkippedInCI reports an error when the CI gate step (GITHUB_ACTIONS=true
 // with MP3_QUALITY_BASELINE set) finished without TestQualityBaseline having
@@ -40,6 +42,30 @@ func TestMain(m *testing.M) {
 		code = 1
 	}
 	os.Exit(code)
+}
+
+// TestMainFailsFilteredGate re-runs this test binary with only TestDedupInts
+// selected, as a -run filter on the CI gate step would, and checks that
+// TestMain turns the passing run into a failure under the gate env, but not
+// without GITHUB_ACTIONS.
+func TestMainFailsFilteredGate(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := func(env ...string) (string, error) {
+		cmd := exec.CommandContext(t.Context(), exe, "-test.run=^TestDedupInts$")
+		cmd.Env = append(os.Environ(), env...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	out, err := child("GITHUB_ACTIONS=true", "MP3_QUALITY_BASELINE=1")
+	if err == nil || !strings.Contains(out, "TestQualityBaseline did not run") {
+		t.Fatalf("filtered gate under CI must fail with the gate message, got err=%v out:\n%s", err, out)
+	}
+	if out, err := child("GITHUB_ACTIONS=", "MP3_QUALITY_BASELINE=1"); err != nil {
+		t.Fatalf("outside GitHub Actions the filtered run must pass: %v\n%s", err, out)
+	}
 }
 
 func TestGateSkippedInCI(t *testing.T) {

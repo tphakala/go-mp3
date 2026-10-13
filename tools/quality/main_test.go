@@ -164,6 +164,9 @@ func TestParseFlagsRejectsIllegalBitrate(t *testing.T) {
 	}
 }
 
+// lameFlag is an explicit -lame value for the flag-combination tests.
+const lameFlag = "-lame=/x"
+
 // TestParseFlagsReference pins the -reference value set, its default, and the
 // -lame conflict. Single-token -flag=value form, as in gridArgs, to keep
 // bare "-flag" literals from tripping goconst.
@@ -190,10 +193,15 @@ func TestParseFlagsReference(t *testing.T) {
 			t.Fatalf("-reference=%q: got %v, want the allowed-values error", bad, err)
 		}
 	}
-	if _, err := parseFlags([]string{"-reference=ffmpeg", "-lame=/x"}); err == nil || !strings.Contains(err.Error(), "no effect") {
+	if _, err := parseFlags([]string{"-reference=ffmpeg", lameFlag}); err == nil || !strings.Contains(err.Error(), "no effect") {
 		t.Fatalf("-reference=ffmpeg with -lame: got %v, want a 'no effect' error", err)
 	}
-	if _, err := parseFlags([]string{"-reference=lame", "-lame=/x"}); err != nil {
-		t.Fatalf("-reference=lame with -lame must parse: %v", err)
+	for _, mode := range []string{"auto", "lame"} {
+		if _, err := parseFlags([]string{"-reference=" + mode, lameFlag}); err != nil {
+			t.Fatalf("-reference=%s with -lame must parse: %v", mode, err)
+		}
+	}
+	if _, err := parseFlags([]string{lameFlag}); err != nil {
+		t.Fatalf("-lame with the default reference must parse: %v", err)
 	}
 }

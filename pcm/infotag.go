@@ -59,7 +59,7 @@ func buildInfoFrameHeader(sampleRate, kbps, channels int) [4]byte {
 	}
 	return [4]byte{
 		0xFF,
-		0xFB, // 111 (sync) 11 (MPEG-1) 01 (Layer III) 1 (no CRC)
+		0xFB,                 // 111 (sync) 11 (MPEG-1) 01 (Layer III) 1 (no CRC)
 		byte(bi<<4 | sri<<2), // padding and private bits clear
 		byte(mode << 6),      // mode-ext, copyright, original, emphasis all 0
 	}

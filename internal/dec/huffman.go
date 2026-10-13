@@ -140,6 +140,7 @@ func huffmanLeaf(bs *bits.Reader, codebook []int16) int {
 // (tools/oracle/minimp3.h:1772), so any dst entries beyond what this
 // function actually writes are left however the caller initialized them,
 // exactly mirroring upstream.
+//
 //nolint:gocognit,gocyclo // faithful port of minimp3 L3_huffman; structure mirrors the pin for auditability and bit-exactness
 func l3Huffman(dst []float32, bs *bits.Reader, gr *grInfo, scf []float32, layer3gr int) {
 	dstIdx, sfbIdx, scfIdx := 0, 0, 0

@@ -143,7 +143,7 @@ func TestToU32(t *testing.T) {
 		{0, 0},
 		{1234, 1234},
 		{0xffffffff, 0xffffffff},
-		{-1, 0},          // negative floors to 0
+		{-1, 0},               // negative floors to 0
 		{1 << 40, 0xffffffff}, // above uint32 max saturates
 	}
 	for _, tc := range cases {

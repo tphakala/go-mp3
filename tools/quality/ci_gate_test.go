@@ -68,7 +68,9 @@ func TestMainFailsFilteredGate(t *testing.T) {
 	}
 	filters := []string{"-test.run=^TestDedupInts$"}
 	if gateEnabled() {
-		filters = append(filters, "-test.run=^TestQualityBaseline$/^$")
+		// Keep the cases at one bitrate only: a filter that keeps some subtests
+		// but not all must still fail, not just one that keeps none.
+		filters = append(filters, fmt.Sprintf("-test.run=^TestQualityBaseline$/_%d$", baselineBitrates[0]))
 	}
 	for _, filter := range filters {
 		t.Run(filter, func(t *testing.T) {

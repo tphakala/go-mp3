@@ -23,8 +23,8 @@ import (
 )
 
 // Exit codes: success is 0, a run where some case failed is 1, setup errors
-// (bad flags, or the requested reference encoder is unavailable) are 2, and an interrupted run
-// (Ctrl-C) is 3.
+// (bad flags, or the requested reference encoder is unavailable) are 2, and
+// an interrupted run (Ctrl-C) is 3.
 const (
 	exitOK          = 0
 	exitCases       = 1
@@ -146,23 +146,19 @@ func run(ctx context.Context, args []string, errw io.Writer) int {
 	if err != nil {
 		return fail(errw, err)
 	}
-	tl := detectTools(o.lame, o.visqol, o.peaq)
+	tl, lame := detectTools(o.lame, o.visqol, o.peaq)
 	// An explicitly named tool that does not resolve is a setup error, not a
 	// reason to quietly omit its column: the user asked for that measurement.
 	for _, t := range []struct{ flag, name, got string }{
-		{o.lame, "-lame", tl.lame}, {o.visqol, "-visqol", tl.visqol}, {o.peaq, "-peaq", tl.peaq},
+		{o.lame, "-lame", lame}, {o.visqol, "-visqol", tl.visqol}, {o.peaq, "-peaq", tl.peaq},
 	} {
 		if t.flag != "" && t.got == "" {
 			return fail(errw, fmt.Errorf("%s %q not found", t.name, t.flag))
 		}
 	}
-	// The reference producer, resolved once here: runCase uses tl.ref, so the
-	// provenance line and every case agree.
-	ref, err := resolveReference(o.reference, tl.lame, tl.ffmpeg, func(bin string) bool { return ffmpegHasLibmp3lame(ctx, bin) })
-	if err != nil {
+	if tl.ref, err = resolveReference(o.reference, lame, tl.ffmpeg, func(bin string) bool { return ffmpegHasLibmp3lame(ctx, bin) }); err != nil {
 		return fail(errw, err)
 	}
-	tl.ref = &ref
 	// -crosscheck is an explicit request for the ffmpeg second decode, so a
 	// missing ffmpeg is a setup error here too rather than a silently skipped
 	// check.
@@ -191,7 +187,7 @@ func run(ctx context.Context, args []string, errw io.Writer) int {
 		SchemaVersion: reportSchemaVersion,
 		GeneratedUTC:  time.Now().UTC().Format(time.RFC3339),
 		GoMP3Rev:      vcsRevision(),
-		LAMEVersion:   referenceVersion(ctx, ref),
+		LAMEVersion:   referenceVersion(ctx, tl.ref),
 		Seconds:       o.seconds,
 	}
 	if tl.visqol != "" {

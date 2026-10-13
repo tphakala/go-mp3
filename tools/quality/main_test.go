@@ -164,44 +164,44 @@ func TestParseFlagsRejectsIllegalBitrate(t *testing.T) {
 	}
 }
 
-// lameFlag is an explicit -lame value for the flag-combination tests.
-const lameFlag = "-lame=/x"
-
-// TestParseFlagsReference pins the -reference value set, its default, and the
-// -lame conflict. Single-token -flag=value form, as in gridArgs, to keep
-// bare "-flag" literals from tripping goconst.
+// TestParseFlagsReference pins the -reference value set, its default (auto),
+// and the -lame conflict. Single-token -flag=value form, as in gridArgs, to
+// keep bare "-flag" literals from tripping goconst.
 func TestParseFlagsReference(t *testing.T) {
-	o, err := parseFlags(nil)
-	if err != nil {
-		t.Fatal(err)
+	const (
+		lameFlag = "-lame=/x"
+		badValue = "want auto, lame, or ffmpeg"
+	)
+	ref := func(m refMode) string { return "-reference=" + string(m) }
+	cases := []struct {
+		args    []string
+		want    refMode
+		wantErr string
+	}{
+		{nil, refModeAuto, ""},
+		{[]string{ref(refModeAuto)}, refModeAuto, ""},
+		{[]string{ref(refModeLame)}, refModeLame, ""},
+		{[]string{ref(refModeFFmpeg)}, refModeFFmpeg, ""},
+		{[]string{"-reference=both"}, "", badValue},
+		{[]string{"-reference=LAME"}, "", badValue},
+		{[]string{"-reference="}, "", badValue},
+		{[]string{ref(refModeFFmpeg), lameFlag}, "", "no effect"},
+		{[]string{lameFlag}, refModeAuto, ""},
+		{[]string{ref(refModeLame), lameFlag}, refModeLame, ""},
 	}
-	if o.reference != refModeAuto {
-		t.Fatalf("default reference %q, want auto", o.reference)
-	}
-	for _, m := range []refMode{refModeAuto, refModeLame, refModeFFmpeg} {
-		o, err := parseFlags([]string{"-reference=" + string(m)})
+	for _, c := range cases {
+		o, err := parseFlags(c.args)
+		if c.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("%q: got %v, want error containing %q", c.args, err, c.wantErr)
+			}
+			continue
+		}
 		if err != nil {
-			t.Fatalf("-reference=%s: %v", m, err)
+			t.Fatalf("%q: %v", c.args, err)
 		}
-		if o.reference != m {
-			t.Fatalf("-reference=%s parsed as %q", m, o.reference)
+		if o.reference != c.want {
+			t.Fatalf("%q: reference %q, want %q", c.args, o.reference, c.want)
 		}
-	}
-	for _, bad := range []string{"both", "LAME", "", "bogus"} {
-		_, err := parseFlags([]string{"-reference=" + bad})
-		if err == nil || !strings.Contains(err.Error(), "want auto, lame, or ffmpeg") {
-			t.Fatalf("-reference=%q: got %v, want the allowed-values error", bad, err)
-		}
-	}
-	if _, err := parseFlags([]string{"-reference=ffmpeg", lameFlag}); err == nil || !strings.Contains(err.Error(), "no effect") {
-		t.Fatalf("-reference=ffmpeg with -lame: got %v, want a 'no effect' error", err)
-	}
-	for _, mode := range []string{"auto", "lame"} {
-		if _, err := parseFlags([]string{"-reference=" + mode, lameFlag}); err != nil {
-			t.Fatalf("-reference=%s with -lame must parse: %v", mode, err)
-		}
-	}
-	if _, err := parseFlags([]string{lameFlag}); err != nil {
-		t.Fatalf("-lame with the default reference must parse: %v", err)
 	}
 }

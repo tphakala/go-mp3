@@ -139,13 +139,13 @@ func toBaselineCase(spec caseSpec, m quality.Metrics, lag int) baselineCase {
 // gates on and why it is guarded by an environment variable.
 func TestQualityBaseline(t *testing.T) {
 	update := os.Getenv("UPDATE_QUALITY_BASELINE") != ""
-	if !update && os.Getenv("MP3_QUALITY_BASELINE") == "" {
+	if !update && !gateEnabled() {
 		t.Skip("set MP3_QUALITY_BASELINE=1 to run the quality regression gate (or UPDATE_QUALITY_BASELINE=1 to refresh the baseline)")
 	}
 	// Refreshing and gating are mutually exclusive intents: with both set the
 	// update path would silently overwrite the baseline and report a pass,
 	// hiding any regression. Force one explicit intent.
-	if update && os.Getenv("MP3_QUALITY_BASELINE") != "" {
+	if update && gateEnabled() {
 		t.Fatal("set only one of UPDATE_QUALITY_BASELINE (refresh) or MP3_QUALITY_BASELINE (gate); with both set, refreshing would overwrite the baseline instead of checking against it")
 	}
 

@@ -100,11 +100,7 @@ func runCase(ctx context.Context, tl tools, dir string, spec caseSpec, ref [][]f
 	if err := os.WriteFile(filepath.Join(dir, "gomp3.mp3"), goStream, 0o644); err != nil {
 		return caseResult{}, err
 	}
-	var refEnc refEncoder // refNone when run() did not resolve one
-	if tl.ref != nil {
-		refEnc = *tl.ref
-	}
-	refStream, err := refEnc.encode(ctx, dir, "ref.wav", "lame.mp3", spec.Kbps)
+	refStream, err := tl.ref.encode(ctx, dir, "ref.wav", "lame.mp3", spec.Kbps)
 	if err != nil {
 		return caseResult{}, fmt.Errorf("reference encode: %w", err)
 	}

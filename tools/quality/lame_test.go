@@ -31,13 +31,19 @@ func caseRef(spec caseSpec) [][]float64 {
 	return genRef(spec.Program, spec.SampleRate, spec.Seconds)
 }
 
+// lameTools is a tools value whose reference is the given lame binary, with no
+// external perceptual tools.
+func lameTools(lame string) tools {
+	return tools{ref: refEncoder{kind: refLameBinary, bin: lame}}
+}
+
 // TestQualityHarnessLame runs one real case end to end: both encoders, pcm
 // decode, alignment, metrics. It pins the two alignment facts the harness
 // relies on (go-mp3's tagless stream lands at mp3.TotalDelay; LAME's tagged
 // stream is gapless-trimmed by pcm to lag 0) and sanity-bounds the metrics.
 func TestQualityHarnessLame(t *testing.T) {
 	lame := requireLame(t)
-	tl := tools{lame: lame, ref: new(chooseReference(lame, ""))} // no external perceptual tools in the smoke test
+	tl := lameTools(lame)
 	prog, ok := quality.ProgramByName("tone-click")
 	if !ok {
 		t.Fatal("tone-click program missing")
@@ -89,7 +95,7 @@ func TestQualityHarnessStereoShortTail(t *testing.T) {
 	}
 	// 1 s at 44.1 kHz is 38.28 frames: the last go-mp3 frame is short.
 	spec := caseSpec{Program: prog, SampleRate: 44100, Kbps: 192, Seconds: 1}
-	res, err := runCase(t.Context(), tools{lame: lame, ref: new(chooseReference(lame, ""))}, t.TempDir(), spec, caseRef(spec), false, io.Discard)
+	res, err := runCase(t.Context(), lameTools(lame), t.TempDir(), spec, caseRef(spec), false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,9 +110,9 @@ func TestQualityHarnessStereoShortTail(t *testing.T) {
 // TestDetectToolsMissing: bogus explicit paths are reported as absent
 // rather than crashing later.
 func TestDetectToolsMissing(t *testing.T) {
-	tl := detectTools("/nonexistent/lame", "/nonexistent/visqol", "/nonexistent/peaq")
-	if tl.lame != "" || tl.visqol != "" || tl.peaq != "" {
-		t.Fatalf("expected empty paths, got %+v", tl)
+	tl, lame := detectTools("/nonexistent/lame", "/nonexistent/visqol", "/nonexistent/peaq")
+	if lame != "" || tl.visqol != "" || tl.peaq != "" {
+		t.Fatalf("expected empty paths, got lame=%q %+v", lame, tl)
 	}
 }
 

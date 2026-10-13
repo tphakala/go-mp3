@@ -88,10 +88,7 @@ func genSineS16(nSamplesPerCh, channels, freq, sampleRate int) []byte {
 // difference as noise. It returns math.Inf(1) when the overlap is silent-noise
 // (an exact match). ref and got are aligned by the caller before this is called.
 func snrDB(ref, got []int16) float64 {
-	n := len(ref)
-	if len(got) < n {
-		n = len(got)
-	}
+	n := min(len(got), len(ref))
 	var sig, noise float64
 	for i := range n {
 		d := float64(ref[i]) - float64(got[i])

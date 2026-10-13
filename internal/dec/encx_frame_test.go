@@ -2,6 +2,7 @@ package dec
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/tphakala/go-mp3/internal/bits"
@@ -227,12 +228,7 @@ var legalBlockSuccessors = [4][]int{
 // legalBlockTransition reports whether to is a legal successor of from
 // under legalBlockSuccessors.
 func legalBlockTransition(from, to int) bool {
-	for _, w := range legalBlockSuccessors[from] {
-		if w == to {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(legalBlockSuccessors[from], to)
 }
 
 // validateGranules checks every granule-channel's side-info invariants

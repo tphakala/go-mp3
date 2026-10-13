@@ -3,8 +3,9 @@
 #   - no depguard math boundary yet: add one (like go-aac fences internal/fmath)
 #     once the decoder DSP settles into internal/fmath-style packages
 #   - gocritic's ruleguard is wired to rules/*.go for modern-Go patterns
-#   - modernize stays disabled: it panics on Go 1.26 + atomic types in
-#     golangci-lint v2.11.4 (known bug)
+#   - modernize is enabled: the golangci-lint v2.11.4 panic on Go 1.26 +
+#     atomic types no longer reproduces on v2.14.0, and its min/max-builtin
+#     and range-over-int suggestions fit this codebase's modern-Go stance
 version: "2"
 output:
   sort-order:
@@ -28,6 +29,7 @@ linters:
     - iface
     - ineffassign
     - misspell
+    - modernize
     - nilerr
     - nilnil
     - predeclared

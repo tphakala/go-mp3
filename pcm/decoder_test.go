@@ -495,13 +495,7 @@ func (b *burstyReader) Read(p []byte) (int, error) {
 		}
 		b.pending = b.stall // re-arm for the chunk after this one
 	}
-	n := b.chunk
-	if n > len(p) {
-		n = len(p)
-	}
-	if n > len(b.data)-b.pos {
-		n = len(b.data) - b.pos
-	}
+	n := min(b.chunk, len(p), len(b.data)-b.pos)
 	copy(p, b.data[b.pos:b.pos+n])
 	b.pos += n
 	return n, nil

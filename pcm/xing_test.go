@@ -10,7 +10,7 @@ import (
 
 // readVectorFixture reads a fetched vector fixture from testdata/vectors.
 // That directory is gitignored (ISO- and LAME-derived conformance material
-// is never committed; see CLAUDE.md), so a plain checkout has nothing
+// is never committed; see AGENTS.md), so a plain checkout has nothing
 // there until scripts/fetch-vectors.sh populates it. This mirrors the
 // MP3_REQUIRE_DUMPS convention in internal/dec (dumps_test.go,
 // conformance_test.go): local runs skip silently when the corpus is

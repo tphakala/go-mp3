@@ -42,7 +42,7 @@ func vectorPaths(t *testing.T) []string {
 // bit-exact, and no PSNR comparison against the .pcm reference is
 // meaningful either. This is a scope boundary carried over from Task 10's
 // DecodeFrame, not a defect discovered here; Layer I/II decoding is not
-// part of this project (see CLAUDE.md, PROVENANCE.md). The map value is
+// part of this project (see AGENTS.md, PROVENANCE.md). The map value is
 // the Layer number found (1 or 2), which doubles as the per-vector reason.
 var layer1And2Vectors = map[string]int{
 	// ISO/IEC 11172-4 Layer II conformance set ("ILL2_"/"ILL4_" prefixes
@@ -172,7 +172,7 @@ func decodeAllFrames(d *Decoder, data []byte, onFrame func(info *FrameInfo)) []f
 // decodeAllFrames. It also reports whether any decoded frame used intensity
 // stereo or a mixed block, so TestConformanceVectors can assert that the ISO
 // corpus actually exercises those two faithfully-ported paths the LAME
-// fixture corpus never reaches (see CLAUDE.md's Task 11 carry-forward note),
+// fixture corpus never reaches,
 // and whether any frame was Layer III at all, so callers can self-validate a
 // layer1And2Vectors skip (see validateLayer1And2Skip) instead of trusting
 // the static map blindly.
@@ -344,7 +344,7 @@ func TestConformanceVectors(t *testing.T) {
 // TestConformanceVectorsExerciseIntensityStereoAndMixedBlocks decodes every
 // non-Layer-I/II vector once more and asserts that, across the ISO corpus
 // as a whole, at least one vector used intensity stereo and at least one
-// used a mixed block. Task 10's carry-forward note (CLAUDE.md) flagged
+// used a mixed block. Task 10's carry-forward note flagged
 // these two faithfully-ported paths as untested by the LAME fixture
 // corpus; this is the coverage assertion that closes that gap, so a future
 // change that silently dropped ISO vectors from the corpus (rather than

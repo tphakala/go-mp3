@@ -73,7 +73,7 @@ func vectorLayer(t *testing.T, data []byte) int {
 // deliberately stricter here (Task 6) and reports mp3.ErrCorruptStream,
 // because at true end of stream there is no way to tell a legitimately
 // short final frame from data lost in transit. This is the same "the Go
-// behavior is the correct, safer one" principle CLAUDE.md's Task 12
+// behavior is the correct, safer one" principle Task 12's
 // carry-forward note already establishes for reservoir-boundary
 // truncation; TestStreamingConformance still requires that every sample
 // pcm.Decoder DID emit before hitting that tail is bit-exact against the

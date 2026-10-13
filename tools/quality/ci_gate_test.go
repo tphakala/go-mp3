@@ -57,9 +57,10 @@ func TestMain(m *testing.M) {
 // edit to the CI gate step would, and checks that TestMain turns the passing
 // run into a failure. The top-level filter (only TestDedupInts) always runs.
 // The subtest-level filter keeps TestQualityBaseline itself, which measures the
-// whole gate corpus before its subtests, so that leg runs only where the gate
-// is enabled and that cost is already paid. The predicate's other combinations
-// are covered by TestGateSkippedInCI.
+// whole gate corpus again before its subtests, so that leg runs only where the
+// gate is enabled: it adds one more corpus measurement to the gate step instead
+// of a measurement to every ungated run. The predicate's other combinations are
+// covered by TestGateSkippedInCI.
 func TestMainFailsFilteredGate(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {

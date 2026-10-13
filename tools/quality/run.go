@@ -80,7 +80,8 @@ type caseResult struct {
 
 // runCase executes one comparison inside dir, which must exist and is where
 // every intermediate file (reference WAV, both MP3 streams, aligned WAVs for
-// the external tools) is written.
+// the external tools) is written. The reference producer is tl.ref, resolved
+// once by run().
 func runCase(ctx context.Context, tl tools, dir string, spec caseSpec, ref [][]float64, crosscheck bool, errw io.Writer) (caseResult, error) {
 	if len(ref) == 0 || len(ref[0]) == 0 {
 		return caseResult{}, errors.New("empty program at this sample rate")
@@ -99,7 +100,7 @@ func runCase(ctx context.Context, tl tools, dir string, spec caseSpec, ref [][]f
 	if err := os.WriteFile(filepath.Join(dir, "gomp3.mp3"), goStream, 0o644); err != nil {
 		return caseResult{}, err
 	}
-	refStream, err := chooseReference(tl.lame, tl.ffmpeg).encode(ctx, dir, "ref.wav", "lame.mp3", spec.Kbps)
+	refStream, err := tl.ref.encode(ctx, dir, "ref.wav", "lame.mp3", spec.Kbps)
 	if err != nil {
 		return caseResult{}, fmt.Errorf("reference encode: %w", err)
 	}

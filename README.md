@@ -154,19 +154,21 @@ Snapshot (2026-09-05), 128 kbps, decoded output scored against the source:
 ViSQOL sometimes favours go-mp3 while PEAQ favours LAME; the PEAQ gap is the
 honest signal that go-mp3's noise shaping still lags LAME. This is a small
 directional sample, not a full benchmark; results vary with material and
-bitrate. The harness below reproduces this against a full corpus, and a CI
-regression gate is planned (#64).
+bitrate. The harness below reproduces this against a full corpus, and a
+lame-free CI regression gate (`task quality:gate`) guards go-mp3's own
+objective quality.
 
 ## Quality measurement against LAME
 
 `task quality` (or `go run ./tools/quality`) encodes a deterministic
 synthetic corpus (tones, pink noise, click trains, sweeps, bird-like chirps,
 a speech-like program, and three stereo programs) through both this encoder
-and the `lame` binary at the same CBR bitrates, decodes both through this
+and a LAME reference (the `lame` binary, or ffmpeg's libmp3lame) at the same CBR bitrates, decodes both through this
 project's `pcm` decoder, aligns them by normalized cross-correlation, and
 writes
 `tools/quality/out/report.md` plus a JSON twin. LAME is used strictly as a
-black-box binary (see PROVENANCE.md). The Go-native metrics are SNR,
+black-box binary, driven either directly or through ffmpeg (see
+PROVENANCE.md). The Go-native metrics are SNR,
 band-limited SNR (bins at or below 16 kHz, so LAME's bitrate-dependent
 lowpass is not counted as noise there), segmental SNR, log-spectral
 distance, a pre-echo measure around detected attacks, and effective
@@ -174,17 +176,23 @@ bandwidth. When `visqol` (Google ViSQOL v3) and `peaq-odg` (a GstPEAQ front
 end) are on PATH, ViSQOL MOS-LQO and PEAQ ODG columns are added; both are
 optional, and both score at 48 kHz, so `ffmpeg` must also be on PATH for any
 grid that is not already 48 kHz (the default is 44.1 kHz); without it those
-two columns stay `n/a`. The `lame` binary itself is required: the harness
-refuses to run without it, so install it or pass `-lame`.
+two columns stay `n/a`. A reference encoder is required: `-reference auto`
+(the default) uses `lame` when found and otherwise ffmpeg's libmp3lame, and
+`-reference lame` or `-reference ffmpeg` forces one producer and fails if it
+is missing. The report's "Reference encoder" line names which one produced the
+run. The two producers use different CLI defaults, so their columns are not
+interchangeable.
 
 Flags reach the tool after `--` when going through task (`task quality --
 -bitrates 128`), or directly with `go run`. `-corpus DIR` adds your own WAV
 files, each measured only at its own sample rate, so include that rate in
 `-rates` or the file is skipped. `-bitrates`, `-rates` and `-programs` shape
 the grid, `-seconds` sets the program length, `-keep` retains the
-intermediate MP3 and WAV files under the work directory, `-lame`, `-visqol`
-and `-peaq` take explicit binary paths, and `-out` and `-json` redirect the
-two reports. The default grid is the 11 synthetic programs at 44.1 kHz and
+intermediate MP3 and WAV files under the work directory, `-reference` picks the
+reference encoder, `-lame`, `-visqol` and `-peaq` take explicit binary paths,
+and `-out` and `-json` redirect the two reports. To compare both producers,
+run twice (`-reference lame` and `-reference ffmpeg`) with distinct `-out` and
+`-json` paths. The default grid is the 11 synthetic programs at 44.1 kHz and
 128/192/256/320 kbps, 6 seconds each. `task quality:smoke` runs the same
 end-to-end check CI runs.
 

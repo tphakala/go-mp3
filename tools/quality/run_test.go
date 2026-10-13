@@ -99,7 +99,7 @@ func TestRunGridOrderAndReclaim(t *testing.T) {
 	}
 	runIt := func(o *options, workDir string) []caseResult {
 		rep := &report{}
-		failed, err := runGrid(t.Context(), tools{lame: lame}, o, workDir, rep, io.Discard)
+		failed, err := runGrid(t.Context(), lameTools(lame), o, workDir, rep, io.Discard)
 		if err != nil {
 			t.Fatalf("runGrid: %v", err)
 		}

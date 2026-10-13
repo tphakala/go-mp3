@@ -1,11 +1,113 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+// baselineGateRan is set by TestQualityBaseline once every case's regression
+// subtest has run, so TestMain can tell a gate filtered out (whole or in part)
+// from a run one.
+var baselineGateRan atomic.Bool
+
+// inGitHubActions reports whether the tests run under GitHub Actions, which
+// always sets GITHUB_ACTIONS=true.
+func inGitHubActions() bool { return os.Getenv("GITHUB_ACTIONS") == ghaTrue }
+
+// ghaTrue is the value GitHub Actions sets GITHUB_ACTIONS to.
+const ghaTrue = "true"
+
+// gateEnabled is the quality regression gate's activation predicate, shared by
+// TestQualityBaseline and the guards that check the gate is live.
+func gateEnabled() bool { return os.Getenv("MP3_QUALITY_BASELINE") != "" }
+
+// gateSkippedInCI reports an error when the CI gate step (under GitHub Actions
+// with the gate enabled) finished without every TestQualityBaseline regression
+// check having run. It closes the hole TestQualityGateActivatedInCI cannot: a
+// -run or -skip filter on the step excludes that guard test along with the gate.
+func gateSkippedInCI(ran bool) error {
+	if inGitHubActions() && gateEnabled() && !ran {
+		return errors.New("the quality regression gate is enabled for this step (MP3_QUALITY_BASELINE is set) " +
+			"but TestQualityBaseline did not run all its regression checks: a -run or -skip filter excluded the test or some of its subtests; remove the filter or move the env")
+	}
+	return nil
+}
+
+// TestMain runs for the package test binary whatever -run selects, so it can
+// fail the CI gate step when the gate was filtered out. Residual gap: a step
+// that drops ./tools/quality from its package list never starts this binary.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if err := gateSkippedInCI(baselineGateRan.Load()); err != nil && code == 0 {
+		fmt.Fprintln(os.Stderr, "FAIL:", err)
+		code = 1
+	}
+	os.Exit(code)
+}
+
+// TestMainFailsFilteredGate re-runs this test binary under the CI gate env with
+// a filter that leaves the gate's regression checks out, as a -run or -skip
+// edit to the CI gate step would, and checks that TestMain turns the passing
+// run into a failure. The top-level filter (only TestDedupInts) always runs.
+// The subtest-level filter keeps TestQualityBaseline itself, which measures the
+// whole gate corpus again before its subtests, so that leg runs only where the
+// gate is enabled: it adds one more corpus measurement to the gate step instead
+// of a measurement to every ungated run. The predicate's other combinations are
+// covered by TestGateSkippedInCI.
+func TestMainFailsFilteredGate(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	filters := []string{"-test.run=^TestDedupInts$"}
+	if gateEnabled() {
+		// Keep the cases at one bitrate only: a filter that keeps some subtests
+		// but not all must still fail, not just one that keeps none.
+		filters = append(filters, fmt.Sprintf("-test.run=^TestQualityBaseline$/_%d$", baselineBitrates[0]))
+	}
+	for _, filter := range filters {
+		t.Run(filter, func(t *testing.T) {
+			cmd := exec.CommandContext(t.Context(), exe, filter)
+			cmd.Env = append(os.Environ(), "GITHUB_ACTIONS=true", "MP3_QUALITY_BASELINE=1")
+			out, err := cmd.CombinedOutput()
+			if err == nil || !strings.Contains(string(out), "TestQualityBaseline did not run") {
+				t.Fatalf("filtered gate under CI must fail with the gate message, got err=%v out:\n%s", err, out)
+			}
+		})
+	}
+}
+
+func TestGateSkippedInCI(t *testing.T) {
+	cases := []struct {
+		name         string
+		actions, env string
+		ran          bool
+		wantErr      bool
+	}{
+		{"CI, gate env, not run", ghaTrue, "1", false, true},
+		{"CI, gate env, ran", ghaTrue, "1", true, false},
+		{"local, gate env, not run", "", "1", false, false},
+		{"actions false, gate env, not run", "false", "1", false, false},
+		{"CI, no gate env, not run", ghaTrue, "", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("GITHUB_ACTIONS", c.actions)
+			t.Setenv("MP3_QUALITY_BASELINE", c.env)
+			err := gateSkippedInCI(c.ran)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("got %v, wantErr %v", err, c.wantErr)
+			}
+		})
+	}
+}
 
 // gateActivationRe matches the ci.yml env line that turns the quality
 // regression gate on: MP3_QUALITY_BASELINE set to 1. It is anchored to a whole
@@ -46,7 +148,10 @@ func TestQualityGateActivatedInCI(t *testing.T) {
 	// THIS job's environment, mirroring TestQualityBaseline's own activation
 	// predicate (MP3_QUALITY_BASELINE non-empty). This test executes only under
 	// the full-suite step; the compat job's -run filter does not select it.
-	if os.Getenv("GITHUB_ACTIONS") == "true" && os.Getenv("MP3_QUALITY_BASELINE") == "" {
+	//
+	// A -run or -skip filter on the gate step would exclude this test too; the
+	// package TestMain covers that.
+	if inGitHubActions() && !gateEnabled() {
 		t.Fatal("running under GitHub Actions but MP3_QUALITY_BASELINE is unset: the quality " +
 			"regression gate (TestQualityBaseline) is skipping in the very job that runs the " +
 			"full suite. It must be set on whichever job runs `go test ./...`.")

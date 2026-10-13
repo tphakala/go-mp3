@@ -23,7 +23,7 @@ import (
 )
 
 // Exit codes: success is 0, a run where some case failed is 1, setup errors
-// (bad flags, or no reference encoder found) are 2, and an interrupted run
+// (bad flags, or the requested reference encoder is unavailable) are 2, and an interrupted run
 // (Ctrl-C) is 3.
 const (
 	exitOK          = 0
@@ -68,6 +68,7 @@ type options struct {
 	keep                     bool
 	crosscheck               bool
 	out, jsonOut             string
+	reference                refMode
 }
 
 // parseFlags parses args into options, resolving the program list.
@@ -80,7 +81,8 @@ func parseFlags(args []string) (*options, error) {
 	corpus := fs.String("corpus", "", "directory of WAV files to add as programs (named by file name)")
 	fs.IntVar(&o.seconds, "seconds", 6, "program length in seconds for synthetic programs")
 	fs.IntVar(&o.jobs, "jobs", runtime.GOMAXPROCS(0), "number of cases to run concurrently (each forks CPU-heavy external tools)")
-	fs.StringVar(&o.lame, "lame", "", "lame binary (default: lame on PATH)")
+	fs.StringVar(&o.lame, "lame", "", "lame binary (default: lame on PATH; used by -reference auto and lame)")
+	reference := fs.String("reference", string(refModeAuto), "reference encoder: auto (the lame binary when found, else ffmpeg's libmp3lame), lame, or ffmpeg")
 	fs.StringVar(&o.visqol, "visqol", "", "visqol binary (default: visqol on PATH; skipped when absent)")
 	fs.StringVar(&o.peaq, "peaq", "", "PEAQ binary printing 'Objective Difference Grade:' (default: peaq-odg on PATH; skipped when absent)")
 	fs.StringVar(&o.work, "work", "", "work directory for intermediate files (default: a temp dir next to -out)")
@@ -92,6 +94,12 @@ func parseFlags(args []string) (*options, error) {
 		return nil, err
 	}
 	var err error
+	if o.reference, err = parseRefMode(*reference); err != nil {
+		return nil, err
+	}
+	if o.reference == refModeFFmpeg && o.lame != "" {
+		return nil, errors.New("-lame has no effect with -reference ffmpeg")
+	}
 	if o.rates, err = parseInts(*rates); err != nil {
 		return nil, fmt.Errorf("-rates: %w", err)
 	}
@@ -148,20 +156,13 @@ func run(ctx context.Context, args []string, errw io.Writer) int {
 			return fail(errw, fmt.Errorf("%s %q not found", t.name, t.flag))
 		}
 	}
-	// The reference producer: the standalone lame binary when present (the
-	// canonical CLI), else ffmpeg's libmp3lame, so a run does not require the
-	// lame binary specifically. Resolved once; runCase derives the same choice
-	// from tl for each case.
-	ref := chooseReference(tl.lame, tl.ffmpeg)
-	if ref.kind == refNone {
-		return fail(errw, errors.New("no reference encoder found: install lame (preferred), or ffmpeg for its libmp3lame, or pass -lame"))
+	// The reference producer, resolved once here: runCase uses tl.ref, so the
+	// provenance line and every case agree.
+	ref, err := resolveReference(o.reference, tl.lame, tl.ffmpeg, func(bin string) bool { return ffmpegHasLibmp3lame(ctx, bin) })
+	if err != nil {
+		return fail(errw, err)
 	}
-	// ffmpeg can be built without libmp3lame. Probe once here so that case ends
-	// in one clear setup error rather than every reference encode failing later
-	// with a cryptic "Unknown encoder" and the run reporting exitCases.
-	if ref.kind == refFFmpegLAME && !ffmpegHasLibmp3lame(ctx, ref.bin) {
-		return fail(errw, errors.New("ffmpeg is present but its build lacks the libmp3lame encoder: install lame, or an ffmpeg built with --enable-libmp3lame"))
-	}
+	tl.ref = &ref
 	// -crosscheck is an explicit request for the ffmpeg second decode, so a
 	// missing ffmpeg is a setup error here too rather than a silently skipped
 	// check.

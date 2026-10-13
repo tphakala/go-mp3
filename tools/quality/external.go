@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os/exec"
@@ -12,9 +13,14 @@ import (
 	"time"
 )
 
-// tools holds the resolved paths of the black-box binaries; "" means absent.
+// tools holds the resolved paths of the black-box binaries ("" means absent),
+// plus the resolved reference producer.
 type tools struct {
 	lame, ffmpeg, visqol, peaq string
+	// ref is the reference producer, resolved once by run(). A pointer keeps the
+	// struct under gocritic's hugeParam threshold; nil makes runCase fail
+	// loudly rather than guess.
+	ref *refEncoder
 }
 
 // detectTools resolves each binary: an explicit non-empty flag is looked up
@@ -86,7 +92,8 @@ type refEncoder struct {
 // standalone `lame` binary when present (the canonical CLI, and what the
 // committed comparisons were taken against), otherwise ffmpeg's libmp3lame, so
 // a run is not tied to the `lame` binary being installed. refNone when neither
-// is available; the caller turns that into a setup error.
+// is available; the caller turns that into a setup error. This is the
+// -reference auto policy used by resolveReference.
 func chooseReference(lame, ffmpeg string) refEncoder {
 	switch {
 	case lame != "":
@@ -246,4 +253,59 @@ func parseLast(re *regexp.Regexp, out, what string) (float64, error) {
 		return 0, fmt.Errorf("%s: unparsable result %q: %w", what, v, err)
 	}
 	return f, nil
+}
+
+// refMode is the -reference flag value.
+type refMode string
+
+const (
+	refModeAuto   refMode = "auto"
+	refModeLame   refMode = "lame"
+	refModeFFmpeg refMode = "ffmpeg"
+)
+
+// parseRefMode accepts exactly the three lowercase mode names.
+func parseRefMode(s string) (refMode, error) {
+	switch m := refMode(s); m {
+	case refModeAuto, refModeLame, refModeFFmpeg:
+		return m, nil
+	default:
+		return "", fmt.Errorf("-reference: unknown value %q (want auto, lame, or ffmpeg)", s)
+	}
+}
+
+// resolveReference turns a mode and the resolved binaries into the reference
+// producer. auto applies chooseReference; lame and ffmpeg force one producer
+// and never fall back to the other. hasLibmp3lame probes an ffmpeg binary for
+// the libmp3lame encoder and is only called when an ffmpeg producer is chosen.
+func resolveReference(mode refMode, lame, ffmpeg string, hasLibmp3lame func(string) bool) (refEncoder, error) {
+	switch mode {
+	case refModeAuto:
+		r := chooseReference(lame, ffmpeg)
+		if r.kind == refNone {
+			return refEncoder{}, errors.New("no reference encoder found: install lame (preferred), or ffmpeg for its libmp3lame, or pass -lame")
+		}
+		// ffmpeg can be built without libmp3lame. Probing here turns that into one
+		// clear setup error rather than every reference encode failing later with
+		// a cryptic "Unknown encoder" and the run reporting exitCases.
+		if r.kind == refFFmpegLAME && !hasLibmp3lame(r.bin) {
+			return refEncoder{}, errors.New("ffmpeg is present but its build lacks the libmp3lame encoder: install lame, or an ffmpeg built with --enable-libmp3lame")
+		}
+		return r, nil
+	case refModeLame:
+		if lame == "" {
+			return refEncoder{}, errors.New("-reference lame: lame not found on PATH (install it or pass -lame)")
+		}
+		return refEncoder{kind: refLameBinary, bin: lame}, nil
+	case refModeFFmpeg:
+		if ffmpeg == "" {
+			return refEncoder{}, errors.New("-reference ffmpeg: ffmpeg not found on PATH")
+		}
+		if !hasLibmp3lame(ffmpeg) {
+			return refEncoder{}, errors.New("-reference ffmpeg: ffmpeg is present but its build lacks the libmp3lame encoder (use an ffmpeg built with --enable-libmp3lame, or -reference lame)")
+		}
+		return refEncoder{kind: refFFmpegLAME, bin: ffmpeg}, nil
+	default:
+		return refEncoder{}, fmt.Errorf("unknown reference mode %q", string(mode))
+	}
 }

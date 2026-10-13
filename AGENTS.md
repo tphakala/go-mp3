@@ -16,7 +16,7 @@ Orientation for coding agents and automated reviewers working on this repository
 | Streaming container | `pcm` (`NewDecoder`, `Read`, `WriteTo`, `SeekToSample`, `Reset`, `Info`, `WithF32`; `DecodeInterleaved`, `DecodeInterleavedLimit`) | complete: ID3v2 skip and ID3v1 trailer, S16 by default or float32 via `WithF32`, Xing/Info/VBRI/LAME tag parsing, gapless trim, bounded resync, clean-end and truncation detection, bit-exact `SeekToSample` |
 | Frame encoder | `mp3` (`NewEncoder`, `EncodeFrame`, `Reset`, `Drained`, `Delay`, `TotalDelay`, `Stats`, `EncoderConfig`, `RateControl`) | complete: CBR MPEG-1 Layer III at 32/44.1/48 kHz, mono or L/R stereo, the 14 legal CBR bitrates; quality tuning is the open work |
 | Streaming encoder | `pcm` (`NewEncoder`, `EncodeInterleaved`, `Config`) | complete: writes a Xing/Info + LAME gapless tag by default |
-| Quality harness | `tools/quality`, metrics in `internal/quality` | complete: black-box comparison against `lame`, plus a lame-free regression gate in CI |
+| Quality harness | `tools/quality`, metrics in `internal/quality` | complete: black-box comparison against LAME (`lame` binary or ffmpeg's libmp3lame, `-reference auto|lame|ffmpeg`), plus a lame-free regression gate in CI |
 
 Non-goals: Layer I and II decoding, VBR encoding.
 
@@ -101,7 +101,7 @@ testdata/fixtures/     Committed LAME-encoded fixtures and two corrupt streams
 
 - **Decoder oracle differentials.** Every decoder unit has an oracle dump hook (patch-based, in `tools/oracle/hooks.patch`, never editing the pristine `minimp3.h`) and a differential test that byte-compares Go output against the oracle. `task oracle:build` then `task oracle:dump` regenerates the gitignored dumps; the differential tests skip without them, or fail loudly under `MP3_REQUIRE_DUMPS=1`. `task diff` fetches vectors, builds and dumps the oracle, and runs the oracle and conformance tests. The Oracle workflow runs this on both arches.
 - **Encoder goldens.** `TestEncodeGolden`, `TestEncodeGoldenTransient` and related cases in `internal/enc/encoder_test.go` freeze sha256 of full encoded streams. With them every encoder unit lands with a round-trip SNR gate, a zero-alloc `EncodeFrame` gate, structural validation, and the ffmpeg/mpg123 compat gate in CI.
-- **Quality gate.** `TestQualityBaseline` (`MP3_QUALITY_BASELINE=1`, `task quality:gate`) re-measures go-mp3's own objective quality on a small deterministic corpus and fails when a metric regresses past tolerance against `tools/quality/testdata/baseline.json`. It needs no external binary and runs in the test job on both arches. Refresh the baseline deliberately with `task quality:gate:update` on amd64 and review the diff. `TestQualityGateActivatedInCI` fails if the CI env line that enables the gate disappears.
+- **Quality gate.** `TestQualityBaseline` (`MP3_QUALITY_BASELINE=1`, `task quality:gate`) re-measures go-mp3's own objective quality on a small deterministic corpus and fails when a metric regresses past tolerance against `tools/quality/testdata/baseline.json`. It needs no external binary and runs in the test job on both arches. Refresh the baseline deliberately with `task quality:gate:update` on amd64 and review the diff. `TestQualityGateActivatedInCI` fails if the CI env line that enables the gate disappears, and a `TestMain` in `tools/quality` fails the CI test step when the gate env is set under GitHub Actions but `TestQualityBaseline` was filtered out (a step that drops `./tools/quality` from its package list is not caught).
 - **External binaries** are opt-in hard requirements: `MP3_REQUIRE_COMPAT=1` (ffmpeg and mpg123), `MP3_REQUIRE_LAME=1`, `MP3_REQUIRE_FFMPEG=1`. Without them those tests skip.
 - **Alignment gotcha.** A perfectly stationary periodic program cannot be aligned by cross-correlation (every lag one period apart scores the same), which is why the corpus gives its tonal programs a slow amplitude envelope and why the aligner normalizes by both windows' energy. Removing either brings back a silently misaligned measurement, not a test failure.
 
@@ -124,7 +124,7 @@ task lint
 go test -tags noasm ./internal/enc -timeout 20m      # pure-Go fallback, as CI runs it
 task diff                # vectors + oracle build + dumps + oracle/conformance tests
 task compat              # ffmpeg/mpg123 compat grid (fails if either is missing)
-task quality -- <flags>  # full LAME comparison, report in tools/quality/out/
+task quality -- <flags>  # full LAME comparison (lame or ffmpeg libmp3lame), report in tools/quality/out/
 task quality:smoke       # harness end to end against lame
 task quality:gate        # the lame-free regression gate CI runs
 task quality:gate:update # refresh the committed baseline (deliberate, on amd64)

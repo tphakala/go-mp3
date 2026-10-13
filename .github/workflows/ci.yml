@@ -51,6 +51,8 @@ jobs:
       # cross-arch only at the ~1e-13 level, far under the dB tolerances, so the
       # amd64-frozen baseline gates arm64 too. A quality-tuning PR refreshes the
       # baseline deliberately.
+      # Do not add -run or -skip to this step: the tools/quality TestMain fails
+      # it if TestQualityBaseline is filtered out.
       - run: go test ./... -timeout 20m
         env:
           MP3_QUALITY_BASELINE: '1'

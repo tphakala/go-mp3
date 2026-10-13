@@ -149,6 +149,10 @@ func TestQualityBaseline(t *testing.T) {
 		t.Fatal("set only one of UPDATE_QUALITY_BASELINE (refresh) or MP3_QUALITY_BASELINE (gate); with both set, refreshing would overwrite the baseline instead of checking against it")
 	}
 
+	if !update {
+		baselineGateRan.Store(true) // lets TestMain tell a filtered-out gate from a run one
+	}
+
 	specs := baselineSpecs(t)
 	cur := make([]baselineCase, len(specs))
 	for i, spec := range specs {

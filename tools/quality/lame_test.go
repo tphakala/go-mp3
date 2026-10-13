@@ -37,7 +37,7 @@ func caseRef(spec caseSpec) [][]float64 {
 // stream is gapless-trimmed by pcm to lag 0) and sanity-bounds the metrics.
 func TestQualityHarnessLame(t *testing.T) {
 	lame := requireLame(t)
-	tl := tools{lame: lame} // no external perceptual tools in the smoke test
+	tl := tools{lame: lame, ref: new(chooseReference(lame, ""))} // no external perceptual tools in the smoke test
 	prog, ok := quality.ProgramByName("tone-click")
 	if !ok {
 		t.Fatal("tone-click program missing")
@@ -89,7 +89,7 @@ func TestQualityHarnessStereoShortTail(t *testing.T) {
 	}
 	// 1 s at 44.1 kHz is 38.28 frames: the last go-mp3 frame is short.
 	spec := caseSpec{Program: prog, SampleRate: 44100, Kbps: 192, Seconds: 1}
-	res, err := runCase(t.Context(), tools{lame: lame}, t.TempDir(), spec, caseRef(spec), false, io.Discard)
+	res, err := runCase(t.Context(), tools{lame: lame, ref: new(chooseReference(lame, ""))}, t.TempDir(), spec, caseRef(spec), false, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

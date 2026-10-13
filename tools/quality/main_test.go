@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/tphakala/go-mp3/internal/quality"
@@ -160,5 +161,39 @@ func TestParseFlagsRejectsIllegalBitrate(t *testing.T) {
 	}
 	if len(o.bitrates) != 2 {
 		t.Fatalf("got %d bitrates, want 2", len(o.bitrates))
+	}
+}
+
+// TestParseFlagsReference pins the -reference value set, its default, and the
+// -lame conflict. Single-token -flag=value form, as in gridArgs, to keep
+// bare "-flag" literals from tripping goconst.
+func TestParseFlagsReference(t *testing.T) {
+	o, err := parseFlags(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.reference != refModeAuto {
+		t.Fatalf("default reference %q, want auto", o.reference)
+	}
+	for _, m := range []refMode{refModeAuto, refModeLame, refModeFFmpeg} {
+		o, err := parseFlags([]string{"-reference=" + string(m)})
+		if err != nil {
+			t.Fatalf("-reference=%s: %v", m, err)
+		}
+		if o.reference != m {
+			t.Fatalf("-reference=%s parsed as %q", m, o.reference)
+		}
+	}
+	for _, bad := range []string{"both", "LAME", "", "bogus"} {
+		_, err := parseFlags([]string{"-reference=" + bad})
+		if err == nil || !strings.Contains(err.Error(), "want auto, lame, or ffmpeg") {
+			t.Fatalf("-reference=%q: got %v, want the allowed-values error", bad, err)
+		}
+	}
+	if _, err := parseFlags([]string{"-reference=ffmpeg", "-lame=/x"}); err == nil || !strings.Contains(err.Error(), "no effect") {
+		t.Fatalf("-reference=ffmpeg with -lame: got %v, want a 'no effect' error", err)
+	}
+	if _, err := parseFlags([]string{"-reference=lame", "-lame=/x"}); err != nil {
+		t.Fatalf("-reference=lame with -lame must parse: %v", err)
 	}
 }

@@ -1,11 +1,70 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync/atomic"
 	"testing"
 )
+
+// baselineGateRan is set by TestQualityBaseline once it passes its skip and
+// mutual-exclusion checks, so TestMain can tell a filtered-out gate from a
+// run one.
+// ghaTrue is the value GitHub Actions sets GITHUB_ACTIONS to.
+const ghaTrue = "true"
+
+var baselineGateRan atomic.Bool
+
+// gateSkippedInCI reports an error when the CI gate step (GITHUB_ACTIONS=true
+// with MP3_QUALITY_BASELINE set) finished without TestQualityBaseline having
+// run. It closes the hole TestQualityGateActivatedInCI cannot: a -run or -skip
+// filter on the step excludes that guard test along with the gate.
+func gateSkippedInCI(getenv func(string) string, ran bool) error {
+	if getenv("GITHUB_ACTIONS") == ghaTrue && getenv("MP3_QUALITY_BASELINE") != "" && !ran {
+		return errors.New("the quality regression gate is enabled for this step (MP3_QUALITY_BASELINE is set) " +
+			"but TestQualityBaseline did not run: a -run or -skip filter excluded it; remove the filter or move the env")
+	}
+	return nil
+}
+
+// TestMain runs for the package test binary whatever -run selects, so it can
+// fail the CI gate step when the gate was filtered out. Residual gap: a step
+// that drops ./tools/quality from its package list never starts this binary.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if err := gateSkippedInCI(os.Getenv, baselineGateRan.Load()); err != nil && code == 0 {
+		fmt.Fprintln(os.Stderr, "FAIL:", err)
+		code = 1
+	}
+	os.Exit(code)
+}
+
+func TestGateSkippedInCI(t *testing.T) {
+	cases := []struct {
+		name         string
+		actions, env string
+		ran          bool
+		wantErr      bool
+	}{
+		{"CI, gate env, not run", ghaTrue, "1", false, true},
+		{"CI, gate env, ran", ghaTrue, "1", true, false},
+		{"local, gate env, not run", "", "1", false, false},
+		{"actions false, gate env, not run", "false", "1", false, false},
+		{"CI, no gate env, not run", ghaTrue, "", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := map[string]string{"GITHUB_ACTIONS": c.actions, "MP3_QUALITY_BASELINE": c.env}
+			err := gateSkippedInCI(func(k string) string { return env[k] }, c.ran)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("got %v, wantErr %v", err, c.wantErr)
+			}
+		})
+	}
+}
 
 // gateActivationRe matches the ci.yml env line that turns the quality
 // regression gate on: MP3_QUALITY_BASELINE set to 1. It is anchored to a whole
@@ -46,7 +105,11 @@ func TestQualityGateActivatedInCI(t *testing.T) {
 	// THIS job's environment, mirroring TestQualityBaseline's own activation
 	// predicate (MP3_QUALITY_BASELINE non-empty). This test executes only under
 	// the full-suite step; the compat job's -run filter does not select it.
-	if os.Getenv("GITHUB_ACTIONS") == "true" && os.Getenv("MP3_QUALITY_BASELINE") == "" {
+	//
+	// A -run or -skip filter on the gate step would exclude this test too; the
+	// package TestMain (gateSkippedInCI) covers that. Residual gap: a step that
+	// no longer includes ./tools/quality at all never starts the test binary.
+	if os.Getenv("GITHUB_ACTIONS") == ghaTrue && os.Getenv("MP3_QUALITY_BASELINE") == "" {
 		t.Fatal("running under GitHub Actions but MP3_QUALITY_BASELINE is unset: the quality " +
 			"regression gate (TestQualityBaseline) is skipping in the very job that runs the " +
 			"full suite. It must be set on whichever job runs `go test ./...`.")

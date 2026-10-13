@@ -115,6 +115,7 @@ The project targets the latest stable Go release and the latest tooling, not the
 
 - `go.mod` says `go 1.27` with no patch release and no `toolchain` line, and CI's `GO_VERSION: '1.27'` (in both `ci.yml` and `oracle.yml`) resolves to the newest patch on every run. Never pin a patch release. When a new minor ships, bump `go.mod` and both workflows together.
 - golangci-lint is pinned to its newest release in `GOLANGCI_LINT_VERSION` in `ci.yml` and in this file, and bumped by hand when a release ships. Fix any new findings in the same change rather than disabling the linter.
+- Dependabot (`.github/dependabot.yml`, identical to the sibling codecs) opens weekly PRs for Go modules (minor and patch grouped) and GitHub Actions; merge them once CI passes. It does not see the golangci-lint pin.
 
 ```
 task check               # build, vet, golangci-lint, test (must be green before every commit)

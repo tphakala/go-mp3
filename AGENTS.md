@@ -16,7 +16,7 @@ Orientation for coding agents and automated reviewers working on this repository
 | Streaming container | `pcm` (`NewDecoder`, `Read`, `WriteTo`, `SeekToSample`, `Reset`, `Info`, `WithF32`; `DecodeInterleaved`, `DecodeInterleavedLimit`) | complete: ID3v2 skip and ID3v1 trailer, S16 by default or float32 via `WithF32`, Xing/Info/VBRI/LAME tag parsing, gapless trim, bounded resync, clean-end and truncation detection, bit-exact `SeekToSample` |
 | Frame encoder | `mp3` (`NewEncoder`, `EncodeFrame`, `Reset`, `Drained`, `Delay`, `TotalDelay`, `Stats`, `EncoderConfig`, `RateControl`) | complete: CBR MPEG-1 Layer III at 32/44.1/48 kHz, mono or L/R stereo, the 14 legal CBR bitrates; quality tuning is the open work |
 | Streaming encoder | `pcm` (`NewEncoder`, `EncodeInterleaved`, `Config`) | complete: writes a Xing/Info + LAME gapless tag by default |
-| Quality harness | `tools/quality`, metrics in `internal/quality` | complete: black-box comparison against LAME (`lame` binary or ffmpeg's libmp3lame, `-reference auto|lame|ffmpeg`), plus a lame-free regression gate in CI |
+| Quality harness | `tools/quality`, metrics in `internal/quality` | complete: black-box comparison against LAME (`lame` binary or ffmpeg's libmp3lame, `-reference auto\|lame\|ffmpeg`), plus a lame-free regression gate in CI |
 
 Non-goals: Layer I and II decoding, VBR encoding.
 

@@ -201,12 +201,12 @@ end-to-end check CI runs.
 The `pcm` package wraps the frame API above into a plain `io.Reader`: give
 it an MP3 stream and read interleaved PCM back, without driving the
 frame-by-frame loop yourself. It skips a leading ID3v2 tag, recognizes a
-Xing/Info/VBRI tag frame and a LAME gapless extension (excluding the tag
-frame from the output and trimming the encoder delay plus the standard
-529-sample decoder delay at the head, and the padding less that same 529 at
-the tail, the same window ffmpeg and mpg123 apply, so the output lines up
-sample for sample with the encoder's input), and recovers from mid-stream
-garbage.
+Xing/Info/VBRI tag frame and a LAME gapless extension as written by LAME,
+ffmpeg or this package's encoder (excluding the tag frame from the output and
+trimming the encoder delay plus the standard 529-sample decoder delay at the
+head, and the padding less that same 529 at the tail, the same window ffmpeg
+and mpg123 apply, so the output lines up sample for sample with the encoder's
+input), and recovers from mid-stream garbage.
 
 ```go
 import mp3pcm "github.com/tphakala/go-mp3/pcm"

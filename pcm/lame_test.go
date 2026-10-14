@@ -1,13 +1,22 @@
 package pcm
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
-// buildLAMETag returns a LAME extension tag: the 9-byte "LAME3.100" version
-// string, then filler up to the delay/padding field at offset 21, into which
-// delay (12 bits) and padding (12 bits) are packed big-endian across 3 bytes.
+// buildLAMETag returns a LAME extension tag with the "LAME3.100" version string.
 func buildLAMETag(delay, padding int) []byte {
+	return buildLAMETagWithVersion("LAME3.100", delay, padding)
+}
+
+// buildLAMETagWithVersion returns a LAME extension tag: the version string (at
+// most 9 bytes are significant, the rest is cut), then filler up to the
+// delay/padding field at offset 21, into which delay (12 bits) and padding
+// (12 bits) are packed big-endian across 3 bytes.
+func buildLAMETagWithVersion(version string, delay, padding int) []byte {
 	b := make([]byte, 36) // covers the full standard LAME tag with margin
-	copy(b, "LAME3.100")
+	copy(b, version)
 	b[lameDelayOffset] = byte(delay >> 4)
 	b[lameDelayOffset+1] = byte((delay&0x0f)<<4 | (padding>>8)&0x0f)
 	b[lameDelayOffset+2] = byte(padding & 0xff)
@@ -80,6 +89,42 @@ func TestParseLAMESynthetic(t *testing.T) {
 			t.Fatal("parseLAME returned ok=true for an xingEnd past the frame end")
 		}
 	})
+}
+
+// TestParseLAMEEncoderMagics pins the accepted encoder-string set: LAME, this
+// package's own writer (lameTagVersion), and the Lavc and Lavf strings ffmpeg writes.
+func TestParseLAMEEncoderMagics(t *testing.T) {
+	// 1105 = 0x451, 699 = 0x2bb: nibble-sensitive, as in TestParseLAMESynthetic.
+	const wantDelay, wantPadding = 1105, 699
+	for _, version := range []string{"LAME3.100", lameTagVersion, "Lavc61.19", "Lavf61.7."} {
+		t.Run(version, func(t *testing.T) {
+			frame := append([]byte{0xff, 0xfb, 0x90, 0x64}, buildLAMETagWithVersion(version, wantDelay, wantPadding)...)
+			delay, padding, ok := parseLAME(frame, 4)
+			if !ok {
+				t.Fatalf("parseLAME rejected %q, want accepted", version)
+			}
+			if delay != wantDelay || padding != wantPadding {
+				t.Errorf("(delay, padding) = (%d, %d), want (%d, %d)", delay, padding, wantDelay, wantPadding)
+			}
+		})
+	}
+}
+
+// TestParseLAMERejectsUnknownMagic pins that the accepted set did not grow
+// past what ffmpeg honors: other encoder strings and near misses are not a
+// LAME tag, even with a plausible delay/padding field behind them.
+func TestParseLAMERejectsUnknownMagic(t *testing.T) {
+	for _, version := range []string{
+		"GOGO3.88", "L3.99r", "XXXX", "lavc61.19", "LAVC61.19", "Lav\x00", "\x00\x00\x00\x00", "LAMx",
+	} {
+		t.Run(fmt.Sprintf("%q", version), func(t *testing.T) {
+			frame := append([]byte{0xff, 0xfb, 0x90, 0x64}, buildLAMETagWithVersion(version, 1105, 699)...)
+			delay, padding, ok := parseLAME(frame, 4)
+			if ok || delay != 0 || padding != 0 {
+				t.Fatalf("parseLAME = (%d, %d, %v) for %q, want (0, 0, false)", delay, padding, ok, version)
+			}
+		})
+	}
 }
 
 // TestParseLAMEViaXing threads parseXing's reported lameStart into parseLAME,

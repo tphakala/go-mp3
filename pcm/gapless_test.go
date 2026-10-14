@@ -129,6 +129,86 @@ func TestGaplessHeadOnlyTrim(t *testing.T) {
 	}
 }
 
+// retagLAMEMagic clones a LAME-encoded fixture whose Info frame starts at byte
+// 0 and overwrites the 4-byte encoder magic of its LAME extension, so the
+// stream looks like the same tag written by another encoder.
+func retagLAMEMagic(t *testing.T, raw []byte, magic string) []byte {
+	t.Helper()
+	if len(magic) != lameMagicLen {
+		t.Fatalf("magic %q is not %d bytes", magic, lameMagicLen)
+	}
+	const sampleRate, channels = 48000, 1 // sine48m_128.mp3
+	xh, ok := parseXing(raw, sampleRate, channels)
+	if !ok {
+		t.Fatal("fixture has no Xing/Info tag at byte 0; test assumption is stale")
+	}
+	at := xh.lameStart
+	if at+lameMagicLen > len(raw) || string(raw[at:at+lameMagicLen]) != "LAME" {
+		t.Fatal("fixture has no LAME magic at lameStart; test assumption is stale")
+	}
+	mod := bytes.Clone(raw)
+	copy(mod[at:], magic)
+	return mod
+}
+
+// TestGaplessFFmpegLavcTag decodes the sine48m fixture with its encoder magic
+// rewritten to the strings ffmpeg writes (Lavc, Lavf): the trim must be the
+// one the LAME-tagged original gets, byte for byte. A magic ffmpeg rejects
+// (GOGO) leaves the stream untrimmed.
+func TestGaplessFFmpegLavcTag(t *testing.T) {
+	orig := readFixture(t, sine48mono128)
+	want := decodeAllBytes(t, bytes.NewReader(orig))
+
+	for _, magic := range []string{"Lavc", "Lavf"} {
+		t.Run(magic, func(t *testing.T) {
+			d, err := NewDecoder(bytes.NewReader(retagLAMEMagic(t, orig, magic)))
+			if err != nil {
+				t.Fatalf("NewDecoder: %v", err)
+			}
+			if got := d.Info().EncoderDelay; got != sine48mDelay {
+				t.Errorf("Info().EncoderDelay = %d, want %d", got, sine48mDelay)
+			}
+			if got := d.Info().EncoderPadding; got != sine48mPadding {
+				t.Errorf("Info().EncoderPadding = %d, want %d", got, sine48mPadding)
+			}
+			if got := d.Info().TotalSamples; got != uint64(sine48mSamples) {
+				t.Errorf("Info().TotalSamples = %d, want %d", got, sine48mSamples)
+			}
+			out, err := io.ReadAll(d)
+			if err != nil {
+				t.Fatalf("ReadAll: %v", err)
+			}
+			if got := len(out) / bytesPerS16Sample; got != sine48mSamples {
+				t.Errorf("emitted %d samples/channel, want %d", got, sine48mSamples)
+			}
+			if !bytes.Equal(out, want) {
+				t.Error("output differs from the LAME-tagged original's output")
+			}
+		})
+	}
+
+	t.Run("GOGO untrimmed", func(t *testing.T) {
+		const untrimmed = 85 * 1152
+		d, err := NewDecoder(bytes.NewReader(retagLAMEMagic(t, orig, "GOGO")))
+		if err != nil {
+			t.Fatalf("NewDecoder: %v", err)
+		}
+		if got := d.Info().EncoderDelay; got != 0 {
+			t.Errorf("Info().EncoderDelay = %d, want 0", got)
+		}
+		if got := d.Info().TotalSamples; got != untrimmed {
+			t.Errorf("Info().TotalSamples = %d, want %d", got, untrimmed)
+		}
+		out, err := io.ReadAll(d)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if got := len(out) / bytesPerS16Sample; got != untrimmed {
+			t.Errorf("emitted %d samples/channel, want %d", got, untrimmed)
+		}
+	})
+}
+
 // zeroInfoFrameCount clones an Info-tagged fixture and zeroes the tag's 4-byte
 // frame-count field (the first field after the 4-byte magic and 4-byte flags
 // word), so parseXing reports frames = 0 while the flag stays set and every

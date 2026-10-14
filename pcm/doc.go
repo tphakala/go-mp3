@@ -32,15 +32,17 @@
 //
 // # Gapless trim
 //
-// A stream carrying a LAME gapless tag is trimmed to its playable extent, so
-// the decoded output lines up sample for sample with what went into the
-// encoder. The window is the one ffmpeg and mpg123 apply, not the tag's own
-// two fields: the head trim is the tag's encoder delay PLUS the standard
-// 529-sample Layer III synthesis delay, and the tail trim is the tag's
-// padding LESS that same 529, floored at zero. Info reports the raw tag
-// fields in EncoderDelay and EncoderPadding, so those two do not describe
-// the applied window on their own. Info.TotalSamples is the playable count
-// and always equals the number of samples per channel Read emits.
+// A stream carrying a LAME gapless tag (as LAME writes it, as ffmpeg writes it
+// with a Lavc or Lavf encoder string, and as this package's encoder writes it)
+// is trimmed to its playable extent, so the decoded output lines up sample for
+// sample with what went into the encoder. The window is the one ffmpeg and
+// mpg123 apply, not the tag's own two fields: the head trim is the tag's
+// encoder delay PLUS the standard 529-sample Layer III synthesis delay, and
+// the tail trim is the tag's padding LESS that same 529, floored at zero.
+// Info reports the raw tag fields in EncoderDelay and EncoderPadding, so those
+// two do not describe the applied window on their own. Info.TotalSamples is
+// the playable count and always equals the number of samples per channel Read
+// emits.
 //
 // # Encoding
 //

@@ -109,7 +109,7 @@ New behaviour gets a test. Bug fixes get a regression test that fails before the
 
 ## Commands
 
-Go 1.27, golangci-lint v2.14.0 (pinned in `GOLANGCI_LINT_VERSION` in `.github/workflows/ci.yml`). Tasks are in `Taskfile.yml`.
+Go 1.27, golangci-lint v2.15.0 (pinned in `GOLANGCI_LINT_VERSION` in `.github/workflows/ci.yml`). Tasks are in `Taskfile.yml`.
 
 The project targets the latest stable Go release and the latest tooling, not the oldest version that still works:
 

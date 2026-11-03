@@ -153,6 +153,7 @@ func TestEncodeInterleavedContextCancel(t *testing.T) {
 		{"tagged after Close before write", false, 5},
 		{"omit pre-canceled", true, 0},
 		{"omit mid-stream", true, 2},
+		{"omit before carry chunk", true, 3},
 		{"omit before Close with carry", true, 4},
 	}
 	for _, tc := range rows {
@@ -174,6 +175,12 @@ func TestEncodeInterleavedContextCancel(t *testing.T) {
 				t.Fatalf("Err called %d times, want %d (stop at the first failing check)", ctx.calls, tc.k+1)
 			}
 			if tc.omit {
+				// The encoder emits nothing until its lookahead has filled: with two
+				// frames fed (k=2) w is still empty, with three it is not. From the
+				// fourth chunk on, the frames already coded must be on w.
+				if tc.k >= 3 && w.Len() == 0 {
+					t.Fatal("canceled omit stream wrote no frames; encoded frames must already be on w")
+				}
 				if w.Len() >= fullOmit.Len() {
 					t.Fatalf("canceled omit stream wrote %d bytes, full is %d", w.Len(), fullOmit.Len())
 				}
@@ -198,6 +205,26 @@ func TestEncodeInterleavedContextCancel(t *testing.T) {
 				t.Fatal("reused encoder output differs from a fresh encode")
 			}
 		})
+	}
+}
+
+// TestEncodeInterleavedContextCancelEmptyInput pins that with no input the
+// pre-Close check reports a canceled context. It runs on the OmitGaplessTag
+// path, where nothing follows Close: on the tagged path the post-Close check
+// would report the cancel too and mask a missing pre-Close check.
+func TestEncodeInterleavedContextCancelEmptyInput(t *testing.T) {
+	cfg := Config{SampleRate: 44100, Channels: 2, Bitrate: 128000, OmitGaplessTag: true}
+	ctx := &countingCtx{Context: t.Context(), k: 0, cancelErr: context.Canceled}
+	var w bytes.Buffer
+	err := encodeInterleaved(ctx, new(Encoder), &w, cfg, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if ctx.calls != 1 {
+		t.Fatalf("Err called %d times, want 1", ctx.calls)
+	}
+	if w.Len() != 0 {
+		t.Fatalf("wrote %d bytes after cancellation", w.Len())
 	}
 }
 

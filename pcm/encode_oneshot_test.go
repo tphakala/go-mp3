@@ -187,6 +187,15 @@ func TestEncodeInterleavedContextCancel(t *testing.T) {
 				if !bytes.HasPrefix(fullOmit.Bytes(), w.Bytes()) {
 					t.Fatal("canceled omit stream is not a prefix of the full stream")
 				}
+				// Frame aligned: the header walk must land exactly on the end.
+				pos := 0
+				for pos < w.Len() {
+					n, ok := frameLength(w.Bytes()[pos:])
+					if !ok || pos+n > w.Len() {
+						t.Fatalf("canceled omit stream is cut inside a frame at byte %d of %d", pos, w.Len())
+					}
+					pos += n
+				}
 			} else if w.Len() != 0 {
 				t.Fatalf("tagged path wrote %d bytes after cancellation", w.Len())
 			}

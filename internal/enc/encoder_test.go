@@ -741,13 +741,18 @@ func TestEncodeGolden(t *testing.T) {
 	cases := []struct {
 		name                 string
 		sampleRate, ch, kbps int
+		frames               int  // EncodeFrame calls; the first only fills the lookahead
 		correlated           bool // identical channels (L==R): forces M/S on every frame
 		wantHex              string
 	}{
-		{"44100_2ch_128kbps", 44100, 2, 128, false, "e7b868ec37d11a7b653aa15d524e5e4022c9682747168a46205e0ff7f35c43a7"},
-		{"48000_1ch_320kbps", 48000, 1, 320, false, "cc1886c0c5e01dd9640b7df2b382fbb5045adf08c525efb914093728302ba712"},
-		{"32000_2ch_32kbps", 32000, 2, 32, false, "3cb6ea6799f179e9437d47145d9997f61cb164e49c68179bda79f6e43035df97"},
-		{"44100_2ch_128kbps_ms", 44100, 2, 128, true, "690aef6d1d21d6a2b7065e32b16c4e41462212440f209320d01decbb894978c6"},
+		{"44100_2ch_128kbps", 44100, 2, 128, 4, false, "e7b868ec37d11a7b653aa15d524e5e4022c9682747168a46205e0ff7f35c43a7"},
+		{"48000_1ch_320kbps", 48000, 1, 320, 4, false, "cc1886c0c5e01dd9640b7df2b382fbb5045adf08c525efb914093728302ba712"},
+		{"32000_2ch_32kbps", 32000, 2, 32, 4, false, "3cb6ea6799f179e9437d47145d9997f61cb164e49c68179bda79f6e43035df97"},
+		{"44100_2ch_128kbps_ms", 44100, 2, 128, 4, true, "690aef6d1d21d6a2b7065e32b16c4e41462212440f209320d01decbb894978c6"},
+		// Low-bitrate stereo is where an unsound shortcut in the exact global_gain
+		// scan first changes the stream (here from the sixth call on), so this row
+		// runs past the four frames the others use.
+		{"44100_2ch_32kbps_8frames", 44100, 2, 32, 8, false, "39da377fec242f206b20401c6a3d3e591dba63507bc5f5eff5970163555d4217"},
 	}
 
 	for _, c := range cases {
@@ -760,7 +765,7 @@ func TestEncodeGolden(t *testing.T) {
 
 			seed := uint64(c.sampleRate)<<32 | uint64(c.kbps)<<8 | uint64(c.ch)
 			var stream []byte
-			for f := range 4 {
+			for f := range c.frames {
 				samples := planarSamples(&seed, c.ch, 1.0)
 				if c.correlated {
 					// L == R: the S window is all zeros, so the four-way PE

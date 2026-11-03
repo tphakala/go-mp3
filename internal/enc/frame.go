@@ -79,9 +79,15 @@ func regionsFor(ix *[576]int32, part spectrumPartition, lay *bandLayout, blockTy
 // spectral truncation) do not duplicate the quantize/partition/choose
 // sequence.
 func recode(xr *[576]float64, gg int, lay *bandLayout, gc *granuleCoding) {
+	requantize(xr, gg, lay, gc)
+	gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
+}
+
+// requantize is recode without the region search: quantize xr at gg under gc's
+// scalefactor state and partition the result, leaving gc.ri untouched.
+func requantize(xr *[576]float64, gg int, lay *bandLayout, gc *granuleCoding) {
 	quantizeGranule(xr, gg, &gc.sf, lay, &gc.ix)
 	gc.part = partitionSpectrum(&gc.ix)
-	gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
 }
 
 // codeGranule runs the inner rate loop for one granule-channel: starting at
@@ -93,10 +99,12 @@ func recode(xr *[576]float64, gg int, lay *bandLayout, gc *granuleCoding) {
 //
 // fast selects the search strategy. With fast false (RateControlExact, the
 // default) searchGlobalGainExact scans gg upward one step at a time and always
-// finds the exact smallest fitting gg, the finest quantization within budget,
-// at up to ~255 recodes on frames that start far below their fitting gain.
+// finds the exact smallest fitting gg, the finest quantization within budget;
+// it skips the region search at steps a cheap bound proves over budget, so on
+// frames that start far below their fitting gain it quantizes at every step but
+// runs the full coding at few of them.
 // With fast true (RateControlFast) searchGlobalGainFast binary-searches
-// instead, about log2(255) recodes, an order-of-magnitude speedup on those
+// instead, about log2(255) recodes, several times faster than the exact scan on
 // escalation-heavy frames; because bits(gg) is not strictly monotone it can
 // settle a step or two above the exact choice, so its output is not
 // bit-identical to the exact scan. See each helper for the details.
@@ -129,16 +137,26 @@ func codeGranule(xr *[576]float64, budgetBits int, lay *bandLayout, gc *granuleC
 }
 
 // searchGlobalGainExact scans global_gain upward from gg (already recoded into
-// gc) one step at a time, recoding at each step, until gc's coding fits
-// effBudget or gg reaches 255. It returns the smallest gg in [gg, 255] whose
-// coding fits, else 255, and leaves gc holding that gg's coding. This is the
-// exact rate-control behavior (RateControlExact): it always lands on the finest
-// quantization within budget, at the cost of up to ~255 recodes per call on a
-// granule that starts far below its fitting gain.
+// gc) one step at a time until gc's coding fits effBudget or gg reaches 255. It
+// returns the smallest gg in [gg, 255] whose coding fits, else 255, and leaves
+// gc holding that gg's coding. This is the exact rate-control behavior
+// (RateControlExact): it always lands on the finest quantization within budget.
+//
+// Each step quantizes and partitions, then computes part3LowerBound, a cheap
+// sound lower bound on the Huffman bits. A step whose bound already exceeds
+// effBudget cannot fit, so the region search (the expensive part of recode) is
+// skipped for it; the result is identical to recoding every step. During
+// skipped steps gc.ri still holds the last full coding, which was over budget,
+// so the loop condition stays true; gg 255 is never skipped, so on return gc
+// holds a complete coding (ix, part and ri) for the returned gg.
 func searchGlobalGainExact(xr *[576]float64, effBudget, gg int, lay *bandLayout, gc *granuleCoding) int {
 	for gc.ri.bits > effBudget && gg < 255 {
 		gg++
-		recode(xr, gg, lay, gc)
+		requantize(xr, gg, lay, gc)
+		if gg < 255 && part3LowerBound(&gc.ix, gc.part, effBudget) > effBudget {
+			continue
+		}
+		gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
 	}
 	return gg
 }
@@ -149,7 +167,7 @@ func searchGlobalGainExact(xr *[576]float64, effBudget, gg int, lay *bandLayout,
 // immediately, matching the exact scan. Otherwise it lower_bounds over
 // (gg, 255], recoding at each probe, then a trailing recode restores gc to the
 // chosen gg since the last probe need not have been at it. This is about
-// log2(255) recodes rather than up to 255.
+// log2(255) recodes rather than one per step of the scan.
 //
 // It equals searchGlobalGainExact only where bits(gg) has no non-monotone bump
 // straddling effBudget. bits(gg) does carry occasional small bumps (region

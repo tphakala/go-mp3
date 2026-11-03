@@ -34,6 +34,11 @@ var ErrEncoderClosed = errors.New("go-mp3/pcm: encoder is closed")
 // drop itself (see the root mp3.TotalDelay). The one-shot EncodeInterleaved
 // always writes the tag, since it holds the whole input.
 //
+// The Encoder has no context-aware method: a caller that needs cancellation
+// writes in chunks (for example one frame, 2*Channels*mp3.FrameSize bytes) and
+// checks its context between Write calls. The one-shot form with that built in
+// is EncodeInterleavedContext.
+//
 // An Encoder is not safe for concurrent use.
 type Encoder struct {
 	enc *mp3.Encoder

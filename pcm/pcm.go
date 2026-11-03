@@ -23,6 +23,14 @@ type Config struct {
 	// 96000, 112000, 128000, 160000, 192000, 224000, 256000, 320000). Zero
 	// selects mp3.DefaultBitrate (128000).
 	Bitrate int
+	// RateControl selects the encoder's inner rate-loop strategy. The zero
+	// value is mp3.RateControlExact, the best quality and the default.
+	// mp3.RateControlFast is faster on loud, broadband or transient material;
+	// its output is not byte-identical to Exact (occasionally a slightly
+	// coarser gain, never finer). The root encoder validates it, so an unknown
+	// value fails NewEncoder, Encoder.Reset and EncodeInterleaved before any
+	// byte is written.
+	RateControl mp3.RateControl
 	// OmitGaplessTag suppresses the leading Xing/Info + LAME header frame. The
 	// zero value writes the tag, which is what LAME and ffmpeg do: it carries
 	// the encoder delay and padding so a decoder trims to a sample-accurate
@@ -42,7 +50,8 @@ type Config struct {
 // the root mp3 package and is not duplicated: a non-zero Bitrate is checked for
 // sign only here, and its membership in the CBR set is validated by
 // mp3.NewEncoder / mp3.Encoder.Reset (whose go-mp3-prefixed error is returned
-// unwrapped from Reset), so the two layers cannot drift.
+// unwrapped from Reset), so the two layers cannot drift. RateControl is
+// validated by the root encoder in the same way.
 func (c Config) validate() error {
 	switch c.SampleRate {
 	case 32000, 44100, 48000:
@@ -72,14 +81,16 @@ func (c Config) resolvedKbps() int {
 
 // toEncoderConfig validates c and maps it to the root mp3.EncoderConfig. A zero
 // Bitrate is passed through as zero, which the root encoder maps to
-// mp3.DefaultBitrate.
+// mp3.DefaultBitrate; RateControl is passed through unchanged for the root
+// encoder to validate.
 func (c Config) toEncoderConfig() (mp3.EncoderConfig, error) {
 	if err := c.validate(); err != nil {
 		return mp3.EncoderConfig{}, err
 	}
 	return mp3.EncoderConfig{
-		SampleRate: c.SampleRate,
-		Channels:   c.Channels,
-		Bitrate:    c.Bitrate,
+		SampleRate:  c.SampleRate,
+		Channels:    c.Channels,
+		Bitrate:     c.Bitrate,
+		RateControl: c.RateControl,
 	}, nil
 }

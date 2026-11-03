@@ -89,7 +89,8 @@ calls plus drain always total exactly `N+1` emitted frames.
 
 By default the encoder runs its rate loop in `RateControlExact` mode, which
 picks the finest quantization within each frame's bit budget. Set
-`RateControl: mp3.RateControlFast` in the config to trade a little quality for
+`RateControl: mp3.RateControlFast` in the `mp3.EncoderConfig`, or in
+`pcm.Config` when encoding through the `pcm` layer, to trade a little quality for
 a large speedup: it binary-searches the global gain instead of scanning it,
 several times faster on loud, broadband, or transient frames (where the exact
 scan climbs farthest; less on typical material), at the cost of occasionally
@@ -122,7 +123,13 @@ sample-accurate with no manual delay drop: the decoded output has exactly the
 input length. `EncodeInterleaved` always writes the tag; the streaming encoder
 writes it when its sink is an `io.WriteSeeker` (it back-patches the leading
 frame at `Close`), and leaves a plain `io.Writer` stream tagless.
-`Config.OmitGaplessTag` opts out.
+`Config.OmitGaplessTag` opts out. `pcm.Config.RateControl` selects the rate
+loop as above. `pcm.EncodeInterleavedContext(ctx, w, cfg, pcm)` is the
+cancellable one-shot: it checks `ctx` between input frames and, with the tag
+on, writes nothing to `w` once it sees cancellation (with `OmitGaplessTag` the
+frames encoded so far are already on `w`, a truncated stream to discard). The
+streaming encoder has no context method; write in frame-sized chunks and check
+your context between `Write` calls.
 
 ## Audio quality
 

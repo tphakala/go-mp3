@@ -15,7 +15,7 @@ Orientation for coding agents and automated reviewers working on this repository
 | Frame decoder | `mp3` (`NewDecoder`, `DecodeFrame` returning `(n, FrameInfo, error)`, `Reset`; sentinels `ErrCorruptStream`, `ErrUnsupported`) | complete: MPEG-1/2/2.5 Layer III to float PCM, bit-exact on amd64 and arm64 across the fixtures and the ISO conformance corpus, fuzzed, resync-tested, zero-alloc in steady state |
 | Streaming container | `pcm` (`NewDecoder`, `Read`, `WriteTo`, `SeekToSample`, `Reset`, `Info`, `WithF32`; `DecodeInterleaved`, `DecodeInterleavedLimit`) | complete: ID3v2 skip and ID3v1 trailer, S16 by default or float32 via `WithF32`, Xing/Info/VBRI/LAME tag parsing, gapless trim, bounded resync, clean-end and truncation detection, bit-exact `SeekToSample` |
 | Frame encoder | `mp3` (`NewEncoder`, `EncodeFrame`, `Reset`, `Drained`, `Delay`, `TotalDelay`, `Stats`, `EncoderConfig`, `RateControl`) | complete: CBR MPEG-1 Layer III at 32/44.1/48 kHz, mono or L/R stereo, the 14 legal CBR bitrates; quality tuning is the open work |
-| Streaming encoder | `pcm` (`NewEncoder`, `EncodeInterleaved`, `Config`) | complete: writes a Xing/Info + LAME gapless tag by default |
+| Streaming encoder | `pcm` (`NewEncoder`, `EncodeInterleaved`, `EncodeInterleavedContext`, `Config`) | complete: writes a Xing/Info + LAME gapless tag by default, selectable `RateControl`, cancellable one-shot |
 | Quality harness | `tools/quality`, metrics in `internal/quality` | complete: black-box comparison against LAME (`lame` binary or ffmpeg's libmp3lame, `-reference auto\|lame\|ffmpeg`), plus a lame-free regression gate in CI |
 
 Non-goals: Layer I and II decoding, VBR encoding.
@@ -41,7 +41,7 @@ The public API is not stable before v1.0.0. Exported types, functions, struct fi
 
 That freedom is bounded by the sibling codecs. go-mp3 is one of a family (go-flac, go-opus, go-aac, go-wav) that callers such as go-m4a, go-audio-testkit and BirdNET-Go use interchangeably, so the API follows their established shape rather than inventing its own:
 
-- The `pcm` package carries the shared surface: `NewDecoder(r, opts...)` returning a `*Decoder` that is an `io.Reader` and `io.WriterTo` with `Info` and `Reset`; `NewEncoder(w, cfg)` with a `Config`; the one-shot `DecodeInterleaved`, `DecodeInterleavedLimit` (bounded by `DefaultMaxDecodedBytes`, `maxBytes <= 0` meaning unbounded, overflow returning a wrapped `ErrDecodeLimit`) and `EncodeInterleaved(w, cfg, pcm)`. Interleaved little-endian S16 is the default sample layout.
+- The `pcm` package carries the shared surface: `NewDecoder(r, opts...)` returning a `*Decoder` that is an `io.Reader` and `io.WriterTo` with `Info` and `Reset`; `NewEncoder(w, cfg)` with a `Config`; the one-shot `DecodeInterleaved`, `DecodeInterleavedLimit` (bounded by `DefaultMaxDecodedBytes`, `maxBytes <= 0` meaning unbounded, overflow returning a wrapped `ErrDecodeLimit`) and `EncodeInterleaved(w, cfg, pcm)`. go-mp3 also offers `EncodeInterleavedContext(ctx, w, cfg, pcm)`, the cancellable one-shot; the siblings do not have it yet. Interleaved little-endian S16 is the default sample layout.
 - Functional options are `Option func(*config)` with `With...` constructors.
 - Sentinel errors are prefixed with the package path (`go-mp3:`, `go-mp3/pcm:`, `go-mp3/enc:`), matching the siblings' `go-flac/pcm:` style.
 - A failed `Reset` must never leave a decoder or encoder that keeps working on the previous stream's state.

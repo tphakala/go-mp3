@@ -86,13 +86,16 @@ const (
 	// fits the frame's bit budget, by an upward linear scan: the finest
 	// quantization within budget, hence the best quality this encoder
 	// produces, and the historical behavior. On frames that need a large gain
-	// increase (loud, broadband, or transient material) that scan is the
-	// encoder's dominant cost. This is the default.
+	// increase (loud, broadband, or transient material) that scan is still
+	// the encoder's dominant cost, though it skips the Huffman region search
+	// at every step a cheap sound bound proves over budget, which never
+	// changes the result. This is the default.
 	RateControlExact RateControl = iota
 	// RateControlFast binary-searches global_gain instead of scanning,
-	// roughly an order of magnitude faster on escalation-heavy frames. Because
-	// the coded bit count is not strictly monotone in the gain, the search can
-	// occasionally settle one or a few steps above the exact choice: a
+	// several times faster than RateControlExact on escalation-heavy frames
+	// (about 3 to 4 times on loud broadband noise), less on typical material.
+	// Because the coded bit count is not strictly monotone in the gain, the
+	// search can occasionally settle one or a few steps above the exact choice: a
 	// slightly coarser quantization on the affected granules (never finer), a
 	// small and bounded quality reduction. Its output is therefore not
 	// bit-identical to RateControlExact. Prefer it when encode throughput

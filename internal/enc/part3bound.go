@@ -22,6 +22,8 @@ var (
 	minLinbitsFam24 = buildMinLinbits(&escFam24Linbits)
 )
 
+// buildPairMinDirect fills pairMinDirect by costing every pair below
+// escTableDim in every valid table and keeping the cheapest.
 func buildPairMinDirect() [escTableDim][escTableDim]uint8 {
 	var m [escTableDim][escTableDim]uint8
 	for x := range escTableDim {
@@ -36,6 +38,8 @@ func buildPairMinDirect() [escTableDim][escTableDim]uint8 {
 	return m
 }
 
+// buildMinLinbits fills minLinbitsFam16 or minLinbitsFam24 from a family's
+// ascending linbits list: entry n is the smallest linbits that is at least n.
 func buildMinLinbits(linb *[8]int) [14]int {
 	var m [14]int
 	for n := range m {

@@ -119,7 +119,7 @@ func TestPart3LowerBoundSound(t *testing.T) {
 		for srIndex := range layoutLong {
 			lay := layoutFor(blk.bt, srIndex)
 			for iter := range 12 {
-				amp := (testsignal.LCG(&seed)*3 + 0.01) * 30000
+				amp := (float64(testsignal.LCG(&seed)*3) + 0.01) * 30000
 				xr := probeSpectrum(&seed, iter%4, amp)
 				var gc granuleCoding
 				gc.lay = lay
@@ -199,7 +199,7 @@ func replaySignal(name string, sampleRate, channels, nFrames int) [][]float32 {
 			tone := testsignal.MultiTone(sampleRate, n, float64(ch), 0.6)
 			planar[ch] = make([]float32, n)
 			for i := range planar[ch] {
-				planar[ch][i] = float32(tone[i]) + 0.02*float32(testsignal.LCGSigned(&seed))
+				planar[ch][i] = float32(tone[i]) + float32(0.02*float32(testsignal.LCGSigned(&seed))) // explicit conversion blocks FMA fusion, keeping the signal identical across architectures
 			}
 		default: // "clicks"
 			planar[ch] = testsignal.ToneClick(sampleRate, n, 2, 1)

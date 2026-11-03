@@ -250,6 +250,7 @@ func TestExactScanMatchesOracleOnEncoderGranules(t *testing.T) {
 					}
 					stats.checkCoding(t, "captured", &g.gc)
 				}
+				stats.requireUseful(t)
 			})
 		}
 	}

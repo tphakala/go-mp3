@@ -20,11 +20,33 @@ func TestNewEncoderRejectsBadConfig(t *testing.T) {
 		{"zero channels", Config{SampleRate: 44100, Bitrate: 128000}},
 		{"negative bitrate", Config{SampleRate: 44100, Channels: 2, Bitrate: -1}},
 		{"non-rate bitrate", Config{SampleRate: 44100, Channels: 2, Bitrate: 123000}},
+		{"bad rate control", Config{SampleRate: 44100, Channels: 2, Bitrate: 128000, RateControl: mp3.RateControl(2)}},
+		{"negative rate control", Config{SampleRate: 44100, Channels: 2, Bitrate: 128000, RateControl: mp3.RateControl(-1)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := NewEncoder(io.Discard, tc.cfg); err == nil {
-				t.Fatalf("expected error for %+v", tc.cfg)
+				t.Fatalf("NewEncoder: expected error for %+v", tc.cfg)
+			}
+			// Reset on a live encoder must reject it too, and write nothing.
+			var sink bytes.Buffer
+			e := new(Encoder)
+			if err := e.Reset(&sink, tc.cfg); err == nil {
+				t.Fatalf("Reset: expected error for %+v", tc.cfg)
+			}
+			pcm := genSineS16(mp3.FrameSize, 2, 1000, 44100)
+			for _, omit := range []bool{false, true} {
+				cfg := tc.cfg
+				cfg.OmitGaplessTag = omit
+				if err := EncodeInterleaved(&sink, cfg, pcm); err == nil {
+					t.Fatalf("EncodeInterleaved(omit=%v): expected error for %+v", omit, tc.cfg)
+				}
+				if err := EncodeInterleavedContext(t.Context(), &sink, cfg, pcm); err == nil {
+					t.Fatalf("EncodeInterleavedContext(omit=%v): expected error for %+v", omit, tc.cfg)
+				}
+			}
+			if sink.Len() != 0 {
+				t.Fatalf("rejected config wrote %d bytes to the sink", sink.Len())
 			}
 		})
 	}

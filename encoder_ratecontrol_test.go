@@ -3,6 +3,7 @@ package mp3_test
 import (
 	"bytes"
 	"io"
+	"math"
 	"testing"
 
 	mp3 "github.com/tphakala/go-mp3"
@@ -105,5 +106,79 @@ func TestRateControlString(t *testing.T) {
 		if got := c.rc.String(); got != c.want {
 			t.Errorf("RateControl(%d).String() = %q, want %q", int(c.rc), got, c.want)
 		}
+	}
+}
+
+// TestPCMRateControlFastPlumbed proves pcm.Config.RateControl reaches the root
+// encoder: the pcm one-shot under Fast equals the root encoder under Fast fed
+// the same samples, and (positive control) Fast differs from Exact on this
+// input, so the test cannot pass if the field were dropped.
+func TestPCMRateControlFastPlumbed(t *testing.T) {
+	const nch, frames, extra = 2, 12, 77
+	s := uint64(5)
+	src := planarNoise(&s, nch, frames*mp3.FrameSize+extra, 0.9)
+
+	// S16 interleaved input, and the float view of exactly those samples.
+	pcmBytes := make([]byte, 0, len(src[0])*nch*2)
+	flt := make([][]float32, nch)
+	for c := range flt {
+		flt[c] = make([]float32, len(src[0]))
+	}
+	for i := range src[0] {
+		for c := range nch {
+			v := int16(max(-32768, min(32767, math.Round(float64(src[c][i])*32768))))
+			pcmBytes = append(pcmBytes, byte(v), byte(uint16(v)>>8))
+			flt[c][i] = float32(v) / 32768
+		}
+	}
+
+	encodeRoot := func(rc mp3.RateControl) []byte {
+		e, err := mp3.NewEncoder(mp3.EncoderConfig{SampleRate: 44100, Channels: nch, Bitrate: 32000, RateControl: rc})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []byte
+		for off := 0; off < len(flt[0]); off += mp3.FrameSize {
+			end := min(off+mp3.FrameSize, len(flt[0]))
+			chunk := make([][]float32, nch)
+			for c := range chunk {
+				chunk[c] = flt[c][off:end]
+			}
+			if out, err = e.EncodeFrame(out, chunk); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if out, err = e.EncodeFrame(out, nil); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	encodePCM := func(rc mp3.RateControl) []byte {
+		var buf bytes.Buffer
+		cfg := mp3pcm.Config{SampleRate: 44100, Channels: nch, Bitrate: 32000, OmitGaplessTag: true, RateControl: rc}
+		if err := mp3pcm.EncodeInterleaved(&buf, cfg, pcmBytes); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+
+	rootFast, rootExact := encodeRoot(mp3.RateControlFast), encodeRoot(mp3.RateControlExact)
+	if bytes.Equal(rootFast, rootExact) {
+		t.Fatal("positive control failed: Fast and Exact agree on this input; lengthen or change it")
+	}
+	if got := encodePCM(mp3.RateControlFast); !bytes.Equal(got, rootFast) {
+		t.Fatalf("pcm Fast (%d bytes) differs from root Fast (%d bytes)", len(got), len(rootFast))
+	}
+	if got := encodePCM(mp3.RateControlExact); !bytes.Equal(got, rootExact) {
+		t.Fatalf("pcm Exact (%d bytes) differs from root Exact (%d bytes)", len(got), len(rootExact))
+	}
+	// Zero value is Exact.
+	var zero bytes.Buffer
+	cfg := mp3pcm.Config{SampleRate: 44100, Channels: nch, Bitrate: 32000, OmitGaplessTag: true}
+	if err := mp3pcm.EncodeInterleaved(&zero, cfg, pcmBytes); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(zero.Bytes(), rootExact) {
+		t.Fatal("zero-value pcm.Config differs from explicit RateControlExact")
 	}
 }

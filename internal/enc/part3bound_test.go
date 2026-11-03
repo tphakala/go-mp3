@@ -176,6 +176,9 @@ func captureReplayGranules(t *testing.T, cfg Config, planar [][]float32, nFrames
 	return out
 }
 
+// sigLoud is the full-scale noise program of replaySignal.
+const sigLoud = "loud"
+
 // replaySignal builds nFrames of planar input for a named program.
 func replaySignal(name string, sampleRate, channels, nFrames int) [][]float32 {
 	n := nFrames * testsignal.FrameSize
@@ -183,15 +186,14 @@ func replaySignal(name string, sampleRate, channels, nFrames int) [][]float32 {
 	seed := uint64(sampleRate) ^ uint64(len(name))<<40
 	for ch := range planar {
 		switch name {
-		case "noise":
-			planar[ch] = make([]float32, n)
-			for i := range planar[ch] {
-				planar[ch][i] = float32(testsignal.LCGSigned(&seed)) * 0.7
+		case "noise", sigLoud:
+			scale := float32(0.7)
+			if name == sigLoud {
+				scale = 1
 			}
-		case "loud":
 			planar[ch] = make([]float32, n)
 			for i := range planar[ch] {
-				planar[ch][i] = float32(testsignal.LCGSigned(&seed))
+				planar[ch][i] = float32(testsignal.LCGSigned(&seed)) * scale
 			}
 		case "tones":
 			tone := testsignal.MultiTone(sampleRate, n, float64(ch), 0.6)
@@ -226,8 +228,8 @@ func TestExactScanMatchesOracleOnEncoderGranules(t *testing.T) {
 	}
 	const nFrames = 4
 	for _, cfg := range configs {
-		for _, sig := range []string{"noise", "loud", "tones", "clicks"} {
-			t.Run(sigName(cfg, sig), func(t *testing.T) {
+		for _, sig := range []string{"noise", sigLoud, "tones", "clicks"} {
+			t.Run(fmt.Sprintf("%s/%d/%dch/%dk", sig, cfg.SampleRate, cfg.Channels, cfg.BitrateKbps), func(t *testing.T) {
 				t.Parallel()
 				planar := replaySignal(sig, cfg.SampleRate, cfg.Channels, nFrames)
 				grs := captureReplayGranules(t, cfg, planar, nFrames)
@@ -251,8 +253,4 @@ func TestExactScanMatchesOracleOnEncoderGranules(t *testing.T) {
 			})
 		}
 	}
-}
-
-func sigName(cfg Config, sig string) string {
-	return fmt.Sprintf("%s/%d/%dch/%dk", sig, cfg.SampleRate, cfg.Channels, cfg.BitrateKbps)
 }

@@ -92,8 +92,7 @@ picks the finest quantization within each frame's bit budget. Set
 `RateControl: mp3.RateControlFast` in the config to trade a little quality for
 a large speedup: it binary-searches the global gain instead of scanning it,
 several times faster on loud, broadband, or transient frames (where the exact
-scan climbs farthest; about 3 to 4 times on broadband noise, less on typical
-material), at the cost of occasionally choosing a slightly coarser gain on a small fraction of granules (never a finer one). In
+scan climbs farthest; less on typical material), at the cost of occasionally choosing a slightly coarser gain on a small fraction of granules (never a finer one). In
 testing the fast search diverges from exact on well under 0.1% of granules, and
 only ever by a few steps of global gain, so the quality difference is small;
 the default stays exact, so nothing changes unless you opt in.

@@ -79,9 +79,15 @@ func regionsFor(ix *[576]int32, part spectrumPartition, lay *bandLayout, blockTy
 // spectral truncation) do not duplicate the quantize/partition/choose
 // sequence.
 func recode(xr *[576]float64, gg int, lay *bandLayout, gc *granuleCoding) {
+	requantize(xr, gg, lay, gc)
+	gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
+}
+
+// requantize is recode without the region search: quantize xr at gg under gc's
+// scalefactor state and partition the result, leaving gc.ri untouched.
+func requantize(xr *[576]float64, gg int, lay *bandLayout, gc *granuleCoding) {
 	quantizeGranule(xr, gg, &gc.sf, lay, &gc.ix)
 	gc.part = partitionSpectrum(&gc.ix)
-	gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
 }
 
 // codeGranule runs the inner rate loop for one granule-channel: starting at
@@ -146,8 +152,7 @@ func codeGranule(xr *[576]float64, budgetBits int, lay *bandLayout, gc *granuleC
 func searchGlobalGainExact(xr *[576]float64, effBudget, gg int, lay *bandLayout, gc *granuleCoding) int {
 	for gc.ri.bits > effBudget && gg < 255 {
 		gg++
-		quantizeGranule(xr, gg, &gc.sf, lay, &gc.ix)
-		gc.part = partitionSpectrum(&gc.ix)
+		requantize(xr, gg, lay, gc)
 		if gg < 255 && part3LowerBound(&gc.ix, gc.part, effBudget) > effBudget {
 			continue
 		}

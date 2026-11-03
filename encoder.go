@@ -92,8 +92,8 @@ const (
 	// changes the result. This is the default.
 	RateControlExact RateControl = iota
 	// RateControlFast binary-searches global_gain instead of scanning,
-	// several times faster than RateControlExact on escalation-heavy frames
-	// (about 3 to 4 times on loud broadband noise), less on typical material.
+	// several times faster than RateControlExact on escalation-heavy frames,
+	// less on typical material.
 	// Because the coded bit count is not strictly monotone in the gain, the
 	// search can occasionally settle one or a few steps above the exact choice: a
 	// slightly coarser quantization on the affected granules (never finer), a

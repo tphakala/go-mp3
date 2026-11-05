@@ -1,6 +1,9 @@
 package enc
 
-import "math"
+import (
+	"math"
+	"sort"
+)
 
 // maxQuant is the largest magnitude any Huffman table encodes: 15 + 2^13 - 1
 // (linbits 13 escape).
@@ -202,9 +205,9 @@ func quantizeGranule(xr *[576]float64, gg int, sf *scfState, lay *bandLayout, ix
 // stepQ(...) is monotonically non-increasing in gg for any fixed extra, so
 // each band's worst-case quantized magnitude is itself monotonically
 // non-increasing in gg (the same reasoning TestQuantizeMonotone established
-// for Phase 3's uniform step); the first gg that clears every band's bound
-// is therefore also the smallest. Bounded by 256 iterations of scalar work,
-// same as Phase 3.
+// for Phase 3's uniform step), so whether gg clears every band's bound is
+// monotone in gg and a binary search finds the same smallest gg an upward
+// scan would, in eight probes instead of up to 256.
 //
 // Like quantizeGranule, the bound check compares in float64 before any
 // int32 conversion, for the same overflow-avoidance reason.
@@ -222,22 +225,18 @@ func minGlobalGain(xr *[576]float64, sf *scfState, lay *bandLayout) int {
 		bandMax[sfb] = m
 	}
 
-	for gg := range 256 {
-		fits := true
+	// gg = 255 is returned whether or not it fits, so the search covers 0..254.
+	return sort.Search(255, func(gg int) bool {
 		for sfb := range lay.nBands {
 			is := stepQ((quantGainBase - gg) + sf.bandExtraQuarters(sfb, lay))
 			t := bandMax[sfb] * is
 			v := math.Sqrt(t * math.Sqrt(t))
 			if v+0.4054 > float64(maxQuant) {
-				fits = false
-				break
+				return false
 			}
 		}
-		if fits {
-			return gg
-		}
-	}
-	return 255
+		return true
+	})
 }
 
 // noiseGranule measures quantization noise energy per band: for each band

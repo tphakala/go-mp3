@@ -1,0 +1,23 @@
+//go:build amd64 && !noasm
+
+package enc
+
+// bigValuesPrefixCost computes the big-values prefix costs of all 32 table
+// slots in one pass. On amd64 it uses the fused AVX2 kernel when the CPU has
+// AVX2 (default GOAMD64=v1 does not guarantee it, so the check is at runtime,
+// sharing hasAVX2 with the region-cost kernel); otherwise it falls back to
+// bigValuesPrefixCostGo. Integer sums have no accumulation-order hazard, so
+// the result is identical to the reference.
+func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCost *[40][32]int32) {
+	if hasAVX2 {
+		prefixCostAVX2(ix, pb, lay.nBands, prefixCost, &pairCostRows, &pairCostBound)
+		return
+	}
+	bigValuesPrefixCostGo(ix, pb, lay, prefixCost)
+}
+
+// prefixCostAVX2 keeps the 32 running sums in four YMM accumulators, adds one
+// pairCostRows row per pair and stores each band's sums into prefixCost[k+1].
+//
+//go:noescape
+func prefixCostAVX2(ix *[576]int32, pb *[40]int, nBands int, prefixCost *[40][32]int32, rows *[256][32]int32, bound *[32]int32)

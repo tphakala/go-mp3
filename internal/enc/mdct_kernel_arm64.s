@@ -1,0 +1,157 @@
+//go:build !noasm
+
+#include "textflag.h"
+
+// FMULLO and FMULHI are fmul v23.2d, v18.2d, v22.d[0] and fmul v24.2d, v19.2d, v22.d[1], kept as
+// WORDs because the Go assembler has no by-element FMUL.
+#define FMULLO WORD $0x4FD69257
+#define FMULHI WORD $0x4FD69A78
+
+// MDCTTERM loads the cosine pair at off(R12) into V22 and adds V18 times its low lane, then V19 times
+// its high lane, to acc.
+#define MDCTTERM(off, acc) \
+	FMOVQ off(R12), F22; \
+	FMULLO; \
+	VFADD V23.D2, acc.D2, acc.D2; \
+	FMULHI; \
+	VFADD V24.D2, acc.D2, acc.D2
+
+// MDCTSTEP windows the next two history rows at R10 with the next two window values at R11 and adds
+// their products with the matching cosines at R12 to the accumulators V0-V17, then advances R10, R11
+// and R12.
+#define MDCTSTEP \
+	VLD1  (R10), [V18.D2]; \
+	ADD   $256, R10; \
+	VLD1  (R10), [V19.D2]; \
+	ADD   $256, R10; \
+	VLD1R.P 8(R11), [V20.D2]; \
+	VLD1R.P 8(R11), [V21.D2]; \
+	VFMUL V20.D2, V18.D2, V18.D2; \
+	VFMUL V21.D2, V19.D2, V19.D2; \
+	MDCTTERM(0, V0); \
+	MDCTTERM(288, V1); \
+	MDCTTERM(576, V2); \
+	MDCTTERM(864, V3); \
+	MDCTTERM(1152, V4); \
+	MDCTTERM(1440, V5); \
+	MDCTTERM(1728, V6); \
+	MDCTTERM(2016, V7); \
+	MDCTTERM(2304, V8); \
+	MDCTTERM(2592, V9); \
+	MDCTTERM(2880, V10); \
+	MDCTTERM(3168, V11); \
+	MDCTTERM(3456, V12); \
+	MDCTTERM(3744, V13); \
+	MDCTTERM(4032, V14); \
+	MDCTTERM(4320, V15); \
+	MDCTTERM(4608, V16); \
+	MDCTTERM(4896, V17); \
+	ADD   $16, R12
+
+// func mdctNEON(prev, cur *[18][32]float64, xr *[576]float64, window *[36]float64, cos *[18][36]float64, scale float64)
+// Each lane is one subband: the windowed products and the cosine products are rounded before they
+// are added in n order (separate FMUL and FADD), then scaled, the same per-term rounding as
+// mdctGranuleWindowedGo.
+TEXT ·mdctNEON(SB), NOSPLIT, $0-48
+	MOVD  prev+0(FP), R0
+	MOVD  cur+8(FP), R1
+	MOVD  xr+16(FP), R13
+	MOVD  window+24(FP), R3
+	MOVD  cos+32(FP), R4
+	MOVD  $scale+40(FP), R6
+	VLD1R (R6), [V31.D2]
+	MOVD  $0, R5
+
+group:
+	VEOR  V0.B16, V0.B16, V0.B16
+	VEOR  V1.B16, V1.B16, V1.B16
+	VEOR  V2.B16, V2.B16, V2.B16
+	VEOR  V3.B16, V3.B16, V3.B16
+	VEOR  V4.B16, V4.B16, V4.B16
+	VEOR  V5.B16, V5.B16, V5.B16
+	VEOR  V6.B16, V6.B16, V6.B16
+	VEOR  V7.B16, V7.B16, V7.B16
+	VEOR  V8.B16, V8.B16, V8.B16
+	VEOR  V9.B16, V9.B16, V9.B16
+	VEOR  V10.B16, V10.B16, V10.B16
+	VEOR  V11.B16, V11.B16, V11.B16
+	VEOR  V12.B16, V12.B16, V12.B16
+	VEOR  V13.B16, V13.B16, V13.B16
+	VEOR  V14.B16, V14.B16, V14.B16
+	VEOR  V15.B16, V15.B16, V15.B16
+	VEOR  V16.B16, V16.B16, V16.B16
+	VEOR  V17.B16, V17.B16, V17.B16
+	MOVD  R3, R11
+	MOVD  R4, R12
+	ADD   R0, R5, R10
+	MOVD  $9, R7
+prev:
+	MDCTSTEP
+	SUBS  $1, R7, R7
+	BNE   prev
+	ADD   R1, R5, R10
+	MOVD  $9, R7
+cur:
+	MDCTSTEP
+	SUBS  $1, R7, R7
+	BNE   cur
+	ADD   $144, R13, R14
+	VFMUL V31.D2, V0.D2, V0.D2
+	VFMUL V31.D2, V1.D2, V1.D2
+	VZIP1 V1.D2, V0.D2, V25.D2
+	VZIP2 V1.D2, V0.D2, V26.D2
+	FMOVQ F25, 0(R13)
+	FMOVQ F26, 0(R14)
+	VFMUL V31.D2, V2.D2, V2.D2
+	VFMUL V31.D2, V3.D2, V3.D2
+	VZIP1 V3.D2, V2.D2, V25.D2
+	VZIP2 V3.D2, V2.D2, V26.D2
+	FMOVQ F25, 16(R13)
+	FMOVQ F26, 16(R14)
+	VFMUL V31.D2, V4.D2, V4.D2
+	VFMUL V31.D2, V5.D2, V5.D2
+	VZIP1 V5.D2, V4.D2, V25.D2
+	VZIP2 V5.D2, V4.D2, V26.D2
+	FMOVQ F25, 32(R13)
+	FMOVQ F26, 32(R14)
+	VFMUL V31.D2, V6.D2, V6.D2
+	VFMUL V31.D2, V7.D2, V7.D2
+	VZIP1 V7.D2, V6.D2, V25.D2
+	VZIP2 V7.D2, V6.D2, V26.D2
+	FMOVQ F25, 48(R13)
+	FMOVQ F26, 48(R14)
+	VFMUL V31.D2, V8.D2, V8.D2
+	VFMUL V31.D2, V9.D2, V9.D2
+	VZIP1 V9.D2, V8.D2, V25.D2
+	VZIP2 V9.D2, V8.D2, V26.D2
+	FMOVQ F25, 64(R13)
+	FMOVQ F26, 64(R14)
+	VFMUL V31.D2, V10.D2, V10.D2
+	VFMUL V31.D2, V11.D2, V11.D2
+	VZIP1 V11.D2, V10.D2, V25.D2
+	VZIP2 V11.D2, V10.D2, V26.D2
+	FMOVQ F25, 80(R13)
+	FMOVQ F26, 80(R14)
+	VFMUL V31.D2, V12.D2, V12.D2
+	VFMUL V31.D2, V13.D2, V13.D2
+	VZIP1 V13.D2, V12.D2, V25.D2
+	VZIP2 V13.D2, V12.D2, V26.D2
+	FMOVQ F25, 96(R13)
+	FMOVQ F26, 96(R14)
+	VFMUL V31.D2, V14.D2, V14.D2
+	VFMUL V31.D2, V15.D2, V15.D2
+	VZIP1 V15.D2, V14.D2, V25.D2
+	VZIP2 V15.D2, V14.D2, V26.D2
+	FMOVQ F25, 112(R13)
+	FMOVQ F26, 112(R14)
+	VFMUL V31.D2, V16.D2, V16.D2
+	VFMUL V31.D2, V17.D2, V17.D2
+	VZIP1 V17.D2, V16.D2, V25.D2
+	VZIP2 V17.D2, V16.D2, V26.D2
+	FMOVQ F25, 128(R13)
+	FMOVQ F26, 128(R14)
+	ADD   $288, R13
+	ADD   $16, R5
+	CMP   $256, R5
+	BLT   group
+	RET

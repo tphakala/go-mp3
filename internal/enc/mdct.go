@@ -45,20 +45,21 @@ func FlipOddSubbands(s *[18][32]float64) {
 //
 // MDCTGranule is a thin wrapper over mdctGranuleWindowed with the long sine
 // window; the shared 36-point kernel and its float64()-wrap FMA-blocking
-// discipline are documented on mdctGranuleWindowed below.
+// discipline are documented on its pure-Go reference, mdctGranuleWindowedGo,
+// below.
 func MDCTGranule(prev, cur *[18][32]float64, xr *[576]float64) {
 	mdctGranuleWindowed(prev, cur, xr, &MDCTWindow)
 }
 
-// mdctGranuleWindowed is the shared 36-point forward-MDCT body behind
-// MDCTGranule (blockLong, window = &MDCTWindow) and MDCTGranuleBlock's
-// blockStart (&MDCTWindowStart) and blockStop (&MDCTWindowStop) cases: only
-// the window differs across the three block types that share this 36-point
-// kernel, so the loop itself is factored out here, byte-identical in
-// statement shape, float64() wraps and left-to-right accumulation order to
-// MDCTGranule's original body (TestMdctGolden unchanged is the proof for
-// the blockLong case).
-func mdctGranuleWindowed(prev, cur *[18][32]float64, xr *[576]float64, window *[36]float64) {
+// mdctGranuleWindowedGo is the pure-Go reference for mdctGranuleWindowed, the
+// shared 36-point forward-MDCT body behind MDCTGranule (blockLong, window =
+// &MDCTWindow) and MDCTGranuleBlock's blockStart (&MDCTWindowStart) and
+// blockStop (&MDCTWindowStop) cases: only the window differs across the three
+// block types that share this 36-point kernel, so the loop itself is factored
+// out here, byte-identical in statement shape, float64() wraps and
+// left-to-right accumulation order to MDCTGranule's original body
+// (TestMdctGolden unchanged is the proof for the blockLong case).
+func mdctGranuleWindowedGo(prev, cur *[18][32]float64, xr *[576]float64, window *[36]float64) {
 	for b := range 32 {
 		var z [36]float64
 		for i := range 18 {
@@ -121,7 +122,7 @@ func MDCTGranuleBlock(prev, cur *[18][32]float64, xr *[576]float64, blockType in
 // once Task A2's reorder feeds it through the decoder's own grbuf layout.
 //
 // Float discipline: the same left-to-right, float64()-wrapped accumulation
-// discipline as mdctGranuleWindowed (see MDCTGranule's doc comment); the
+// discipline as mdctGranuleWindowedGo (see MDCTGranule's doc comment); the
 // z-population line's float64() wrap is likewise kept for package-wide
 // uniformity rather than because it is a proven FMA barrier there.
 func mdctGranuleShort(prev, cur *[18][32]float64, xr *[576]float64) {

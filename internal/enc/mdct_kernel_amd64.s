@@ -1,0 +1,247 @@
+//go:build !noasm
+
+#include "textflag.h"
+
+// func mdctAVX2(prev, cur *[18][32]float64, xr *[576]float64, window *[36]float64, cos *[18][36]float64, scale float64)
+// Each lane is one subband: the windowed products and the cosine products are rounded before they
+// are added in n order, then scaled, the same per-term rounding as mdctGranuleWindowedGo.
+TEXT ·mdctAVX2(SB), 0, $1152-48
+	MOVQ         prev+0(FP), SI
+	MOVQ         cur+8(FP), BX
+	MOVQ         xr+16(FP), DI
+	MOVQ         window+24(FP), DX
+	VBROADCASTSD scale+40(FP), Y15
+	XORQ         R9, R9
+
+group:
+	VMOVUPD      0(SI)(R9*1), Y6
+	VBROADCASTSD 0(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 0(SP)
+	VMOVUPD      256(SI)(R9*1), Y6
+	VBROADCASTSD 8(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 32(SP)
+	VMOVUPD      512(SI)(R9*1), Y6
+	VBROADCASTSD 16(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 64(SP)
+	VMOVUPD      768(SI)(R9*1), Y6
+	VBROADCASTSD 24(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 96(SP)
+	VMOVUPD      1024(SI)(R9*1), Y6
+	VBROADCASTSD 32(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 128(SP)
+	VMOVUPD      1280(SI)(R9*1), Y6
+	VBROADCASTSD 40(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 160(SP)
+	VMOVUPD      1536(SI)(R9*1), Y6
+	VBROADCASTSD 48(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 192(SP)
+	VMOVUPD      1792(SI)(R9*1), Y6
+	VBROADCASTSD 56(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 224(SP)
+	VMOVUPD      2048(SI)(R9*1), Y6
+	VBROADCASTSD 64(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 256(SP)
+	VMOVUPD      2304(SI)(R9*1), Y6
+	VBROADCASTSD 72(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 288(SP)
+	VMOVUPD      2560(SI)(R9*1), Y6
+	VBROADCASTSD 80(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 320(SP)
+	VMOVUPD      2816(SI)(R9*1), Y6
+	VBROADCASTSD 88(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 352(SP)
+	VMOVUPD      3072(SI)(R9*1), Y6
+	VBROADCASTSD 96(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 384(SP)
+	VMOVUPD      3328(SI)(R9*1), Y6
+	VBROADCASTSD 104(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 416(SP)
+	VMOVUPD      3584(SI)(R9*1), Y6
+	VBROADCASTSD 112(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 448(SP)
+	VMOVUPD      3840(SI)(R9*1), Y6
+	VBROADCASTSD 120(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 480(SP)
+	VMOVUPD      4096(SI)(R9*1), Y6
+	VBROADCASTSD 128(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 512(SP)
+	VMOVUPD      4352(SI)(R9*1), Y6
+	VBROADCASTSD 136(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 544(SP)
+	VMOVUPD      0(BX)(R9*1), Y6
+	VBROADCASTSD 144(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 576(SP)
+	VMOVUPD      256(BX)(R9*1), Y6
+	VBROADCASTSD 152(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 608(SP)
+	VMOVUPD      512(BX)(R9*1), Y6
+	VBROADCASTSD 160(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 640(SP)
+	VMOVUPD      768(BX)(R9*1), Y6
+	VBROADCASTSD 168(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 672(SP)
+	VMOVUPD      1024(BX)(R9*1), Y6
+	VBROADCASTSD 176(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 704(SP)
+	VMOVUPD      1280(BX)(R9*1), Y6
+	VBROADCASTSD 184(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 736(SP)
+	VMOVUPD      1536(BX)(R9*1), Y6
+	VBROADCASTSD 192(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 768(SP)
+	VMOVUPD      1792(BX)(R9*1), Y6
+	VBROADCASTSD 200(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 800(SP)
+	VMOVUPD      2048(BX)(R9*1), Y6
+	VBROADCASTSD 208(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 832(SP)
+	VMOVUPD      2304(BX)(R9*1), Y6
+	VBROADCASTSD 216(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 864(SP)
+	VMOVUPD      2560(BX)(R9*1), Y6
+	VBROADCASTSD 224(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 896(SP)
+	VMOVUPD      2816(BX)(R9*1), Y6
+	VBROADCASTSD 232(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 928(SP)
+	VMOVUPD      3072(BX)(R9*1), Y6
+	VBROADCASTSD 240(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 960(SP)
+	VMOVUPD      3328(BX)(R9*1), Y6
+	VBROADCASTSD 248(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 992(SP)
+	VMOVUPD      3584(BX)(R9*1), Y6
+	VBROADCASTSD 256(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 1024(SP)
+	VMOVUPD      3840(BX)(R9*1), Y6
+	VBROADCASTSD 264(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 1056(SP)
+	VMOVUPD      4096(BX)(R9*1), Y6
+	VBROADCASTSD 272(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 1088(SP)
+	VMOVUPD      4352(BX)(R9*1), Y6
+	VBROADCASTSD 280(DX), Y7
+	VMULPD       Y7, Y6, Y6
+	VMOVUPD      Y6, 1120(SP)
+	MOVQ         cos+32(FP), R8
+	XORQ         R11, R11
+
+round:
+	VXORPD       Y0, Y0, Y0
+	VXORPD       Y1, Y1, Y1
+	VXORPD       Y2, Y2, Y2
+	VXORPD       Y3, Y3, Y3
+	VXORPD       Y4, Y4, Y4
+	VXORPD       Y5, Y5, Y5
+	XORQ         R10, R10
+
+tap:
+	VMOVUPD      (SP)(R10*4), Y6
+	VBROADCASTSD 0(R8)(R10*1), Y7
+	VMULPD       Y6, Y7, Y7
+	VADDPD       Y7, Y0, Y0
+	VBROADCASTSD 288(R8)(R10*1), Y8
+	VMULPD       Y6, Y8, Y8
+	VADDPD       Y8, Y1, Y1
+	VBROADCASTSD 576(R8)(R10*1), Y9
+	VMULPD       Y6, Y9, Y9
+	VADDPD       Y9, Y2, Y2
+	VBROADCASTSD 864(R8)(R10*1), Y10
+	VMULPD       Y6, Y10, Y10
+	VADDPD       Y10, Y3, Y3
+	VBROADCASTSD 1152(R8)(R10*1), Y11
+	VMULPD       Y6, Y11, Y11
+	VADDPD       Y11, Y4, Y4
+	VBROADCASTSD 1440(R8)(R10*1), Y12
+	VMULPD       Y6, Y12, Y12
+	VADDPD       Y12, Y5, Y5
+	ADDQ         $8, R10
+	CMPQ         R10, $288
+	JLT          tap
+
+	MOVQ         R9, AX
+	SHLQ         $1, AX
+	LEAQ         (AX)(AX*8), AX
+	ADDQ         DI, AX
+	ADDQ         R11, AX
+	VMULPD       Y15, Y0, Y0
+	VMOVSD       X0, 0(AX)
+	VMOVHPD      X0, 144(AX)
+	VEXTRACTF128 $1, Y0, X13
+	VMOVSD       X13, 288(AX)
+	VMOVHPD      X13, 432(AX)
+	VMULPD       Y15, Y1, Y1
+	VMOVSD       X1, 8(AX)
+	VMOVHPD      X1, 152(AX)
+	VEXTRACTF128 $1, Y1, X13
+	VMOVSD       X13, 296(AX)
+	VMOVHPD      X13, 440(AX)
+	VMULPD       Y15, Y2, Y2
+	VMOVSD       X2, 16(AX)
+	VMOVHPD      X2, 160(AX)
+	VEXTRACTF128 $1, Y2, X13
+	VMOVSD       X13, 304(AX)
+	VMOVHPD      X13, 448(AX)
+	VMULPD       Y15, Y3, Y3
+	VMOVSD       X3, 24(AX)
+	VMOVHPD      X3, 168(AX)
+	VEXTRACTF128 $1, Y3, X13
+	VMOVSD       X13, 312(AX)
+	VMOVHPD      X13, 456(AX)
+	VMULPD       Y15, Y4, Y4
+	VMOVSD       X4, 32(AX)
+	VMOVHPD      X4, 176(AX)
+	VEXTRACTF128 $1, Y4, X13
+	VMOVSD       X13, 320(AX)
+	VMOVHPD      X13, 464(AX)
+	VMULPD       Y15, Y5, Y5
+	VMOVSD       X5, 40(AX)
+	VMOVHPD      X5, 184(AX)
+	VEXTRACTF128 $1, Y5, X13
+	VMOVSD       X13, 328(AX)
+	VMOVHPD      X13, 472(AX)
+	ADDQ         $1728, R8
+	ADDQ         $48, R11
+	CMPQ         R11, $144
+	JLT          round
+
+	ADDQ         $32, R9
+	CMPQ         R9, $256
+	JLT          group
+	VZEROUPPER
+	RET

@@ -72,6 +72,9 @@ func (fb *Filterbank) AnalyzeGranule(in []float64, out *[18][32]float64) {
 	var y [64]float64
 	for t := range 18 {
 		fb.shiftIn(in[t*32 : t*32+32])
+		if subbandKernel(&fb.x, &out[t]) {
+			continue
+		}
 		fb.window(&z)
 		partialSums(&z, &y)
 		matrixStep(&y, &out[t])

@@ -62,7 +62,7 @@ A change that violates one is wrong even if tests pass.
 5. **Deterministic math in the encoder.** `math.Log`, `Exp`, `Exp2`, `Pow` and other libm transcendentals are not cross-arch bit-portable and are banned from `internal/enc` production code by the `EncNoLibmTranscendentals` ruleguard rule (`rules/detmath.go`). Use `plog`/`pexp2` (`internal/enc/detmath.go`), the literal hex-float tables, `sqrt(x*sqrt(x))` for x^0.75 and `Ldexp` plus `pow2Quarter` for 2^(q/4). Tests may use the stdlib as a reference with stated tolerances.
 6. **The encoder is golden-neutral.** Any change to production encoder code must keep output bit-exact against the committed goldens on amd64 and arm64, with and without the `noasm` tag, unless the PR is an explicit quality-tuning PR, which re-freezes the goldens on purpose and carries a before/after `task quality` summary in its description.
 7. **Zero allocations in steady state.** `DecodeFrame`, `EncodeFrame` and the internal decode and encode paths are allocation-free after warm-up; alloc tests guard this. Error paths may allocate.
-8. **SIMD stays mp3-local and optional.** The kernels in `internal/enc` (`rangecost_kernel_*`, `escfamily_kernel_*`: AVX2 and NEON with a pure-Go reference) are gated by the `noasm` tag: the default build links them, `-tags noasm` compiles the pure-Go dispatcher. `github.com/tphakala/simd` may be used where a generic primitive fits, but mp3-specific fused kernels (bit-exact Huffman and DSP logic) live in this repo and are never pushed up into the simd library. Each kernel carries a differential parity and fuzz test against its reference.
+8. **SIMD stays mp3-local and optional.** The kernels in `internal/enc` (`rangecost_kernel_*`, `escfamily_kernel_*`, `quantize_kernel_*`: AVX2 and NEON with a pure-Go reference) are gated by the `noasm` tag: the default build links them, `-tags noasm` compiles the pure-Go dispatcher. `github.com/tphakala/simd` may be used where a generic primitive fits, but mp3-specific fused kernels (bit-exact Huffman and DSP logic) live in this repo and are never pushed up into the simd library. Each kernel carries a differential parity and fuzz test against its reference.
 9. **`chooseRegions`' memo arrays stay `[40][40]`.** `rcCost`/`rcSeen` in `internal/enc/huffman.go` are reachable with `lay.nBands` up to 39 (a `blockLong`-typed granule over a short layout, as in `TestOuterLoopShortConverges`), so any smaller dimension truncates the memo and panics. The "a,b <= 22" comment holds only for the production long-block path.
 
 ## Layout
@@ -81,7 +81,8 @@ internal/dec/          minimp3 port: header, sideinfo, scalefactors, huffman, st
 internal/enc/          Clean-room encoder: filterbank, mdct, psymodel (model 2), blockswitch,
                        stereo, quantize, loop (rate control), huffman, reservoir, frame;
                        detmath.go plus the *tables.go hex-float tables; SIMD kernels in
-                       rangecost_kernel_* and escfamily_kernel_* (_amd64.s, _arm64.s, _fallback.go)
+                       rangecost_kernel_*, escfamily_kernel_* and quantize_kernel_*
+                       (_amd64.s, _arm64.s, _fallback.go)
 internal/quality/      Harness metrics: alignment, SNR family, log-spectral distance, pre-echo,
                        synthetic programs, WAV I/O
 internal/testsignal/   Deterministic test signals shared by tests

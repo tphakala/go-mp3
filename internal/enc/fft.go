@@ -15,12 +15,7 @@ package enc
 // twRe/twIm hold W_N^k for k in [0, n/2).
 func fftForward(re, im []float64, brev []uint16, twRe, twIm []float64) {
 	n := len(re)
-	for i := range re {
-		if j := int(brev[i]); i < j {
-			re[i], re[j] = re[j], re[i]
-			im[i], im[j] = im[j], im[i]
-		}
-	}
+	fftBitReverse(re, im, brev)
 	for size := 2; size <= n; size <<= 1 {
 		half := size >> 1
 		step := n / size
@@ -45,10 +40,27 @@ func fftForward(re, im []float64, brev []uint16, twRe, twIm []float64) {
 // X[k] = sum_n x[n] * exp(-2*pi*i*k*n/1024). Input and output are in
 // natural order (the bit-reversal permutation is internal).
 func fft1024(re, im *[1024]float64) {
+	if fftKernel1024(re, im) {
+		return
+	}
 	fftForward(re[:], im[:], fftBitrev1024[:], fftTwRe1024[:], fftTwIm1024[:])
 }
 
 // fft256 is the 256-point sibling of fft1024.
 func fft256(re, im *[256]float64) {
+	if fftKernel256(re, im) {
+		return
+	}
 	fftForward(re[:], im[:], fftBitrev256[:], fftTwRe256[:], fftTwIm256[:])
+}
+
+// fftBitReverse applies fftForward's input permutation in place: it swaps
+// re[i], im[i] with re[brev[i]], im[brev[i]] once per pair.
+func fftBitReverse(re, im []float64, brev []uint16) {
+	for i := range re {
+		if j := int(brev[i]); i < j {
+			re[i], re[j] = re[j], re[i]
+			im[i], im[j] = im[j], im[i]
+		}
+	}
 }

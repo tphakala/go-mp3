@@ -100,7 +100,18 @@ func (p *PsyModel) analyzeSpectrum(pcm []float64) {
 		p.fftIm[i] = 0
 	}
 	fft1024(&p.fftRe, &p.fftIm)
+	p.unpredictability()
 
+	// Rotate spectral history: current becomes [0], old [0] becomes [1].
+	p.prevRe[1], p.prevIm[1] = p.prevRe[0], p.prevIm[0]
+	copy(p.prevRe[0][:], p.fftRe[:513])
+	copy(p.prevIm[0][:], p.fftIm[:513])
+}
+
+// unpredictabilityGo fills r2 and cw for bins 0..512 from the current
+// spectrum and the two-frame history. It is the pure-Go reference the SIMD
+// kernels are checked against and the fallback when none is compiled in.
+func (p *PsyModel) unpredictabilityGo() {
 	for i := range 513 {
 		re, im := p.fftRe[i], p.fftIm[i]
 		re1, im1 := p.prevRe[0][i], p.prevIm[0][i]
@@ -139,12 +150,6 @@ func (p *PsyModel) analyzeSpectrum(pcm []float64) {
 			p.cw[i] = c
 		}
 	}
-
-	// Rotate spectral history: current becomes [0], old [0] becomes [1].
-	for i := range 513 {
-		p.prevRe[1][i], p.prevIm[1][i] = p.prevRe[0][i], p.prevIm[0][i]
-		p.prevRe[0][i], p.prevIm[0][i] = p.fftRe[i], p.fftIm[i]
-	}
 }
 
 // computeThresholds derives the per-partition masking threshold nb from
@@ -158,16 +163,35 @@ func (p *PsyModel) computeThresholds() {
 	tab := p.tab
 	n := tab.nParts
 
+	// Each partition is a contiguous run of lines (partOfLine ascends), so
+	// its sums stay in registers and still add in line order.
+	i := 0
 	for b := range n {
-		p.e[b] = 0
-		p.ct[b] = 0
-	}
-	for i := range 513 {
-		b := tab.partOfLine[i]
-		p.e[b] += p.r2[i]
-		p.ct[b] += float64(p.cw[i] * p.r2[i])
+		var e, ct float64
+		for ; i < 513 && int(tab.partOfLine[i]) == b; i++ {
+			e += p.r2[i]
+			ct += float64(p.cw[i] * p.r2[i])
+		}
+		p.e[b], p.ct[b] = e, ct
 	}
 
+	p.maskingThresholds()
+
+	// Rotate threshold history with the UNFLOORED spread threshold? No:
+	// the annex compares against the previous FINAL thresholds; keep nb.
+	for b := range n {
+		p.nbPrev[1][b] = p.nbPrev[0][b]
+		p.nbPrev[0][b] = p.nb[b]
+	}
+}
+
+// maskingThresholdsGo fills ecb, cbs and nb for every partition from the
+// partition energies e and ct and the threshold history nbPrev. It is the
+// pure-Go reference the SIMD kernels are checked against and the fallback
+// when none is compiled in.
+func (p *PsyModel) maskingThresholdsGo() {
+	tab := p.tab
+	n := tab.nParts
 	for b := range n {
 		var ecb, cbs float64
 		sp := &tab.sprd[b]
@@ -210,13 +234,6 @@ func (p *PsyModel) computeThresholds() {
 		}
 		p.nb[b] = nb
 	}
-
-	// Rotate threshold history with the UNFLOORED spread threshold? No:
-	// the annex compares against the previous FINAL thresholds; keep nb.
-	for b := range n {
-		p.nbPrev[1][b] = p.nbPrev[0][b]
-		p.nbPrev[0][b] = p.nb[b]
-	}
 }
 
 // PsyOut is one granule-channel's psychoacoustic model output over the 22
@@ -253,14 +270,23 @@ type PsyOut struct {
 // bits (plog accumulation scaled once by the psyLog2E literal).
 func (p *PsyModel) mapToSfb(out *PsyOut) {
 	tab := p.tab
+	n := tab.nParts
+	// Each line adds its partition's density, so divide once per partition
+	// (mlines is never zero: every partition receives at least one MDCT line
+	// by construction, validated by TestPsyMdctLineMap).
+	var xd, ed [psyMaxParts]float64
+	for b := range n {
+		xd[b] = p.nb[b] / tab.mlines[b]
+		ed[b] = p.e[b] / tab.mlines[b]
+	}
 	sfb := &sfbWidthsLong[p.srIndex]
 	line := 0
 	for s := range 22 {
 		var x, en float64
 		for range sfb[s] {
 			b := tab.partOfMdctLine[line]
-			x += tab.invMlinesTimes(p.nb[b], b)
-			en += tab.invMlinesTimes(p.e[b], b)
+			x += xd[b]
+			en += ed[b]
 			line++
 		}
 		out.Xmin[s] = x
@@ -272,20 +298,35 @@ func (p *PsyModel) mapToSfb(out *PsyOut) {
 		}
 	}
 
-	pe := 0.0
-	for b := range tab.nParts {
-		if ratio := p.e[b] / p.nb[b]; ratio > 1 {
-			pe += float64(tab.lines[b] * plog(ratio))
-		}
-	}
+	pe := perceptualEntropy(0, p.e[:n], p.nb[:n], tab.lines[:n])
 	out.PE = float64(pe * psyLog2E) // nats -> bits: one blocked multiply
 }
 
-// invMlinesTimes returns v/mlines[b]: a helper so the division appears
-// once (mlines is never zero: every partition receives at least one MDCT
-// line by construction, validated by TestPsyMdctLineMap).
-func (t *psyRateTable) invMlinesTimes(v float64, b uint8) float64 {
-	return v / t.mlines[b]
+// perceptualEntropy adds lines[b]*ln(e[b]/nb[b]) to pe for every partition
+// whose energy exceeds its threshold, in partition order. The logs are taken
+// in one plogs batch over all partitions (those at or below threshold are
+// computed and discarded), so the accumulation itself stays in the scalar
+// order.
+func perceptualEntropy(pe float64, e, nb, lines []float64) float64 {
+	n := len(e)
+	var ratio, ln [psyMaxParts]float64
+	for b := range n {
+		ratio[b] = e[b] / nb[b]
+	}
+	plogs(ln[:n], ratio[:n])
+	for b := range n {
+		if ratio[b] > 1 {
+			pe += float64(lines[b] * ln[b])
+		}
+	}
+	return pe
+}
+
+// plogsGo is the pure-Go reference for plogs: dst[i] = plog(src[i]).
+func plogsGo(dst, src []float64) {
+	for i, x := range src {
+		dst[i] = plog(x)
+	}
 }
 
 // analyzeShortWindow windows the 256 samples of pcm centered at center
@@ -317,13 +358,23 @@ func (p *PsyModel) analyzeShortWindow(pcm []float64, center int) {
 // cross-window or cross-granule threshold history to cap against.
 func (p *PsyModel) computeShortThresholds(tab *psyShortTable) {
 	n := tab.nParts
+	// Contiguous partitions, summed in registers as in computeThresholds.
+	i := 0
 	for b := range n {
-		p.eS[b] = 0
+		var e float64
+		for ; i < 129 && int(tab.partOfLine[i]) == b; i++ {
+			e += p.r2S[i]
+		}
+		p.eS[b] = e
 	}
-	for i := range 129 {
-		b := tab.partOfLine[i]
-		p.eS[b] += p.r2S[i]
-	}
+	p.shortThresholds(tab)
+}
+
+// shortThresholdsGo fills nbS for every partition of tab from the window's
+// partition energies eS. It is the pure-Go reference the SIMD kernels are
+// checked against and the fallback when none is compiled in.
+func (p *PsyModel) shortThresholdsGo(tab *psyShortTable) {
+	n := tab.nParts
 	for b := range n {
 		var ecb float64
 		sp := &tab.sprd[b]
@@ -351,6 +402,7 @@ func (p *PsyModel) analyzeShort(pcm []float64, out *PsyOut) {
 	const gStart = 224      // granule's first sample within the re-centered buffer (decision 11)
 	_ = pcm[gStart+352+127] // bounds check once: window 2's span reaches furthest
 	sfb := &sfbWidthsShort[p.srIndex]
+	n := tab.nParts
 
 	var pes float64
 	for w := range 3 {
@@ -358,24 +410,25 @@ func (p *PsyModel) analyzeShort(pcm []float64, out *PsyOut) {
 		p.analyzeShortWindow(pcm, center)
 		p.computeShortThresholds(tab)
 
+		var xd, ed [psyMaxPartsS]float64
+		for b := range n {
+			xd[b] = p.nbS[b] / tab.mlines[b]
+			ed[b] = p.eS[b] / tab.mlines[b]
+		}
 		freq := 0
 		for s := range 13 {
 			var x, en float64
 			for range sfb[s] {
 				b := tab.partOfBand[freq]
-				x += p.nbS[b] / tab.mlines[b]
-				en += p.eS[b] / tab.mlines[b]
+				x += xd[b]
+				en += ed[b]
 				freq++
 			}
 			out.XminS[3*s+w] = x
 			out.EnS[3*s+w] = en
 		}
 
-		for b := range tab.nParts {
-			if ratio := p.eS[b] / p.nbS[b]; ratio > 1 {
-				pes += float64(tab.lines[b] * plog(ratio))
-			}
-		}
+		pes = perceptualEntropy(pes, p.eS[:n], p.nbS[:n], tab.lines[:n])
 	}
 	out.PES = float64(pes * psyLog2E) // nats -> bits, same convention as PE
 }

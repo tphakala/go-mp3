@@ -96,9 +96,9 @@ const (
 	// no longer the faster choice on dense frames: on the loud and broadband
 	// stereo frames of BenchmarkEscalationFrame, RateControlExact is about
 	// 2.3 times faster on amd64 and 2.6 times on arm64 (the Intel i5-7260U and
-	// Cortex-A76 hosts measured). Fast was faster only on the 320 kbps mono
-	// case of BenchmarkTransientFrame (about 1.2 to 1.3 times) and tied on
-	// BenchmarkTonalFrame.
+	// Cortex-A76 hosts measured). Fast keeps a smaller edge on light frames
+	// (about 1.2 to 1.3 times on the 320 kbps mono case of
+	// BenchmarkTransientFrame) and ties on tonal material.
 	// Because the coded bit count is not strictly monotone in the gain, the
 	// search can occasionally settle one or a few steps above the exact choice: a
 	// slightly coarser quantization on the affected granules (never finer), a
@@ -140,8 +140,7 @@ type EncoderConfig struct {
 	// RateControl selects the inner rate loop's global_gain search strategy:
 	// RateControlExact (the zero value and default) for the best quality, or
 	// RateControlFast, which costs a small, bounded amount of quality on some
-	// frames and is not faster than RateControlExact on dense frames. See
-	// RateControl.
+	// frames and is faster only on light frames. See RateControl.
 	RateControl RateControl
 }
 

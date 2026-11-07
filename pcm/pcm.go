@@ -25,9 +25,10 @@ type Config struct {
 	Bitrate int
 	// RateControl selects the encoder's inner rate-loop strategy. The zero
 	// value is mp3.RateControlExact, the best quality and the default.
-	// mp3.RateControlFast binary-searches the gain and is faster than Exact
-	// only on light frames; its output is not byte-identical to Exact
-	// (occasionally a slightly coarser gain, never finer). The root encoder validates it, so an unknown
+	// mp3.RateControlFast binary-searches the gain and is not faster than
+	// Exact on dense frames; its output is not byte-identical to Exact
+	// (occasionally a slightly coarser gain, never finer). The root encoder
+	// validates it, so an unknown
 	// value fails NewEncoder, Encoder.Reset and EncodeInterleaved before any
 	// byte is written.
 	RateControl mp3.RateControl

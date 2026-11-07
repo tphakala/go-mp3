@@ -93,9 +93,8 @@ picks the finest quantization within each frame's bit budget. Set
 `pcm.Config` when encoding through the `pcm` layer, to binary-search the global
 gain instead of scanning it. The exact scan prunes its start with a sound bound,
 so on loud and broadband stereo frames it is now about 2.3 to 2.6 times faster
-than the fast search; the fast search keeps only a small edge on light frames
-(about 1.2 to 1.3 times on the 320 kbps mono case of BenchmarkTransientFrame) and ties on tonal
-material. It occasionally chooses a slightly coarser gain on a small fraction
+than the fast search; the fast search was faster only on the 320 kbps mono case of
+BenchmarkTransientFrame (about 1.2 to 1.3 times) and tied on tonal material. It occasionally chooses a slightly coarser gain on a small fraction
 of granules (never a finer one): in testing it diverges from exact on well under
 0.1% of granules, and only ever by a few steps of global gain. The default stays
 exact, so nothing changes unless you opt in, and measuring your own material

@@ -20,9 +20,11 @@ package enc
 // codeEntry is one Huffman codeword: the code bits and the bit length.
 // The codeword occupies the low len bits of code (right-justified, not
 // MSB-aligned within the uint32); bits.Writer.WriteBits(code, len) masks
-// to those low len bits and emits them MSB-first, which is how every
-// codeword actually reaches the bitstream (writePair, writeValue,
-// writeSpectrum's count1 loop). Transcribed from ISO/IEC 11172-3 Table B.7.
+// to those low len bits and emits them MSB-first. The encoder masks the
+// codeword to len itself, packs it with the pair's linbits and sign bits into
+// one field and hands that to WriteBits (writePair, split in two above 32 bits;
+// writeSpectrum's count1 loop does the same with its sign bits).
+// Transcribed from ISO/IEC 11172-3 Table B.7.
 type codeEntry struct {
 	code uint32
 	len  uint8

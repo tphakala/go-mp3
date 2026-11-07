@@ -2,18 +2,13 @@ package enc
 
 // escFam16LinbitsI32 / escFam24LinbitsI32 are the int32 forms of the two escape
 // families' per-table linbits (escFam16Linbits / escFam24Linbits are [8]int for
-// the scalar accumEscFamily* path). The fused kernels read these as 8-wide int32
-// constant vectors; deriving them here keeps them from drifting out of sync with
-// the []int originals.
+// the scalar accumEscFamily* path). escFamilyAccum reads these as its 8-lane
+// int32 addends; deriving them here keeps them from drifting out of sync with
+// the [8]int originals.
 var (
 	escFam16LinbitsI32 = linbitsI32(&escFam16Linbits)
 	escFam24LinbitsI32 = linbitsI32(&escFam24Linbits)
 )
-
-// escFamImpossible is impossibleCost as an addressable int32 the fused kernels
-// broadcast into a lane vector (VPBROADCASTD on amd64, VLD1R on arm64, both take
-// memory, not an assembler immediate).
-var escFamImpossible = int32(impossibleCost)
 
 func linbitsI32(l *[8]int) [8]int32 {
 	var o [8]int32
@@ -23,11 +18,11 @@ func linbitsI32(l *[8]int) [8]int32 {
 	return o
 }
 
-// escFamilyAccumGo accumulates the escape-family big-values cost of pairs
+// escFamilyAccum accumulates the escape-family big-values cost of pairs
 // [0,len(ax)) into the two per-family 8-lane accumulators: acc16[j] for escape
-// table 16+j, acc24[j] for table 24+j. It is the pure-Go reference the AVX2/NEON
-// kernels are checked against and the fallback path when no kernel is compiled
-// in (the noasm build or an architecture without one).
+// table 16+j, acc24[j] for table 24+j. It is the escape-family half of
+// bigValuesPrefixCostGo, the pure-Go reference the fused prefix-cost kernels
+// are checked against.
 //
 // For each pair it adds, per family table j, the branch-free per-table cost:
 // impossibleCost if either magnitude exceeds that table's maxVal, else
@@ -45,11 +40,11 @@ func linbitsI32(l *[8]int) [8]int32 {
 // truncate-to-int32 also reduces mod 2^32, so the two agree whether or not the
 // running sum overflows (it never does here: the worst case is about
 // 288*impossibleCost ~ 3e8, far inside int32).
-func escFamilyAccumGo(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32) {
+func escFamilyAccum(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32) {
 	// Reslice to the common length so the bounds-check prover clears the ay,
 	// base16 and base24 accesses from the single len(ax) fact (they are distinct
-	// backing arrays). The kernels' contract requires all four to have length n;
-	// a shorter slice panics here exactly as the old per-pair index would.
+	// backing arrays). All four must have length n; a shorter slice panics here
+	// exactly as the old per-pair index would.
 	n := len(ax)
 	ay, base16, base24 = ay[:n], base16[:n], base24[:n]
 	for p := range ax {
@@ -59,7 +54,7 @@ func escFamilyAccumGo(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32) {
 			// Non-escaping pair (the common case): escCount is 0 and no table's
 			// maxVal can bind (the smallest is escMaxDirect+1), so every lane
 			// just adds base. This mirrors the former accumEscFamilyFlat and
-			// keeps the scalar path (noasm, non-AVX2, non-amd64/arm64) cheap.
+			// keeps the common case cheap.
 			for j := range 8 {
 				acc16[j] += b16
 				acc24[j] += b24
@@ -88,27 +83,22 @@ func escFamilyAccumGo(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32) {
 	}
 }
 
-// escFamilyPrefixGo is the pure-Go reference for escFamilyPrefix and its
-// noasm/non-amd64/arm64 fallback. escFamilyPrefix fuses the whole escape-family
-// phase of bigValuesPrefixCost into ONE call per granule big-values run (issue
-// #68): it walks the coding bands 0..nBands-1, keeping the two 8-lane
-// accumulators resident across the whole run, and after each band k writes the
-// CUMULATIVE prefix cost for escape tables 16..23 into prefixCost[k+1][16..23]
-// and 24..31 into prefixCost[k+1][24..31]. Band k covers big-values pairs
-// [pb[k], pb[k+1]); pb[0] is 0. A zero-width band still writes the (unchanged)
-// running accumulator. Row 0 and columns 0..15 are never touched, so the
-// caller's non-escape table costs and the empty-prefix row 0 survive. This is
-// the exact band loop bigValuesPrefixCost used before the fused kernels, so it
-// is output-neutral by construction and is the differential oracle the AVX2/NEON
-// kernels are pinned against. The base16/base24 codebook gather stays a Go
-// pre-pass in the caller, kept out of the vector path (the arch dispatchers
-// carry the same summary).
-func escFamilyPrefixGo(prefixCost *[40][32]int32, pb *[40]int, nBands int, ax, ay, base16, base24 *[288]int32) {
+// escFamilyPrefix is the escape-family phase of bigValuesPrefixCostGo in ONE
+// call per granule big-values run (issue #68): it walks the coding bands
+// 0..nBands-1, keeping the two 8-lane accumulators resident across the whole
+// run, and after each band k writes the CUMULATIVE prefix cost for escape
+// tables 16..23 into prefixCost[k+1][16..23] and 24..31 into
+// prefixCost[k+1][24..31]. Band k covers big-values pairs [pb[k], pb[k+1]);
+// pb[0] is 0. A zero-width band still writes the (unchanged) running
+// accumulator. Row 0 and columns 0..15 are never touched, so the caller's
+// non-escape table costs and the empty-prefix row 0 survive. The base16/base24
+// codebook gather stays a pre-pass in the caller.
+func escFamilyPrefix(prefixCost *[40][32]int32, pb *[40]int, nBands int, ax, ay, base16, base24 *[288]int32) {
 	var acc16, acc24 [8]int32
 	p := 0
 	for k := range nBands {
 		end := pb[k+1]
-		escFamilyAccumGo(&acc16, &acc24, ax[p:end], ay[p:end], base16[p:end], base24[p:end])
+		escFamilyAccum(&acc16, &acc24, ax[p:end], ay[p:end], base16[p:end], base24[p:end])
 		p = end
 		for j, t := range escFam16Tables {
 			prefixCost[k+1][t] = acc16[j]

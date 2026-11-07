@@ -69,7 +69,7 @@ func TestSubMinReduceAllocFree(t *testing.T) {
 // integration: the fused 32-wide reduction (rangeCostMin, including the invalid
 // columns' all-impossible ramp) must return exactly the minimum the scalar
 // rangeCost finds over validBigTables, for every range of every realistic
-// prefix-cost table. If the two ever diverged, chooseRegions' memo search
+// prefix-cost table. If the two ever diverged, chooseRegions' region search
 // (rangeCostMin) and its final costing (rangeCost) would disagree and the coded
 // bit count would be wrong.
 func TestRangeCostMinMatchesScalar(t *testing.T) {

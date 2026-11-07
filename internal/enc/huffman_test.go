@@ -111,11 +111,60 @@ func TestHuffLensSane(t *testing.T) {
 	}
 }
 
+// bruteChooseRegions finds the minimum-cost region split independently of
+// chooseRegions' prefix-sum search: running per-table pair-cost sums built
+// straight from pairCost (not bigValuesPrefixCost or rangeCost), every
+// (region0Count, region1Count) the ISO bound allows, and the cheapest table of
+// each range with ties to the lowest table number, as rangeCost breaks them.
+func bruteChooseRegions(ix *[576]int32, part spectrumPartition, lay *bandLayout) regionInfo {
+	pb := pairBoundaries(lay, part.bigValues)
+	var cum [32][]int
+	for _, tnum := range validBigTables {
+		bt := bigTables[tnum]
+		cum[tnum] = make([]int, part.bigValues+1)
+		for p := range part.bigValues {
+			cum[tnum][p+1] = cum[tnum][p] + pairCost(bt, abs32(ix[2*p]), abs32(ix[2*p+1]))
+		}
+	}
+	bruteRangeCost := func(a, b int) (best int, table uint8) {
+		if pb[a] == pb[b] {
+			return 0, 0
+		}
+		best = impossibleCost
+		for _, tnum := range validBigTables {
+			if cost := cum[tnum][pb[b]] - cum[tnum][pb[a]]; cost < best {
+				best, table = cost, tnum
+			}
+		}
+		return best, table
+	}
+
+	bestBits := impossibleCost
+	var want regionInfo
+	for r0 := range 16 {
+		for r1 := range 8 {
+			if r0+r1+2 > lay.nBands {
+				continue
+			}
+			a, c := regionBounds(r0, r1, lay.nBands)
+			c0, t0 := bruteRangeCost(0, a)
+			c1, t1 := bruteRangeCost(a, c)
+			c2, t2 := bruteRangeCost(c, lay.nBands)
+			if total := c0 + c1 + c2; total < bestBits {
+				bestBits = total
+				want = regionInfo{region0Count: r0, region1Count: r1, tableSelect: [3]uint8{t0, t1, t2}}
+			}
+		}
+	}
+	c1Bits, c1Table := count1Cost(ix, part)
+	want.bits = bestBits + c1Bits
+	want.count1Table = c1Table
+	return want
+}
+
 // TestChooseRegionsExhaustiveSmall brute-forces the minimum-cost region
-// split for a small, hand-picked granule independently of chooseRegions'
-// prefix-sum search (a plain O(range length) cost sum per candidate
-// range, not chooseRegions' own bigValuesPrefixCost/rangeCost), and
-// requires chooseRegions finds the same minimum and the same tie-broken
+// split for a small, hand-picked granule (bruteChooseRegions), and requires
+// chooseRegions finds the same minimum and the same tie-broken
 // (region0Count, region1Count).
 func TestChooseRegionsExhaustiveSmall(t *testing.T) {
 	var ix [576]int32
@@ -125,49 +174,45 @@ func TestChooseRegionsExhaustiveSmall(t *testing.T) {
 	lay := &layoutLong[0]
 
 	got := chooseRegions(&ix, part, lay)
+	want := bruteChooseRegions(&ix, part, lay)
 
-	pb := pairBoundaries(lay, part.bigValues)
-	bruteRangeCost := func(a, b int) int {
-		if pb[a] == pb[b] {
-			return 0
-		}
-		best := impossibleCost
-		for _, tnum := range validBigTables {
-			bt := bigTables[tnum]
-			cost := 0
-			for p := pb[a]; p < pb[b]; p++ {
-				cost += pairCost(bt, abs32(ix[2*p]), abs32(ix[2*p+1]))
-			}
-			if cost < best {
-				best = cost
-			}
-		}
-		return best
+	if got.bits != want.bits {
+		t.Fatalf("chooseRegions.bits = %d, want independently brute-forced minimum %d", got.bits, want.bits)
 	}
-
-	bestBits := impossibleCost
-	wantR0, wantR1 := -1, -1
-	for r0 := range 16 {
-		for r1 := range 8 {
-			if r0+r1+2 > lay.nBands {
-				continue
-			}
-			a, c := regionBounds(r0, r1, lay.nBands)
-			total := bruteRangeCost(0, a) + bruteRangeCost(a, c) + bruteRangeCost(c, lay.nBands)
-			if total < bestBits {
-				bestBits, wantR0, wantR1 = total, r0, r1
-			}
-		}
-	}
-	c1Bits, _ := count1Cost(&ix, part)
-	bestBits += c1Bits
-
-	if got.bits != bestBits {
-		t.Fatalf("chooseRegions.bits = %d, want independently brute-forced minimum %d", got.bits, bestBits)
-	}
-	if got.region0Count != wantR0 || got.region1Count != wantR1 {
+	if got.region0Count != want.region0Count || got.region1Count != want.region1Count {
 		t.Fatalf("chooseRegions picked region0Count=%d region1Count=%d, want %d,%d (tie-break: smallest region0Count then region1Count)",
-			got.region0Count, got.region1Count, wantR0, wantR1)
+			got.region0Count, got.region1Count, want.region0Count, want.region1Count)
+	}
+}
+
+// TestChooseRegionsExhaustiveDense runs the brute-force comparison on random
+// dense granules over all six layouts, including the 39-band short layouts
+// whose pb and prefixCost indexes reach the end of their [40] dimension (a
+// blockLong-typed granule over them is what TestOuterLoopShortConverges
+// drives). Region counts, table selections, count1 table and total bits must
+// all match.
+func TestChooseRegionsExhaustiveDense(t *testing.T) {
+	var seed uint64 = 2718
+	scales := []int32{1, 3, 15, 40, 700, maxQuant}
+	for _, lay := range prefixCostLayouts {
+		for _, scale := range scales {
+			for trial := range 12 {
+				var ix [576]int32
+				fillPrefixCostSpectrum(&seed, &ix, scale)
+				part := partitionSpectrum(&ix)
+				if trial%3 == 2 {
+					// Fewer big values than the layout has pairs, so some
+					// bands are empty or partial.
+					part = spectrumPartition{bigValues: int(testsignal.LCG(&seed) * 289)}
+				}
+				got := chooseRegions(&ix, part, lay)
+				want := bruteChooseRegions(&ix, part, lay)
+				if got != want {
+					t.Fatalf("short=%v nBands=%d scale=%d trial=%d bigValues=%d: chooseRegions = %+v, brute force = %+v",
+						lay.short, lay.nBands, scale, trial, part.bigValues, got, want)
+				}
+			}
+		}
 	}
 }
 
@@ -417,7 +462,7 @@ func TestEscFamilyTablePartition(t *testing.T) {
 	// Non-escape members must be genuine non-escape codebooks: zero linbits and
 	// a populated codes slice (which also rejects the invalid slots 4 and 14,
 	// whose codes are nil).
-	// These three are also bigValuesPrefixCost's precondition for calling
+	// These three are also bigValuesPrefixCostGo's precondition for calling
 	// pairCostDirect rather than the general pairCost: that half has no escape
 	// handling at all, so a member that grew linbits would be mispriced
 	// silently, and dim < 1 would make its maxDirect negative.
@@ -661,6 +706,170 @@ func TestBigValuesPrefixCostEscapeBoundary(t *testing.T) {
 		bigValuesPrefixCostRef(&ix, &pb, lay, &want)
 		if !prefixCostMatchesRef(&got, &want) {
 			t.Fatalf("lay.short=%v: bigValuesPrefixCost diverged from frozen reference on escape-boundary magnitudes", lay.short)
+		}
+	}
+}
+
+// writePairRef serializes one big-values pair the way the encoder did before it
+// packed the fields: codeword, then x's linbits and sign, then y's, each as its
+// own WriteBits call, so no field is ever wider than 32 bits.
+func writePairRef(w *bits.Writer, bt huffTable, x, y int32) {
+	ax, ay := abs32(x), abs32(y)
+	maxDirect := int32(bt.dim - 1)
+	ix, iy := ax, ay
+	if bt.linbits > 0 {
+		ix, iy = min(ax, maxDirect), min(ay, maxDirect)
+	}
+	e := bt.codes[int(ix)*bt.dim+int(iy)]
+	w.WriteBits(e.code, int(e.len))
+	for _, v := range [2]int32{x, y} {
+		if mag := abs32(v); bt.linbits > 0 && mag >= maxDirect {
+			w.WriteBits(uint32(mag-maxDirect), bt.linbits)
+		}
+		if v != 0 {
+			sign := uint32(0)
+			if v < 0 {
+				sign = 1
+			}
+			w.WriteBits(sign, 1)
+		}
+	}
+}
+
+// TestWritePairWideFields covers pairs whose packed field (codeword, two
+// linbits fields, two signs) exceeds 32 bits, which writePair must split into
+// two WriteBits calls. The pairs are found from bigTables, and the output is
+// compared bit for bit with writePairRef at every starting bit offset.
+func TestWritePairWideFields(t *testing.T) {
+	type wide struct {
+		table int
+		ix    int32 // codeword index, 15 means the magnitude escapes
+		iy    int32
+	}
+	var cases []wide
+	for tn, bt := range &bigTables {
+		if bt.linbits == 0 {
+			continue
+		}
+		for i := range int32(bt.dim) {
+			for j := range int32(bt.dim) {
+				width := int(bt.codes[int(i)*bt.dim+int(j)].len)
+				for _, v := range [2]int32{i, j} {
+					if v > 0 {
+						width++ // sign
+					}
+					if v == int32(bt.dim-1) {
+						width += bt.linbits
+					}
+				}
+				if width > 32 {
+					cases = append(cases, wide{tn, i, j})
+				}
+			}
+		}
+	}
+	if len(cases) == 0 {
+		t.Fatal("no table and pair has a field wider than 32 bits; the split path is untested")
+	}
+
+	for _, c := range cases {
+		checkWritePairWide(t, c.table, bigTables[c.table], c.ix, c.iy)
+	}
+
+	// The real tables reach only 36 bits, and their one wide codeword starts
+	// with zero bits, so a wrong shift of the upper half would go unseen. A
+	// synthetic dim-2 escape table with 19-bit codewords of mixed bits spans
+	// the 47-bit worst case.
+	synth := huffTable{dim: 2, linbits: 13, codes: []codeEntry{{0x6A5A5, 19}, {0x5C3C3, 19}, {0x71E1E, 19}, {0x5B2D6, 19}}}
+	checkWritePairWide(t, -1, synth, 1, 1)
+}
+
+// checkWritePairWide writes the pairs of table bt whose codeword indexes are
+// (ix, iy), over escape values, signs and starting bit offsets, and compares
+// writePair with writePairRef. An index of dim-1 is an escaped magnitude.
+func checkWritePairWide(t *testing.T, table int, bt huffTable, ix, iy int32) {
+	t.Helper()
+	maxDirect := int32(bt.dim - 1)
+	maxVal := maxDirect + int32(1)<<uint(bt.linbits) - 1
+	mags := func(idx int32) []int32 {
+		if idx < maxDirect {
+			return []int32{idx}
+		}
+		return []int32{maxDirect, maxDirect + 1, maxDirect + int32(1)<<uint(bt.linbits)/2, maxVal}
+	}
+	for _, mx := range mags(ix) {
+		for _, my := range mags(iy) {
+			for _, sx := range [2]int32{1, -1} {
+				for _, sy := range [2]int32{1, -1} {
+					x, y := sx*mx, sy*my
+					for off := range 8 {
+						got, want := bits.NewWriter(nil), bits.NewWriter(nil)
+						got.WriteBits(0x55, off)
+						want.WriteBits(0x55, off)
+						writePair(&got, bt, x, y)
+						writePairRef(&want, bt, x, y)
+						if got.BitsWritten() != want.BitsWritten() {
+							t.Fatalf("table %d pair (%d,%d) offset %d: %d bits, want %d", table, x, y, off, got.BitsWritten(), want.BitsWritten())
+						}
+						if !slices.Equal(got.Flush(), want.Flush()) {
+							t.Fatalf("table %d pair (%d,%d) offset %d: bytes differ from the per-field serializer", table, x, y, off)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestWriteSpectrumCount1MatchesPerFieldWrites compares the count1 quads
+// writeSpectrum packs into one field (codeword plus sign bits) with separate
+// WriteBits calls for the codeword and each sign, for both count1 tables and
+// every starting bit offset.
+func TestWriteSpectrumCount1MatchesPerFieldWrites(t *testing.T) {
+	var seed uint64 = 31
+	lay := &layoutLong[0]
+	for table := range uint8(2) {
+		var ix [576]int32
+		const quads = 40
+		for i := range 4 * quads {
+			switch r := testsignal.LCG(&seed); {
+			case r < 0.35:
+			case r < 0.675:
+				ix[i] = 1
+			default:
+				ix[i] = -1
+			}
+		}
+		part := spectrumPartition{bigValues: 0, count1: quads}
+		ri := regionInfo{count1Table: table}
+		for off := range 8 {
+			got := bits.NewWriter(nil)
+			got.WriteBits(0x2a, off)
+			writeSpectrum(&got, &ix, part, ri, lay)
+
+			want := bits.NewWriter(nil)
+			want.WriteBits(0x2a, off)
+			for q := range quads {
+				v, w, x, y := ix[4*q], ix[4*q+1], ix[4*q+2], ix[4*q+3]
+				idx := quadIndex(v, w, x, y)
+				if table == 0 {
+					want.WriteBits(count1A[idx].code, int(count1A[idx].len))
+				} else {
+					want.WriteBits(uint32(^idx&0xF), 4)
+				}
+				for _, e := range [4]int32{v, w, x, y} {
+					if e != 0 {
+						sign := uint32(0)
+						if e < 0 {
+							sign = 1
+						}
+						want.WriteBits(sign, 1)
+					}
+				}
+			}
+			if got.BitsWritten() != want.BitsWritten() || !slices.Equal(got.Flush(), want.Flush()) {
+				t.Fatalf("count1 table %d offset %d: packed output differs from per-field writes", table, off)
+			}
 		}
 	}
 }

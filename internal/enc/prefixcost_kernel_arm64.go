@@ -9,8 +9,10 @@ package enc
 // magnitude above 15 uses the clamped-to-15 row, which is exact for every table
 // that can represent it (prefixcost_kernel.go), and TestPrefixCostParity,
 // TestPrefixCostBounds and FuzzPrefixCostParity check it against the
-// reference.
+// reference. Before a kernel runs it panics on a layout the kernel could not
+// stay inside (checkPrefixCostLayout), as the Go reference does.
 func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCost *[40][32]int32) {
+	checkPrefixCostLayout(ix, pb, lay.nBands)
 	prefixCostNEON(ix, pb, lay.nBands, prefixCost, &pairCostRows, &pairCostBound)
 }
 

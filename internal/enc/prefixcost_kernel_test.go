@@ -112,3 +112,38 @@ func TestPrefixCostAllocFree(t *testing.T) {
 		t.Fatalf("bigValuesPrefixCost allocated %v times per run, want 0", n)
 	}
 }
+
+// TestPrefixCostRejectsBadLayout requires a panic, on every build, for layouts
+// the kernels cannot take: nBands above 39 (or negative), and a last pair
+// boundary beyond the 288 pairs of ix. Where a kernel is linked the dispatcher
+// must panic before it runs; elsewhere the Go reference does through its
+// bounds checks.
+func TestPrefixCostRejectsBadLayout(t *testing.T) {
+	cases := []struct {
+		name   string
+		nBands int
+		last   int // pb[nBands] when in range
+	}{
+		{"nBands 40", 40, 0},
+		{"nBands negative", -1, 0},
+		{"pb[nBands] beyond ix", 22, 289},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lay := layoutLong[0]
+			lay.nBands = tc.nBands
+			var ix [576]int32
+			var pb [40]int
+			if tc.nBands >= 0 && tc.nBands < len(pb) {
+				pb[tc.nBands] = tc.last
+			}
+			var pc [40][32]int32
+			defer func() {
+				if recover() == nil {
+					t.Fatal("bigValuesPrefixCost accepted an out-of-range layout")
+				}
+			}()
+			bigValuesPrefixCost(&ix, &pb, &lay, &pc)
+		})
+	}
+}

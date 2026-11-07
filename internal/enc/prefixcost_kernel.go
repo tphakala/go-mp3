@@ -39,3 +39,13 @@ func buildPairCostRows() (rows [escTableDim * escTableDim][32]int32, bound [32]i
 	}
 	return rows, bound
 }
+
+// checkPrefixCostLayout panics, as the Go reference's bounds checks do, when
+// the layout would make a kernel leave its arrays: nBands above 39 reads
+// pb[40] and writes prefixCost[40], and pb[nBands] above the 288 pairs of ix
+// reads past ix. One compare per call; it does not allocate.
+func checkPrefixCostLayout(ix *[576]int32, pb *[40]int, nBands int) {
+	if uint(nBands) >= uint(len(pb)) || pb[nBands] > len(ix)/2 {
+		panic("enc: prefix cost layout out of range")
+	}
+}

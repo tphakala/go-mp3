@@ -188,9 +188,10 @@ func pairCostEsc(t huffTable, ax, ay int32) int {
 
 // pairBoundaries returns, for coding-band layout lay and a big-values
 // region of bigValues pairs, the cumulative pair count through each of
-// lay's coding bands (pb[0] = 0, pb[lay.nBands] = bigValues), clamped so a
-// region that runs out of big-values pairs mid-band never claims pairs
-// beyond what actually exists. This mirrors l3Huffman's walk exactly:
+// lay's coding bands (for bigValues in 0..288: pb[0] = 0, pb[lay.nBands] =
+// bigValues), clamped so a region that runs out of big-values pairs mid-band
+// never claims pairs beyond what actually exists. This mirrors l3Huffman's
+// walk exactly:
 // bigValCnt there stops the decode the moment it hits 0, regardless of how
 // many nominal sfb's a region's side-info count implies
 // (internal/dec/huffman.go:151, :199-204). chooseRegions and writeSpectrum

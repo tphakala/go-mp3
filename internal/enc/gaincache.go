@@ -82,14 +82,19 @@ func (c *quantCache) ensure(b, off, w, k int) {
 // boundAt returns the monotone lower bound on the part3 bits of the spectrum
 // quantized at gg: the sum over bands of their floor sums. q0[b] is
 // quantGainBase plus band b's extra quarter-steps, so band b's exponent at gg
-// is q0[b]-gg.
-func (c *quantCache) boundAt(gg int, q0 *[39]int, lay *bandLayout) int {
+// is q0[b]-gg. Every band floor is non-negative, so it stops filling bands as
+// soon as the running sum exceeds limit and returns that partial sum; callers
+// only compare the result with limit.
+func (c *quantCache) boundAt(gg int, q0 *[39]int, lay *bandLayout, limit int) int {
 	sum, off := 0, 0
 	for b := range lay.nBands {
 		w := lay.width[b]
 		k := q0[b] - gg - qMin
 		c.ensure(b, off, w, k)
 		sum += int(c.bound[b][k])
+		if sum > limit {
+			return sum
+		}
 		off += w
 	}
 	return sum
@@ -116,13 +121,13 @@ func (c *quantCache) codeAt(gg int, q0 *[39]int, lay *bandLayout, gc *granuleCod
 // the first admitted gain; 255 stands in as an always-admitted sentinel
 // because the exact scan always codes it.
 func (c *quantCache) firstAdmissibleGain(gg0, effBudget int, q0 *[39]int, lay *bandLayout) int {
-	if gg0 >= 255 || c.boundAt(gg0, q0, lay) <= effBudget {
+	if gg0 >= 255 || c.boundAt(gg0, q0, lay, effBudget) <= effBudget {
 		return gg0
 	}
 	lo, hi := gg0+1, 255
 	for lo < hi {
 		mid := (lo + hi) / 2
-		if c.boundAt(mid, q0, lay) <= effBudget {
+		if c.boundAt(mid, q0, lay, effBudget) <= effBudget {
 			hi = mid
 		} else {
 			lo = mid + 1

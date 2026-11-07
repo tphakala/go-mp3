@@ -79,15 +79,9 @@ func regionsFor(ix *[576]int32, part spectrumPartition, lay *bandLayout, blockTy
 // spectral truncation) do not duplicate the quantize/partition/choose
 // sequence.
 func recode(xr *[576]float64, gg int, lay *bandLayout, gc *granuleCoding) {
-	requantize(xr, gg, lay, gc)
-	gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
-}
-
-// requantize is recode without the region search: quantize xr at gg under gc's
-// scalefactor state and partition the result, leaving gc.ri untouched.
-func requantize(xr *[576]float64, gg int, lay *bandLayout, gc *granuleCoding) {
 	quantizeGranule(xr, gg, &gc.sf, lay, &gc.ix)
 	gc.part = partitionSpectrum(&gc.ix)
+	gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
 }
 
 // codeGranule runs the inner rate loop for one granule-channel: starting at
@@ -124,12 +118,11 @@ func codeGranule(xr *[576]float64, budgetBits int, lay *bandLayout, gc *granuleC
 	qc.check(xr, lay)
 
 	gg := minGlobalGain(xr, &gc.sf, lay)
-	q0 := bandExponentBase(&gc.sf, lay)
-
 	if fast {
 		recode(xr, gg, lay, gc)
-		gg = searchGlobalGainFast(xr, effBudget, gg, lay, gc, qc, &q0)
+		gg = searchGlobalGainFast(xr, effBudget, gg, lay, gc, qc)
 	} else {
+		q0 := bandExponentBase(&gc.sf, lay)
 		gg = searchGlobalGainExact(qc, &q0, effBudget, gg, lay, gc)
 	}
 
@@ -208,11 +201,10 @@ func searchGlobalGainExact(qc *quantCache, q0 *[39]int, effBudget, gg0 int, lay 
 // gg 255. Left alone, codeGranule's truncation fallback would then zero
 // spectral lines even though a within-budget coding exists lower down. So when
 // the search lands on a gg that does not fit, it re-runs the exact scan from
-// the minimum gain (through qc, with q0 the per-band exponent base from
-// bandExponentBase), which recovers the true smallest fitting gg (or reaches
+// the minimum gain (through qc), which recovers the true smallest fitting gg (or reaches
 // 255 only when nothing fits). The fast path therefore never forces truncation
 // unless the exact path also would.
-func searchGlobalGainFast(xr *[576]float64, effBudget, gg int, lay *bandLayout, gc *granuleCoding, qc *quantCache, q0 *[39]int) int {
+func searchGlobalGainFast(xr *[576]float64, effBudget, gg int, lay *bandLayout, gc *granuleCoding, qc *quantCache) int {
 	if gc.ri.bits <= effBudget || gg >= 255 {
 		return gg
 	}
@@ -231,7 +223,8 @@ func searchGlobalGainFast(xr *[576]float64, effBudget, gg int, lay *bandLayout, 
 		// The lower_bound did not find a fitting gg: either nothing in
 		// [gg, 255] fits, or a top-of-range bump hid a lower fit. Recover the
 		// exact result rather than truncating a coding that fits at some gg.
-		return searchGlobalGainExact(qc, q0, effBudget, gg, lay, gc)
+		q0 := bandExponentBase(&gc.sf, lay)
+		return searchGlobalGainExact(qc, &q0, effBudget, gg, lay, gc)
 	}
 	return lo
 }

@@ -70,8 +70,7 @@ func fillPrefixCostSpectrum(seed *uint64, ix *[576]int32, scale int32) {
 // guards the harness there; the arm64 and amd64 default builds are what it
 // tests.
 func TestPrefixCostParity(t *testing.T) {
-	const startSeed uint64 = 4242
-	seed := startSeed
+	var seed uint64 = 4242
 	scales := []int32{1, 2, 3, 8, 15, 16, 40, 255, 3000, maxQuant}
 	for li, lay := range prefixCostLayouts {
 		for _, scale := range scales {
@@ -79,7 +78,7 @@ func TestPrefixCostParity(t *testing.T) {
 				var ix [576]int32
 				fillPrefixCostSpectrum(&seed, &ix, scale)
 				part := partitionSpectrum(&ix)
-				ctx := fmt.Sprintf("%s scale=%d seed=%d", prefixCostLayoutName(li), scale, startSeed)
+				ctx := fmt.Sprintf("%s scale=%d", prefixCostLayoutName(li), scale)
 				checkPrefixCost(t, &ix, lay, part.bigValues, ctx)
 				checkPrefixCost(t, &ix, lay, int(testsignal.LCG(&seed)*289), ctx)
 			}
@@ -110,8 +109,7 @@ func randomPartitionLayout(seed *uint64) *bandLayout {
 // bands short, against the Go reference. Like TestPrefixCostParity it compares
 // the reference with itself wherever no kernel is linked.
 func TestPrefixCostRandomPartitions(t *testing.T) {
-	const startSeed uint64 = 777
-	seed := startSeed
+	var seed uint64 = 777
 	scales := []int32{1, 15, 16, 300, maxQuant}
 	for trial := range 600 {
 		lay := randomPartitionLayout(&seed)
@@ -119,7 +117,7 @@ func TestPrefixCostRandomPartitions(t *testing.T) {
 		var ix [576]int32
 		fillPrefixCostSpectrum(&seed, &ix, scale)
 		bigValues := int(testsignal.LCG(&seed) * 289)
-		ctx := fmt.Sprintf("random layout nBands=%d scale=%d seed=%d trial=%d", lay.nBands, scale, startSeed, trial)
+		ctx := fmt.Sprintf("random layout nBands=%d scale=%d trial=%d", lay.nBands, scale, trial)
 		checkPrefixCost(t, &ix, lay, bigValues, ctx)
 	}
 }

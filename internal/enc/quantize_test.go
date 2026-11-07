@@ -686,17 +686,13 @@ func randomScfState(seed *uint64, lay *bandLayout) scfState {
 // either side of one band's fit threshold at a random gg.
 func TestMinGlobalGainMatchesScan(t *testing.T) {
 	var seed uint64 = 99
-	layouts := []*bandLayout{
-		&layoutLong[0], &layoutLong[1], &layoutLong[2],
-		&layoutShort[0], &layoutShort[1], &layoutShort[2],
-	}
 	check := func(name string, xr *[576]float64, sf *scfState, lay *bandLayout) {
 		t.Helper()
 		if got, want := minGlobalGain(xr, sf, lay), minGlobalGainScan(xr, sf, lay); got != want {
 			t.Fatalf("%s (short=%v nBands=%d): minGlobalGain = %d, scan = %d", name, lay.short, lay.nBands, got, want)
 		}
 	}
-	for _, lay := range layouts {
+	for _, lay := range prefixCostLayouts {
 		for trial := range 300 {
 			sf := randomScfState(&seed, lay)
 			var xr [576]float64

@@ -120,7 +120,7 @@ type regionInfo struct {
 // pairCost itself stays the one entry point that is correct for an arbitrary
 // table. Its production callers are buildPairCostRows (the prefix-cost
 // kernels' pairCostRows, filled at package init in the amd64 and arm64
-// non-noasm builds) and buildPairMinDirect (part3bound.go:33, the exact scan's
+// non-noasm builds) and buildPairMinDirect (part3bound.go, the exact scan's
 // skip bound, every build); the tests use it as the oracle that both halves
 // are checked against.
 func pairCost(t huffTable, ax, ay int32) int {

@@ -37,7 +37,7 @@ smr_reduce:
     VPMINSD X3, X0, X0
     VPSHUFD $0xB1, X0, X3       // swap 32-bit within pairs
     VPMINSD X3, X0, X0          // lane0 = min over all 8 lanes
-    MOVQ X0, AX                 // EAX = running min
+    VMOVQ X0, AX                // EAX = running min (VMOVQ, not MOVQ: YMM uppers are dirty)
     // scalar tail: (n mod 8) residuals at &a[fullBlocks*8], &b[...]
     MOVQ CX, DX
     ANDQ $7, DX

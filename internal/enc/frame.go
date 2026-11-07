@@ -98,33 +98,39 @@ func requantize(xr *[576]float64, gg int, lay *bandLayout, gc *granuleCoding) {
 // spectrum, so it terminates).
 //
 // fast selects the search strategy. With fast false (RateControlExact, the
-// default) searchGlobalGainExact scans gg upward one step at a time and always
-// finds the exact smallest fitting gg, the finest quantization within budget;
-// it skips the region search at steps a cheap bound proves over budget, so on
-// frames that start far below their fitting gain it quantizes at every step but
-// runs the full coding at few of them.
-// With fast true (RateControlFast) searchGlobalGainFast binary-searches
-// instead, about log2(255) recodes, several times faster than the exact scan on
-// escalation-heavy frames; because bits(gg) is not strictly monotone it can
-// settle a step or two above the exact choice, so its output is not
-// bit-identical to the exact scan. See each helper for the details.
+// default) searchGlobalGainExact finds the exact smallest fitting gg, the
+// finest quantization within budget. It does not quantize every step from
+// minGlobalGain: a monotone lower bound on the Huffman bits (monoPairFloor)
+// lets it start at the first gain that could fit, and it serves quantization
+// from qc, so on frames that start far below their fitting gain it runs the
+// quantizer and the full coding at few of the steps. With fast true
+// (RateControlFast) searchGlobalGainFast binary-searches instead, about
+// log2(255) recodes; because bits(gg) is not strictly monotone it can settle a
+// step or two above the exact choice, so its output is not bit-identical to
+// the exact scan. See each helper for the details.
+//
+// qc must have been reset for xr and lay (and stays valid only while xr is
+// unchanged): codeGranule panics otherwise. outerLoop resets it once per call
+// and shares it across its iterations; any other caller resets it first.
 //
 // The rate loop targets min(budgetBits, maxPart23Length): see
 // maxPart23Length's doc comment for why. Any unused remainder of budgetBits
 // (whether from the cap or simply an easy-to-code granule) becomes zero
 // stuffing at the frame tail, same as any other unused main-data budget;
 // rolling it to another granule via a bit reservoir is deferred to Phase 4.
-func codeGranule(xr *[576]float64, budgetBits int, lay *bandLayout, gc *granuleCoding, fast bool) {
+func codeGranule(xr *[576]float64, budgetBits int, lay *bandLayout, gc *granuleCoding, fast bool, qc *quantCache) {
 	gc.lay = lay
 	effBudget := min(budgetBits, maxPart23Length)
+	qc.check(xr, lay)
 
 	gg := minGlobalGain(xr, &gc.sf, lay)
-	recode(xr, gg, lay, gc)
+	q0 := bandExponentBase(&gc.sf, lay)
 
 	if fast {
-		gg = searchGlobalGainFast(xr, effBudget, gg, lay, gc)
+		recode(xr, gg, lay, gc)
+		gg = searchGlobalGainFast(xr, effBudget, gg, lay, gc, qc, &q0)
 	} else {
-		gg = searchGlobalGainExact(xr, effBudget, gg, lay, gc)
+		gg = searchGlobalGainExact(qc, &q0, effBudget, gg, lay, gc)
 	}
 
 	for gc.ri.bits > effBudget && zeroTopSfb(&gc.ix, lay) {
@@ -136,29 +142,47 @@ func codeGranule(xr *[576]float64, budgetBits int, lay *bandLayout, gc *granuleC
 	gc.part23Length = gc.part2Bits + gc.ri.bits
 }
 
-// searchGlobalGainExact scans global_gain upward from gg (already recoded into
-// gc) one step at a time until gc's coding fits effBudget or gg reaches 255. It
-// returns the smallest gg in [gg, 255] whose coding fits, else 255, and leaves
-// gc holding that gg's coding. This is the exact rate-control behavior
-// (RateControlExact): it always lands on the finest quantization within budget.
-//
-// Each step quantizes and partitions, then computes part3LowerBound, a cheap
-// sound lower bound on the Huffman bits. A step whose bound already exceeds
-// effBudget cannot fit, so the region search (the expensive part of recode) is
-// skipped for it; the result is identical to recoding every step. During
-// skipped steps gc.ri still holds the last full coding, which was over budget,
-// so the loop condition stays true; gg 255 is never skipped, so on return gc
-// holds a complete coding (ix, part and ri) for the returned gg.
-func searchGlobalGainExact(xr *[576]float64, effBudget, gg int, lay *bandLayout, gc *granuleCoding) int {
-	for gc.ri.bits > effBudget && gg < 255 {
-		gg++
-		requantize(xr, gg, lay, gc)
-		if gg < 255 && part3LowerBound(&gc.ix, gc.part, effBudget) > effBudget {
-			continue
-		}
-		gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
+// bandExponentBase returns quantGainBase plus each band's extra quarter-steps
+// under sf: band b quantizes at exponent q0[b]-gg for global_gain gg, the
+// quantity quantCache is keyed by.
+func bandExponentBase(sf *scfState, lay *bandLayout) (q0 [39]int) {
+	for b := range lay.nBands {
+		q0[b] = quantGainBase + sf.bandExtraQuarters(b, lay)
 	}
-	return gg
+	return q0
+}
+
+// searchGlobalGainExact finds the smallest gg in [gg0, 255] whose coding fits
+// effBudget, else 255, and leaves gc holding that gg's complete coding (ix,
+// part and ri). This is the exact rate-control behavior (RateControlExact): it
+// always lands on the finest quantization within budget. It codes gg itself,
+// so the caller need not have coded gg0 first; q0 is codeGranule's per-band
+// exponent base (quantGainBase plus the band's extra quarter-steps).
+//
+// The scan starts at the first gain the cache's monotone bit bound admits
+// (firstAdmissibleGain). Every gain below it has a bound over budget, hence
+// cannot fit, so the first fitting gain is at or above the start and the scan
+// from there is the linear scan from gg0 with its provably failing prefix cut
+// off: same gg, same gc.
+//
+// Each step then quantizes and partitions from the cache and computes
+// part3LowerBound, a cheaper-than-coding and tighter bound on the Huffman bits
+// (it depends on the partition, which is why it cannot drive the search). A
+// step whose bound already exceeds effBudget cannot fit, so the region search
+// is skipped for it; the result is identical to coding every step. gg 255 is
+// never skipped.
+func searchGlobalGainExact(qc *quantCache, q0 *[39]int, effBudget, gg0 int, lay *bandLayout, gc *granuleCoding) int {
+	gg := qc.firstAdmissibleGain(gg0, effBudget, q0, lay)
+	for {
+		qc.codeAt(gg, q0, lay, gc)
+		if gg == 255 || part3LowerBound(&gc.ix, gc.part, effBudget) <= effBudget {
+			gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
+			if gc.ri.bits <= effBudget || gg == 255 {
+				return gg
+			}
+		}
+		gg++
+	}
 }
 
 // searchGlobalGainFast binary-searches global_gain for the smallest fitting
@@ -184,10 +208,11 @@ func searchGlobalGainExact(xr *[576]float64, effBudget, gg int, lay *bandLayout,
 // gg 255. Left alone, codeGranule's truncation fallback would then zero
 // spectral lines even though a within-budget coding exists lower down. So when
 // the search lands on a gg that does not fit, it re-runs the exact scan from
-// the minimum gain, which recovers the true smallest fitting gg (or reaches
+// the minimum gain (through qc, with q0 the per-band exponent base from
+// bandExponentBase), which recovers the true smallest fitting gg (or reaches
 // 255 only when nothing fits). The fast path therefore never forces truncation
 // unless the exact path also would.
-func searchGlobalGainFast(xr *[576]float64, effBudget, gg int, lay *bandLayout, gc *granuleCoding) int {
+func searchGlobalGainFast(xr *[576]float64, effBudget, gg int, lay *bandLayout, gc *granuleCoding, qc *quantCache, q0 *[39]int) int {
 	if gc.ri.bits <= effBudget || gg >= 255 {
 		return gg
 	}
@@ -206,8 +231,7 @@ func searchGlobalGainFast(xr *[576]float64, effBudget, gg int, lay *bandLayout, 
 		// The lower_bound did not find a fitting gg: either nothing in
 		// [gg, 255] fits, or a top-of-range bump hid a lower fit. Recover the
 		// exact result rather than truncating a coding that fits at some gg.
-		recode(xr, gg, lay, gc)
-		return searchGlobalGainExact(xr, effBudget, gg, lay, gc)
+		return searchGlobalGainExact(qc, q0, effBudget, gg, lay, gc)
 	}
 	return lo
 }
@@ -520,15 +544,18 @@ func assembleFrame(dst []byte, bitrateIndex, srIndex, padding, mode int, gr *[2]
 
 // AppendFramePin codes xr[g][ch] through the production codeGranule (real
 // budget arithmetic, including the maxPart23Length cap) and assembles one
-// frame via the production assembleFrame. Test-only.
+// frame via the production assembleFrame, quantizing through one quantCache
+// reset per granule-channel. Test-only.
 func AppendFramePin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr *[2][2][576]float64, nch int) []byte {
 	lay := &layoutLong[srIndex]
 	budget := granuleBudgetBits(bitrateIndex, srIndex, padding, nch)
 
+	qc := new(quantCache)
 	var gr [2][2]granuleCoding
 	for g := range 2 {
 		for ch := range nch {
-			codeGranule(&xr[g][ch], budget, lay, &gr[g][ch], false)
+			qc.reset(&xr[g][ch], lay)
+			codeGranule(&xr[g][ch], budget, lay, &gr[g][ch], false, qc)
 		}
 	}
 	return assembleFrame(dst, bitrateIndex, srIndex, padding, mode, &gr, nch)
@@ -564,6 +591,7 @@ func AppendFrameScfPin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr 
 	lay := &layoutLong[srIndex]
 	budget := granuleBudgetBits(bitrateIndex, srIndex, padding, nch)
 
+	qc := new(quantCache)
 	var gr [2][2]granuleCoding
 	for g := range 2 {
 		for ch := range nch {
@@ -584,7 +612,8 @@ func AppendFrameScfPin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr 
 			gc.scfCompress = idx
 			gc.part2Bits = part2
 
-			codeGranule(&xr[g][ch], budget-part2, lay, gc, false)
+			qc.reset(&xr[g][ch], lay)
+			codeGranule(&xr[g][ch], budget-part2, lay, gc, false, qc)
 		}
 	}
 
@@ -617,6 +646,7 @@ func AppendFrameScfPin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr 
 func AppendFrameShortPin(dst []byte, bitrateIndex, srIndex, nch int, blockTypes *[2][2]int, xr *[2][2][576]float64, xmin *[2][2][39]float64) []byte {
 	budget := granuleBudgetBits(bitrateIndex, srIndex, 0, nch)
 
+	qc := new(quantCache)
 	var gr [2][2]granuleCoding
 	for g := range 2 {
 		for ch := range nch {
@@ -626,7 +656,7 @@ func AppendFrameShortPin(dst []byte, bitrateIndex, srIndex, nch int, blockTypes 
 			gc.blockType = bt
 
 			var best granuleCoding
-			outerLoop(&xr[g][ch], &xmin[g][ch], budget, lay, gc, &best, false)
+			outerLoop(&xr[g][ch], &xmin[g][ch], budget, lay, gc, &best, false, qc)
 		}
 	}
 
@@ -656,6 +686,7 @@ func AppendFrameShortPin(dst []byte, bitrateIndex, srIndex, nch int, blockTypes 
 func AppendFrameShortPinSG(dst []byte, bitrateIndex, srIndex, nch int, blockTypes *[2][2]int, xr *[2][2][576]float64, subblockGain *[2][2][3]int) []byte {
 	budget := granuleBudgetBits(bitrateIndex, srIndex, 0, nch)
 
+	qc := new(quantCache)
 	var gr [2][2]granuleCoding
 	for g := range 2 {
 		for ch := range nch {
@@ -672,7 +703,8 @@ func AppendFrameShortPinSG(dst []byte, bitrateIndex, srIndex, nch int, blockType
 			gc.scfCompress = idx
 			gc.part2Bits = part2
 
-			codeGranule(&xr[g][ch], budget-part2, lay, gc, false)
+			qc.reset(&xr[g][ch], lay)
+			codeGranule(&xr[g][ch], budget-part2, lay, gc, false, qc)
 		}
 	}
 

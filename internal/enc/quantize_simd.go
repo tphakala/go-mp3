@@ -24,3 +24,15 @@ func quantizeGranule(xr *[576]float64, gg int, sf *scfState, lay *bandLayout, ix
 	}
 	f64.QuantizePow34Bands(ix[:], xr[:], lay.width[:lay.nBands], scales[:lay.nBands], quantRounding, maxQuant)
 }
+
+// quantizeBand quantizes one band with scale is, the per-band unit the quantCache
+// fills on a miss. It is a one-element QuantizePow34Bands call, which computes
+// the same lines as the whole-granule call above because simd keeps no state
+// across bands (its zero skip depends only on the rounding and on every scale
+// being non-negative). TestQuantizeGranuleParity assembles granules from this
+// and compares them with quantizeGranuleGo.
+func quantizeBand(dst []int32, src []float64, is float64) {
+	widths := [1]int{len(src)}
+	scales := [1]float64{is}
+	f64.QuantizePow34Bands(dst, src, widths[:], scales[:], quantRounding, maxQuant)
+}

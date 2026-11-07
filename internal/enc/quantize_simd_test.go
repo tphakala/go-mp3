@@ -116,6 +116,27 @@ func checkQuantizeGranule(t *testing.T, xr *[576]float64, gg int, sf *scfState, 
 	}
 	quantizeGranule(xr, gg, sf, lay, &got)
 	quantizeGranuleGo(xr, gg, sf, lay, &want)
+
+	// The per-band cache assembles a granule from quantizeBand calls; they must
+	// reproduce the whole-granule lines exactly.
+	var banded [576]int32
+	for i := range banded {
+		banded[i] = maxQuant + 1
+	}
+	off := 0
+	for b := range lay.nBands {
+		w := lay.width[b]
+		quantizeBand(banded[off:off+w], xr[off:off+w], stepQ((quantGainBase-gg)+sf.bandExtraQuarters(b, lay)))
+		off += w
+	}
+	if banded != want {
+		for i := range banded {
+			if banded[i] != want[i] {
+				t.Fatalf("%s short=%v gg=%d line %d (xr=%v bits=%#x): quantizeBand got %d want %d",
+					ctx, lay.short, gg, i, xr[i], math.Float64bits(xr[i]), banded[i], want[i])
+			}
+		}
+	}
 	if got == want {
 		return
 	}

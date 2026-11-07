@@ -180,8 +180,8 @@ func (s *probeStats) checkSelection(t *testing.T, blkName string, bt, srIndex in
 	ex.blockType, fa.blockType = bt, bt
 	ex.sf, fa.sf = *sf, *sf
 	x1, x2 := *xr, *xr
-	codeGranule(&x1, budget, lay, &ex, false)
-	codeGranule(&x2, budget, lay, &fa, true)
+	codeGranuleFresh(&x1, budget, lay, &ex, false)
+	codeGranuleFresh(&x2, budget, lay, &fa, true)
 	if ex.globalGain != exactGG || fa.globalGain != fastGG {
 		t.Fatalf("model/production disagree at blk=%s sr=%d budget=%d: model exact=%d fast=%d, production exact=%d fast=%d",
 			blkName, srIndex, budget, exactGG, fastGG, ex.globalGain, fa.globalGain)
@@ -307,12 +307,12 @@ func TestProbeModelsMatchProduction(t *testing.T) {
 				var exactGC granuleCoding
 				exactGC.blockType, exactGC.sf = blk, sf
 				x1 := xr
-				codeGranule(&x1, budget, lay, &exactGC, false)
+				codeGranuleFresh(&x1, budget, lay, &exactGC, false)
 
 				var fastGC granuleCoding
 				fastGC.blockType, fastGC.sf = blk, sf
 				x2 := xr
-				codeGranule(&x2, budget, lay, &fastGC, true)
+				codeGranuleFresh(&x2, budget, lay, &fastGC, true)
 
 				// The models select a gg from the bits table; production applies
 				// the same choice then may enter the truncation fallback (gg=255,
@@ -379,8 +379,8 @@ func TestCodeGranuleFastRecoversTopBump(t *testing.T) {
 	ex.blockType, fa.blockType = blockShort, blockShort
 	ex.sf, fa.sf = sf, sf
 	x1, x2 := xr, xr
-	codeGranule(&x1, budget, lay, &ex, false)
-	codeGranule(&x2, budget, lay, &fa, true)
+	codeGranuleFresh(&x1, budget, lay, &ex, false)
+	codeGranuleFresh(&x2, budget, lay, &fa, true)
 
 	if fa.globalGain != ex.globalGain {
 		t.Fatalf("fast did not recover the exact gg on a top bump: fast globalGain=%d, exact=%d (the pre-fix search would truncate at 255)", fa.globalGain, ex.globalGain)

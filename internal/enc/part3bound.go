@@ -121,3 +121,99 @@ func part3LowerBound(ix *[576]int32, part spectrumPartition, limit int) int {
 	c1, _ := count1Cost(ix, part)
 	return lb + c1
 }
+
+// nMagClasses is the number of magnitude classes magClassOf distinguishes.
+const nMagClasses = 29
+
+// magClassOf maps a quantized magnitude 0..maxQuant to its class: the value
+// itself up to escMaxDirect, then one class per bit length of the escape part
+// (m - escMaxDirect). pairMinCostEsc reads a pair only through min(m, 15),
+// m != 0 and the bit length of the larger escape part, so every magnitude in
+// a class costs the same minimum bits (TestMonoPairFloorTable pins this over
+// all pairs). maxQuant lands in class nMagClasses-1.
+func magClassOf(m int32) uint8 {
+	if m <= escMaxDirect {
+		return uint8(m)
+	}
+	return uint8(escMaxDirect + bits.Len32(uint32(m-escMaxDirect)))
+}
+
+// magClassRep is the smallest magnitude of class c.
+func magClassRep(c int) int32 {
+	if c <= escMaxDirect {
+		return int32(c)
+	}
+	return int32(escMaxDirect + 1<<(c-escMaxDirect-1))
+}
+
+// monoPairFloor[cx][cy] is a lower bound on the part3 bits one line pair
+// spends when its magnitudes lie in classes of at least cx and cy, and it is
+// non-decreasing in both indices. It exists for the exact global_gain scan's
+// start: summed over the 288 pairs of a quantized granule it gives a
+// partition-free lower bound on ri.bits that, unlike part3LowerBound, never
+// increases with global_gain, so a binary search can find the first gain the
+// bound admits.
+//
+// Why it is sound: the partition splits the pairs into big-values pairs,
+// count1 pairs and rzero pairs. A big-values pair costs at least its minimum
+// over all valid tables (minPair, part3LowerBound's own per-pair term). A
+// count1 quad starts at an even line, so it is exactly two pairs, and it costs
+// at least 4 + its nonzero count under both count1 tables (table A lengths for
+// presence patterns 1..15 are at least 4, table B is exactly 4 + signs); a
+// pair of magnitudes at most 1 with s nonzero lines is therefore charged
+// s + 2, at most half of the quad's 4 + s1 + s2. An rzero pair costs 0 and has
+// floor 0. The entry is the smaller of minPair and, for pairs of at most 1,
+// the count1 charge, which is below the true cost whichever region the
+// partition picks. With the current tables minPair already equals that charge
+// there (3 for one nonzero line, 4 for two, 0 for none), so the explicit
+// minimum changes no entry; it keeps the bound sound if a table ever changes,
+// and TestMonoPairFloorTable pins the premises.
+//
+// Why it is monotone: each line's magnitude is non-increasing in global_gain
+// (TestQuantizeMonotone), the class map is non-decreasing, and the table is
+// closed under suffix minimum (entry = min over all larger-or-equal classes),
+// so the sum cannot increase as the gain rises. The bound must therefore not
+// include any partition term: the partition moves with the gain and
+// part3LowerBound, which depends on it, is not monotone.
+//
+// Integer-only (841 minPair calls at init), so it is identical on every
+// architecture.
+var monoPairFloor = buildMonoPairFloor()
+
+func buildMonoPairFloor() (fm [nMagClasses][nMagClasses]uint8) {
+	var f [nMagClasses][nMagClasses]int
+	for cx := range nMagClasses {
+		for cy := range nMagClasses {
+			v := minPair(magClassRep(cx), magClassRep(cy))
+			if cx <= 1 && cy <= 1 {
+				v = min(v, cx+cy+2)
+				if cx+cy == 0 {
+					v = 0
+				}
+			}
+			f[cx][cy] = v
+		}
+	}
+	for cx := nMagClasses - 1; cx >= 0; cx-- {
+		for cy := nMagClasses - 1; cy >= 0; cy-- {
+			v := f[cx][cy]
+			if cx+1 < nMagClasses {
+				v = min(v, int(fm[cx+1][cy]))
+			}
+			if cy+1 < nMagClasses {
+				v = min(v, int(fm[cx][cy+1]))
+			}
+			fm[cx][cy] = uint8(v)
+		}
+	}
+	return fm
+}
+
+// minPair is the cheapest cost of the magnitude pair (ax, ay) in any valid
+// big-values table, as part3LowerBound sums it.
+func minPair(ax, ay int32) int {
+	if ax < escTableDim && ay < escTableDim {
+		return int(pairMinDirect[ax][ay])
+	}
+	return pairMinCostEsc(ax, ay)
+}

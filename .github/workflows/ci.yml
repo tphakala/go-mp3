@@ -56,6 +56,10 @@ jobs:
       - run: go test ./... -timeout 20m
         env:
           MP3_QUALITY_BASELINE: '1'
+      # SIMD_DISABLE=all routes simd's quantizer to its portable Go path; output must not change.
+      - run: go test ./internal/enc -run 'Golden|Quantize' -timeout 20m
+        env:
+          SIMD_DISABLE: 'all'
 
   test-noasm:
     name: Test (noasm fallback)
@@ -64,7 +68,8 @@ jobs:
       fail-fast: false
       matrix:
         # Both arches again: the noasm build drops the AVX2/NEON region-cost
-        # and prefix-cost kernels for their pure-Go references, and the
+        # and prefix-cost kernels and the simd quantizer for their pure-Go
+        # references, and the
         # encoder goldens must stay bit-exact without the SIMD path just as
         # they do with it. internal/enc is the only package the tag changes,
         # so the suite is scoped to it.
@@ -79,6 +84,11 @@ jobs:
       - run: go build -tags noasm ./...
       - run: go vet -tags noasm ./internal/enc
       - run: go test -tags noasm ./internal/enc -timeout 20m
+      - name: noasm links no simd
+        run: |
+          if go list -deps -tags noasm ./... | grep -q 'github.com/tphakala/simd'; then
+            echo "-tags noasm must not link github.com/tphakala/simd"; exit 1
+          fi
 
   lint:
     name: Lint

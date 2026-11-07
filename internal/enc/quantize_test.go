@@ -536,6 +536,7 @@ func TestQuantizeShortKnownAnswers(t *testing.T) {
 // (a higher gg that pushes most of the spectrum below the zero boundary, the
 // low-bitrate escalation regime issue #62 targets) exercises the zero fast path.
 // Both are isolated here without the wall-clock noise of a whole frame encode.
+// It measures the build's dispatcher: simd by default, the Go loop under noasm.
 func BenchmarkQuantizeGranule(b *testing.B) {
 	lay := &layoutLong[0]
 	var sf scfState
@@ -566,7 +567,7 @@ func BenchmarkQuantizeGranule(b *testing.B) {
 	}
 }
 
-// quantRefNoSkip is quantizeGranule's exact per-line body WITHOUT the zero fast
+// quantRefNoSkip is quantizeGranuleGo's exact per-line body WITHOUT the zero fast
 // path, the reference TestQuantizeZeroSkipExact checks the skip against.
 func quantRefNoSkip(x, is float64) int32 {
 	tt := math.Abs(x) * is
@@ -583,8 +584,10 @@ func quantRefNoSkip(x, is float64) int32 {
 	return m
 }
 
-// TestQuantizeZeroSkipExact pins quantizeGranule's zero fast path bit-for-bit
-// against the full sqrt chain. The skip is only bit-exact if quantZeroMax sits
+// TestQuantizeZeroSkipExact pins the zero fast path of whichever quantizer the
+// build links, bit-for-bit against the full sqrt chain: simd's proven bound on
+// the default build, quantZeroMax under noasm (the CI noasm job runs it on both
+// arches). Its quantZeroMax < t0 assertion guards the reference. The skip is only bit-exact if quantZeroMax sits
 // strictly below the true zero boundary t0 = 0.5946^(4/3), the scaled magnitude
 // at which the full chain first rounds to a nonzero value (v + 0.4054 reaches
 // 1). The test asserts that invariant directly, so a mutation raising

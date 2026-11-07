@@ -47,6 +47,10 @@ the decoder's independently derived (minimp3/CC0) copies by the
 internal/dec `encx_` test suite, with no third-party encoder source
 consulted at any point.
 
+The quantizer's line loop runs through `f64.QuantizePow34Bands` from
+github.com/tphakala/simd (MIT, same author), a generic implementation of the
+ISO annex C power law, gated bit-identical against the in-repo reference.
+
 ## Float parity fallback sites
 
 Sites where Go cannot reproduce the oracle bit-exactly are listed here with

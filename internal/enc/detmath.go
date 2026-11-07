@@ -77,7 +77,7 @@ func plog(x float64) float64 {
 // (which covers +-Inf). The +-1100 guards also keep the int conversion of
 // k in range: converting an out-of-range float64 to int is
 // implementation-defined and differs between amd64 and arm64, the same
-// hazard quantizeGranule documents.
+// hazard quantizeGranuleGo documents.
 func pexp2(x float64) float64 {
 	switch {
 	case math.IsNaN(x):

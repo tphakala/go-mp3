@@ -131,8 +131,9 @@ func genNoise(_, n int) [][]float32 {
 }
 
 // encodeWithin encodes planar samples frame by frame and aborts as soon as
-// budget is exceeded. It returns the frames encoded, the total, the elapsed
-// time and whether it finished within budget.
+// budget is exceeded. It returns the frames finished within budget, the total
+// and the elapsed time; done equals total only when every frame finished
+// within budget.
 func encodeWithin(cfg mp3.EncoderConfig, samples [][]float32, budget time.Duration) (done, total int, elapsed time.Duration, err error) {
 	enc, err := mp3.NewEncoder(cfg)
 	if err != nil {
@@ -151,10 +152,10 @@ func encodeWithin(cfg mp3.EncoderConfig, samples [][]float32, budget time.Durati
 		if dst, err = enc.EncodeFrame(dst[:0], chunk); err != nil {
 			return done, total, time.Since(start), err
 		}
-		done++
 		if elapsed = time.Since(start); elapsed > budget {
 			return done, total, elapsed, nil
 		}
+		done++
 	}
 	return done, total, time.Since(start), nil
 }
@@ -208,5 +209,20 @@ func TestThroughputGateActivatedInCI(t *testing.T) {
 		t.Fatalf("%s no longer sets MP3_THROUGHPUT_GATE=1 on a job step: the encoder throughput gate "+
 			"(TestThroughputGate) would silently skip in CI. Restore the env, or update "+
 			"throughputGateActivationRe if the activation intentionally moved.", path)
+	}
+}
+
+// TestEncodeWithinCountsOverBudgetFrameAsAbort pins that a frame finishing
+// after the budget is not counted as done, so a run whose final frame crosses
+// the budget is reported as aborted rather than complete.
+func TestEncodeWithinCountsOverBudgetFrameAsAbort(t *testing.T) {
+	cfg := mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: 128000}
+	samples := genTonal(cfg.SampleRate, mp3.FrameSize) // one frame, so the first frame is the last
+	done, total, _, err := encodeWithin(cfg, samples, time.Nanosecond)
+	if err != nil {
+		t.Fatalf("encodeWithin: %v", err)
+	}
+	if total != 1 || done != 0 {
+		t.Fatalf("done/total = %d/%d for a single frame over a 1ns budget, want 0/1", done, total)
 	}
 }

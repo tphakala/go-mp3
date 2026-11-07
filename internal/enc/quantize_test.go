@@ -85,7 +85,7 @@ func TestQuantizePowRef(t *testing.T) {
 
 	for range samples {
 		u := next()
-		x := math.Pow(10, -3+9*u) // log-uniform over [1e-3, 1e6)
+		x := math.Pow(10, -3+float64(9*u)) // log-uniform over [1e-3, 1e6)
 
 		got := math.Sqrt(x * math.Sqrt(x))
 		want := math.Pow(x, 0.75)
@@ -117,7 +117,7 @@ func TestQuantizeMonotone(t *testing.T) {
 	}
 	for i := range xr {
 		u := next()
-		mag := math.Pow(10, -3+9*u)
+		mag := math.Pow(10, -3+float64(9*u))
 		if u2 := next(); u2 < 0.5 {
 			mag = -mag
 		}
@@ -311,7 +311,7 @@ func TestQuantizeScaledKnownAnswers(t *testing.T) {
 	var zero scfState
 	seed := uint64(7)
 	for i := range xr {
-		xr[i] = (testsignal.LCG(&seed) - 0.5) * 1e5
+		xr[i] = (float64(testsignal.LCG(&seed)) - 0.5) * 1e5
 	}
 	var ixA, ixB [576]int32
 	quantizeGranule(&xr, 180, &zero, lay, &ixA)
@@ -368,7 +368,7 @@ func TestNoiseDecreasesWithAmplification(t *testing.T) {
 	var xr [576]float64
 	seed := uint64(11)
 	for i := range 40 { // bands 0..~7 populated
-		xr[i] = (testsignal.LCG(&seed) - 0.5) * 2000
+		xr[i] = (float64(testsignal.LCG(&seed)) - 0.5) * 2000
 	}
 	var prev = math.Inf(1)
 	for amp := range 8 {
@@ -672,13 +672,13 @@ func randomScfState(seed *uint64, lay *bandLayout) scfState {
 			sf.scf[b] = int(testsignal.LCG(seed) * 8)
 		}
 	}
-	sf.scalefacScale = int(testsignal.LCG(seed) * 2)
+	sf.scalefacScale = int(float64(testsignal.LCG(seed)) * 2)
 	if lay.short {
 		for w := range sf.subblockGain {
 			sf.subblockGain[w] = int(testsignal.LCG(seed) * 8)
 		}
 	} else {
-		sf.preflag = int(testsignal.LCG(seed) * 2)
+		sf.preflag = int(float64(testsignal.LCG(seed)) * 2)
 	}
 	return sf
 }
@@ -704,7 +704,7 @@ func TestMinGlobalGainMatchesScan(t *testing.T) {
 				if testsignal.LCG(&seed) < 0.2 {
 					continue
 				}
-				v := math.Pow(10, testsignal.LCG(&seed)*14-6)
+				v := math.Pow(10, float64(testsignal.LCG(&seed)*14)-6)
 				if testsignal.LCG(&seed) < 0.5 {
 					v = -v
 				}

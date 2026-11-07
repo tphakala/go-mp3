@@ -192,10 +192,15 @@ func TestThroughputGate(t *testing.T) {
 	}
 }
 
-// throughputGateActivationRe matches the ci.yml env line that turns the
-// throughput gate on. Anchored to a whole YAML mapping entry, so the comment
-// that spells the variable with an equals sign does not count.
-var throughputGateActivationRe = regexp.MustCompile(`(?m)^\s*MP3_THROUGHPUT_GATE:\s*['"]?1['"]?\s*$`)
+// throughputGateActivationRe matches the ci.yml step that runs the gate: a
+// `- run:` line naming TestThroughputGate directly followed by an env block
+// that sets MP3_THROUGHPUT_GATE to 1. Tying the env to that run line means
+// the guard also fails when the env moves to another step or job (the gate
+// would then time the encoder next to other tests) or when the run line stops
+// selecting the gate. It assumes the run and env keys are adjacent, in that
+// order; update it if the step is reshaped.
+var throughputGateActivationRe = regexp.MustCompile(
+	`(?m)^[ \t]*- run:[^\n]*TestThroughputGate[^\n]*\n[ \t]*env:[ \t\r]*\n[ \t]*MP3_THROUGHPUT_GATE:[ \t]*['"]?1['"]?[ \t\r]*$`)
 
 // TestThroughputGateActivatedInCI fails when ci.yml stops setting
 // MP3_THROUGHPUT_GATE=1, which would leave TestThroughputGate skipping in CI.
@@ -206,7 +211,7 @@ func TestThroughputGateActivatedInCI(t *testing.T) {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	if !throughputGateActivationRe.Match(b) {
-		t.Fatalf("%s no longer sets MP3_THROUGHPUT_GATE=1 on a job step: the encoder throughput gate "+
+		t.Fatalf("%s no longer sets MP3_THROUGHPUT_GATE=1 on the step that runs TestThroughputGate: the encoder throughput gate "+
 			"(TestThroughputGate) would silently skip in CI. Restore the env, or update "+
 			"throughputGateActivationRe if the activation intentionally moved.", path)
 	}
@@ -224,5 +229,25 @@ func TestEncodeWithinCountsOverBudgetFrameAsAbort(t *testing.T) {
 	}
 	if total != 1 || done != 0 {
 		t.Fatalf("done/total = %d/%d for a single frame over a 1ns budget, want 0/1", done, total)
+	}
+}
+
+func TestThroughputGateActivationRe(t *testing.T) {
+	cases := []struct {
+		name, yml string
+		want      bool
+	}{
+		{"gate step", "      - run: go test . -run 'TestThroughputGate' -count=1\n        env:\n          MP3_THROUGHPUT_GATE: '1'\n", true},
+		{"env moved to the main step", "      - run: go test ./... -timeout 20m\n        env:\n          MP3_THROUGHPUT_GATE: '1'\n", false},
+		{"gate step run line no longer selects the gate", "      - run: go test . -run 'TestOther' -count=1\n        env:\n          MP3_THROUGHPUT_GATE: '1'\n", false},
+		{"gate step lost its env", "      - run: go test . -run 'TestThroughputGate' -count=1\n      - run: go vet ./...\n", false},
+		{"step commented out", "      # - run: go test . -run 'TestThroughputGate'\n      #   env:\n      #     MP3_THROUGHPUT_GATE: '1'\n", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := throughputGateActivationRe.MatchString(c.yml); got != c.want {
+				t.Fatalf("match = %v, want %v for:\n%s", got, c.want, c.yml)
+			}
+		})
 	}
 }

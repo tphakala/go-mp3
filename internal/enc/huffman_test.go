@@ -417,7 +417,7 @@ func TestEscFamilyTablePartition(t *testing.T) {
 	// Non-escape members must be genuine non-escape codebooks: zero linbits and
 	// a populated codes slice (which also rejects the invalid slots 4 and 14,
 	// whose codes are nil).
-	// These three are also bigValuesPrefixCost's precondition for calling
+	// These three are also bigValuesPrefixCostGo's precondition for calling
 	// pairCostDirect rather than the general pairCost: that half has no escape
 	// handling at all, so a member that grew linbits would be mispriced
 	// silently, and dim < 1 would make its maxDirect negative.

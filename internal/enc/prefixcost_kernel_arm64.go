@@ -4,8 +4,12 @@ package enc
 
 // bigValuesPrefixCost computes the big-values prefix costs of all 32 table
 // slots in one pass with the NEON kernel (NEON is baseline on arm64, so no
-// runtime feature check). Integer sums have no accumulation-order hazard, so
-// the result is identical to bigValuesPrefixCostGo.
+// runtime feature check). The result is identical to bigValuesPrefixCostGo
+// because a pairCostRows lookup replaces the reference's per-table costing: a
+// magnitude above 15 uses the clamped-to-15 row, which is exact for every table
+// that can represent it (prefixcost_kernel.go), and TestPrefixCostParity,
+// TestPrefixCostBounds and FuzzPrefixCostParity check it against the
+// reference.
 func bigValuesPrefixCost(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixCost *[40][32]int32) {
 	prefixCostNEON(ix, pb, lay.nBands, prefixCost, &pairCostRows, &pairCostBound)
 }

@@ -22,10 +22,13 @@ var validBigTables = [30]uint8{
 }
 
 // nonEscBigTables is validBigTables minus the two escape families (16-31):
-// the tables bigValuesPrefixCost still costs one at a time, since each has
-// its own codes slice. Tables 4 and 14 stay excluded (invalid slots).
-// Every member must have linbits == 0 and dim >= 1: bigValuesPrefixCost costs
-// them with pairCostDirect, which has no escape handling at all, so a member
+// the tables bigValuesPrefixCostGo (the pure-Go reference, which runs under
+// noasm, on amd64 without AVX2 and on other architectures) still costs one at
+// a time, since each has its own codes slice. The SIMD kernels cost all 32
+// slots through pairCost rows instead. Tables 4 and 14 stay excluded (invalid
+// slots). Every member must have linbits == 0 and dim >= 1:
+// bigValuesPrefixCostGo costs them with pairCostDirect, which has no escape
+// handling at all, so a member
 // that grew linbits would be mispriced with no escape addend and no runtime
 // complaint. TestEscFamilyTablePartition pins both properties against
 // bigTables. Move such a table into an escape family instead of adding it here.
@@ -34,7 +37,7 @@ var nonEscBigTables = [14]uint8{0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15}
 // escFam16Tables / escFam16Linbits describe ISO escape tables 16-23, which
 // all share table16Codes (dim 16, maxDirect 15) and differ only in linbits.
 // escFam24* describe tables 24-31, sharing table24Codes. These let
-// bigValuesPrefixCost compute the shared codeword+sign cost once per family
+// bigValuesPrefixCostGo compute the shared codeword+sign cost once per family
 // per pair (the expensive codes[] lookup) and add only the per-table
 // linbits escape term, algebraically identical to a pairCost call per table
 // (issue #37). linbits values copied verbatim from bigTables in
@@ -115,9 +118,11 @@ type regionInfo struct {
 // accumEscFamilyCost now survive only as its test oracle).
 //
 // pairCost itself stays the one entry point that is correct for an arbitrary
-// table: buildPairCostRows calls it at package init to fill the SIMD kernels'
-// pairCostRows, and the tests use it as the oracle that both halves are
-// checked against.
+// table. Its production callers are buildPairCostRows (the prefix-cost
+// kernels' pairCostRows, filled at package init in the amd64 and arm64
+// non-noasm builds) and buildPairMinDirect (part3bound.go:33, the exact scan's
+// skip bound, every build); the tests use it as the oracle that both halves
+// are checked against.
 func pairCost(t huffTable, ax, ay int32) int {
 	if t.linbits > 0 {
 		return pairCostEsc(t, ax, ay)
@@ -411,7 +416,7 @@ func bigValuesPrefixCostGo(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixC
 // documents.
 //
 // This is the table-returning form the three final region costings need. The
-// hot memo path in chooseRegions, which needs only the minimum cost and not the
+// range search in chooseRegions, which needs only the minimum cost and not the
 // table, uses rangeCostMin instead, whose SIMD reduction is the payoff of the
 // band-major layout.
 func rangeCost(prefixCost *[40][32]int32, pb *[40]int, a, b int) (cost int, table uint8) {
@@ -437,7 +442,7 @@ func rangeCost(prefixCost *[40][32]int32, pb *[40]int, a, b int) (cost int, tabl
 // the fused SIMD kernel (subMinReduce) over contiguous int32 rows. The invalid
 // table columns 4 and 14 carry the all-impossible ramp bigValuesPrefixCost
 // fills, so the 32-wide minimum equals the minimum over validBigTables that
-// rangeCost computes, keeping the memo search and the final costing in exact
+// rangeCost computes, keeping the range search and the final costing in exact
 // agreement. An empty range costs 0 (the regionInfo all-zero convention).
 func rangeCostMin(prefixCost *[40][32]int32, pb *[40]int, a, b int) int {
 	if pb[a] == pb[b] {
@@ -530,22 +535,21 @@ func chooseRegions(ix *[576]int32, part spectrumPartition, lay *bandLayout) regi
 
 	// Every combo the bound admits has r0+r1+2 <= lay.nBands, so regionBounds
 	// never clamps it: a = r0+1 and c = r0+r1+2. Each middle range [a, c) is
-	// therefore distinct, the head range [0, a) is shared by every r1 of one
-	// r0, and the tail range [c, lay.nBands) by every combo with the same
-	// r0+r1. The search costs each head once per r0, each middle once, and each
-	// tail once (memoized in tail), without zeroing a [40][40] memo on every
-	// call. A middle range that ends at lay.nBands is also a tail range and is
-	// costed in both roles, a few more rangeCostMin calls than a memo over
-	// every (a, b) pair makes (162 against 159 for the 22-band long layout).
-	// The bound also makes both loops stop at the first combo it rejects, so
-	// break replaces the per-combo skip.
+	// therefore distinct and costed once, uncached; the head range [0, a) is
+	// shared by every r1 of one r0 and hoisted out of the r1 loop; the tail
+	// range [c, lay.nBands) is shared by every combo with the same r0+r1 and is
+	// memoized by c in tail. A middle range that ends at lay.nBands is also a
+	// tail range and is costed in both roles, which is 162 rangeCostMin calls
+	// for the 22-band long layout where a memo over every (a, b) pair would make
+	// 159. The bound makes both loops stop at the first combo it rejects, so
+	// they break instead of skipping each rejected combo.
 	//
-	// tail is indexed by the region boundary c and, like pb, sized for every
-	// band boundary: c <= lay.nBands, and lay.nBands reaches 39 for a
-	// blockLong-typed granule over a short layout (as
-	// TestOuterLoopShortConverges exercises). The loop bounds r0 <= 15 and
-	// r1 <= 7 keep c = r0+r1+2 within 24, and the production long-block path
-	// keeps it within [2, 22].
+	// tail is indexed by c = r0+r1+2, which the loop bounds r0 <= 15 and
+	// r1 <= 7 keep within 24 (within [2, 22] on the production long-block
+	// path), so it never needs more than 25 entries. It is sized [40] to match
+	// pb, whose index reaches lay.nBands, 39 for a blockLong-typed granule over
+	// a short layout (as TestOuterLoopShortConverges exercises); AGENTS.md
+	// rule 9 records which of the [40] dimensions are load-bearing.
 	//
 	// The search deliberately keeps the cost alone and discards rangeCost's
 	// table, even though that means re-costing the three winning ranges after
@@ -689,6 +693,8 @@ func writeSpectrum(w *bits.Writer, ix *[576]int32, part spectrumPartition, ri re
 			e := count1A[idx]
 			f, nf = uint64(e.code)&(uint64(1)<<e.len-1), uint(e.len)
 		} else {
+			// Table B: every codeword is 4 bits, the complement of the
+			// presence index (see the count1 doc in hufftables.go).
 			f, nf = uint64(^idx&0xF), 4
 		}
 		f, nf = appendSign(f, nf, v)
@@ -731,6 +737,9 @@ func writePair(w *bits.Writer, bt huffTable, x, y int32) {
 	f, nf := uint64(e.code)&(uint64(1)<<e.len-1), uint(e.len)
 	f, nf = appendValue(f, nf, bt, x)
 	f, nf = appendValue(f, nf, bt, y)
+	// bits.Writer.WriteBits accepts at most 32 bits per call. The widest field
+	// over bigTables (codeword length + 2*(linbits+1)) is 45 bits, so the top
+	// nf-32 bits go first when it overflows.
 	if nf > 32 {
 		w.WriteBits(uint32(f>>32), int(nf-32))
 		nf = 32

@@ -8,7 +8,7 @@ import (
 // escFamilyAccumScalarOld reproduces the pre-issue-66 escape-family accumulation
 // exactly (accumEscFamilyFlat for a non-escaping pair, accumEscFamilyCost
 // otherwise), as the differential oracle for escFamilyAccumGo. It mirrors
-// bigValuesPrefixCost's former inner pair loop.
+// bigValuesPrefixCostGo's former inner pair loop.
 func escFamilyAccumScalarOld(ax, ay []int32) (acc16, acc24 [8]int) {
 	for p := range ax {
 		x, y := ax[p], ay[p]
@@ -24,8 +24,8 @@ func escFamilyAccumScalarOld(ax, ay []int32) (acc16, acc24 [8]int) {
 }
 
 // escFamilyBaseFor precomputes the per-pair shared codeword+sign costs that
-// escFamilyAccumGo and the kernels consume (the codebook gather kept out of the
-// vector path). Mirrors bigValuesPrefixCost's base16/base24 pre-pass.
+// escFamilyAccumGo consumes (the codebook gather kept out of the accumulation
+// loop). Mirrors bigValuesPrefixCostGo's base16/base24 pre-pass.
 func escFamilyBaseFor(ax, ay []int32) (base16, base24 []int32) {
 	base16 = make([]int32, len(ax))
 	base24 = make([]int32, len(ax))

@@ -207,7 +207,14 @@ func quantizeGranule(xr *[576]float64, gg int, sf *scfState, lay *bandLayout, ix
 // non-increasing in gg (the same reasoning TestQuantizeMonotone established
 // for Phase 3's uniform step), so whether gg clears every band's bound is
 // monotone in gg and a binary search finds the same smallest gg an upward
-// scan would, in eight probes instead of up to 256.
+// scan would, in eight probes instead of up to 256. The search is exact, not
+// approximate, because every float64 step of the per-band test is monotone in
+// gg: the Ldexp scaling in stepQ is exact, the multiply by bandMax >= 0 and
+// both Sqrt calls are correctly rounded, and the final add is too, and a
+// correctly rounded monotone operation never reverses an order.
+//
+// It returns 255 when no gg in 0..254 fits (including when gg = 255 itself
+// would not), so the search covers 0..254 only.
 //
 // Like quantizeGranule, the bound check compares in float64 before any
 // int32 conversion, for the same overflow-avoidance reason.

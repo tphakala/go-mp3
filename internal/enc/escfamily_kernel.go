@@ -4,7 +4,7 @@ package enc
 // families' per-table linbits (escFam16Linbits / escFam24Linbits are [8]int for
 // the scalar accumEscFamily* path). escFamilyAccumGo reads these as its 8-lane
 // int32 addends; deriving them here keeps them from drifting out of sync with
-// the []int originals.
+// the [8]int originals.
 var (
 	escFam16LinbitsI32 = linbitsI32(&escFam16Linbits)
 	escFam24LinbitsI32 = linbitsI32(&escFam24Linbits)

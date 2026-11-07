@@ -133,6 +133,26 @@ frames encoded so far are already on `w`, a truncated stream to discard). The
 streaming encoder has no context method; write in frame-sized chunks and check
 your context between `Write` calls.
 
+## Encoder speed
+
+Encoding cost depends on the material: tonal and sparse audio is cheap, dense
+broadband audio costs the most because the rate loop has to search harder.
+Realtime factor (seconds of audio encoded per second of wall time) on one core
+with the default `RateControlExact`, for 6 second synthetic stereo programs at
+128 kbps and 44.1 kHz unless noted:
+
+| Program                              | Intel NUC7 (i5-7260U) | Raspberry Pi 5 |
+|--------------------------------------|-----------------------|----------------|
+| tonal (a few partials)               | 25.7x                 | 16.8x          |
+| tone plus low-level noise            | 2.4x                  | 1.5x           |
+| transient (click train over a tone)  | 6.7x                  | 4.3x           |
+| broadband noise                      | 1.7x                  | 1.1x           |
+| broadband noise, 32 kbps at 48 kHz   | 3.0x                  | 2.0x           |
+
+Broadband noise is close to the worst case for this encoder. CI runs a
+throughput gate (`task throughput:gate`) that fails when an encoder change drops
+any of its programs below a realtime floor, so a slowdown cannot land unnoticed.
+
 ## Audio quality
 
 go-mp3 is the newest and least-tuned encoder in this family. It reproduces the

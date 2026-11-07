@@ -17,7 +17,7 @@ import (
 // on; subblock_gain spans 0..7.
 func quantizeParityInput(seed *uint64, scale float64, flags int, lay *bandLayout) (xr [576]float64, sf scfState) {
 	for i := range xr {
-		v := (testsignal.LCG(seed) - 0.5) * scale * 2
+		v := (float64(testsignal.LCG(seed)) - 0.5) * (2 * scale)
 		switch i % 97 {
 		case 3:
 			v = math.Copysign(0, -1)
@@ -79,11 +79,11 @@ func quantizeEdgeInput(gg int, sf *scfState, lay *bandLayout) (xr [576]float64) 
 			k := float64(i%9 - 4)
 			switch i % 4 {
 			case 0:
-				t = t0 * (1 + k*1e-9)
+				t = t0 * (1 + float64(k*1e-9))
 			case 1:
-				t = tClamp * (1 + k*1e-9)
+				t = tClamp * (1 + float64(k*1e-9))
 			case 2:
-				t = math.Pow(float64(1+i%40)-quantRounding, 4.0/3) * (1 + k*1e-12)
+				t = math.Pow(float64(1+i%40)-quantRounding, 4.0/3) * (1 + float64(k*1e-12))
 			default:
 				t = math.Pow(10, float64(i%17)-8)
 			}

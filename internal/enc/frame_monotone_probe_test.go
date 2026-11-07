@@ -247,7 +247,7 @@ func TestCodeGranuleFastDivergence(t *testing.T) {
 		for srIndex := range layoutLong {
 			lay := layoutFor(blk.bt, srIndex)
 			for iter := range 90 {
-				amp := (testsignal.LCG(&seed)*3 + 0.01) * 30000
+				amp := (float64(testsignal.LCG(&seed)*3) + 0.01) * 30000
 				xr := probeSpectrum(&seed, iter%4, amp)
 				sf := probeSF(&seed)
 				gg0, bits := sweepBits(&xr, &sf, lay, blk.bt)
@@ -297,7 +297,7 @@ func TestProbeModelsMatchProduction(t *testing.T) {
 	for _, blk := range []int{blockLong, blockShort} {
 		lay := layoutFor(blk, 0)
 		for iter := range 40 {
-			amp := (testsignal.LCG(&seed)*3 + 0.01) * 30000
+			amp := (float64(testsignal.LCG(&seed)*3) + 0.01) * 30000
 			xr := probeSpectrum(&seed, iter%4, amp)
 			sf := probeSF(&seed)
 			gg0, bits := sweepBits(&xr, &sf, lay, blk)

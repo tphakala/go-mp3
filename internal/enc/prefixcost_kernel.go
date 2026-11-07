@@ -44,6 +44,12 @@ func buildPairCostRows() (rows [escTableDim * escTableDim][32]int32, bound [32]i
 // the layout would make a kernel leave its arrays: nBands above 39 reads
 // pb[40] and writes prefixCost[40], and pb[nBands] above the 288 pairs of ix
 // reads past ix. One compare per call; it does not allocate.
+//
+// Interior boundaries are not checked: the kernels need pb non-decreasing from
+// pb[0] = 0 and within 288, which pairBoundaries, the only producer, yields by
+// construction for bigValues in 0..288, the range partitionSpectrum caps it to
+// (TestPairBoundariesProducerContract pins it). A walk over pb here measured
+// about 1% on a short-block frame benchmark on arm64.
 func checkPrefixCostLayout(ix *[576]int32, pb *[40]int, nBands int) {
 	if uint(nBands) >= uint(len(pb)) || pb[nBands] > len(ix)/2 {
 		panic("enc: prefix cost layout out of range")

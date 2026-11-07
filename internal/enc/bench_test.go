@@ -1,6 +1,7 @@
 package enc
 
 import (
+	"math"
 	"testing"
 
 	"github.com/tphakala/go-mp3/internal/testsignal"
@@ -31,25 +32,31 @@ func BenchmarkEscalationFrame(b *testing.B) {
 			cfg := tc.cfg
 			cfg.FastRateControl = rc.fast
 			b.Run(tc.name+"/"+rc.name, func(b *testing.B) {
-				e, err := New(cfg)
-				if err != nil {
-					b.Fatalf("New: %v", err)
-				}
 				seed := uint64(1)
-				samples := planarSamples(&seed, cfg.Channels, 0.7)
-				dst := make([]byte, 0, 4096)
-				for range 2 {
-					if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
-						b.Fatalf("warmup EncodeFrame: %v", err)
-					}
-				}
-				b.ReportAllocs()
-				for b.Loop() {
-					if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
-						b.Fatalf("EncodeFrame: %v", err)
-					}
-				}
+				benchFrames(b, cfg, planarSamples(&seed, cfg.Channels, 0.7))
 			})
+		}
+	}
+}
+
+// benchFrames encodes the same frame repeatedly with a fresh encoder; two
+// warmup frames prime dst's backing array so the timed loop never grows it.
+func benchFrames(b *testing.B, cfg Config, samples [][]float32) {
+	b.Helper()
+	e, err := New(cfg)
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	dst := make([]byte, 0, 4096)
+	for range 2 {
+		if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
+			b.Fatalf("warmup EncodeFrame: %v", err)
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
+			b.Fatalf("EncodeFrame: %v", err)
 		}
 	}
 }
@@ -107,10 +114,6 @@ func BenchmarkTransientFrame(b *testing.B) {
 			cfg := tc.cfg
 			cfg.FastRateControl = rc.fast
 			b.Run(tc.name+"/"+rc.name, func(b *testing.B) {
-				e, err := New(cfg)
-				if err != nil {
-					b.Fatalf("New: %v", err)
-				}
 				seed := uint64(1)
 				var samples [][]float32
 				if tc.transient {
@@ -118,19 +121,66 @@ func BenchmarkTransientFrame(b *testing.B) {
 				} else {
 					samples = planarSamples(&seed, cfg.Channels, 0.7)
 				}
-				dst := make([]byte, 0, 4096)
-				for range 2 {
-					if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
-						b.Fatalf("warmup EncodeFrame: %v", err)
-					}
-				}
-				b.ReportAllocs()
-				for b.Loop() {
-					if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
-						b.Fatalf("EncodeFrame: %v", err)
-					}
-				}
+				benchFrames(b, cfg, samples)
 			})
 		}
+	}
+}
+
+// tonalPartialBins are the partials of tonalSamples, in cycles per 1152-sample
+// frame (about 421, 880, 1799 and 3713 Hz at 44.1 kHz), with their weights.
+var (
+	tonalPartialBins    = [...]int{11, 23, 47, 97}
+	tonalPartialWeights = [...]float64{1, 0.5, 0.25, 0.125}
+)
+
+// tonalSamples builds an nch x 1152 planar float32 buffer holding four
+// harmonically unrelated partials, each an integer number of cycles per frame,
+// so replaying the frame back to back is a continuous stationary tone with no
+// frame-boundary click. Channel ch is phase shifted so stereo channels differ.
+// The peak is at most amp. The products feeding sums are wrapped in float64()
+// so arm64 cannot fuse them into different inputs than amd64.
+func tonalSamples(nch int, amp float32) [][]float32 {
+	var sum float64
+	for _, w := range tonalPartialWeights {
+		sum += w
+	}
+	out := make([][]float32, nch)
+	for ch := range nch {
+		out[ch] = make([]float32, 1152)
+		for i := range out[ch] {
+			var acc float64
+			for k, bin := range tonalPartialBins {
+				phase := 2*math.Pi*float64(bin)*float64(i)/1152 + float64(0.7*float64(ch))
+				acc += float64(tonalPartialWeights[k] * math.Sin(phase))
+			}
+			out[ch][i] = float32(float64(amp) * acc / sum)
+		}
+	}
+	return out
+}
+
+// BenchmarkTonalFrame measures per-frame encode wall time on ordinary tonal
+// content: a stationary multi-partial tone (tonalSamples), the opposite of
+// BenchmarkEscalationFrame's broadband noise. Stereo 128 kbps 44.1 kHz, so it
+// compares directly against that benchmark's stereo-128k-44100 cases.
+//
+// It exists because most of the other frame benchmarks are escape-heavy: the share of
+// big-values pairs that take the prefix-cost kernels' escape branch (a
+// magnitude above 15, prefixcost_kernel_amd64.s) is, measured on amd64
+// over 20 frames after the warmup, exact/fast:
+//
+//	BenchmarkEscalationFrame stereo-128k-44100        73.0% / 47.9%
+//	BenchmarkEscalationFrame stereo-32k-48000         99.6% / 65.1%
+//	BenchmarkTransientFrame  mono-320k-44100          79.7% / 63.5%
+//	BenchmarkTransientFrame  stereo-128k-broadband    73.0% / 47.9%
+//	BenchmarkTransientFrame  stereo-128k-transient    16.6% / 21.1%
+//	BenchmarkTonalFrame      stereo-128k-44100 (here) 16.3% / 15.1%
+func BenchmarkTonalFrame(b *testing.B) {
+	for _, rc := range rateControlModes {
+		cfg := Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128, FastRateControl: rc.fast}
+		b.Run("stereo-128k-44100/"+rc.name, func(b *testing.B) {
+			benchFrames(b, cfg, tonalSamples(cfg.Channels, 0.5))
+		})
 	}
 }

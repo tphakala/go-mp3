@@ -536,6 +536,7 @@ func TestQuantizeShortKnownAnswers(t *testing.T) {
 // (a higher gg that pushes most of the spectrum below the zero boundary, the
 // low-bitrate escalation regime issue #62 targets) exercises the zero fast path.
 // Both are isolated here without the wall-clock noise of a whole frame encode.
+// It measures the build's dispatcher: simd by default, the Go loop under noasm.
 func BenchmarkQuantizeGranule(b *testing.B) {
 	lay := &layoutLong[0]
 	var sf scfState
@@ -566,7 +567,7 @@ func BenchmarkQuantizeGranule(b *testing.B) {
 	}
 }
 
-// quantRefNoSkip is quantizeGranule's exact per-line body WITHOUT the zero fast
+// quantRefNoSkip is quantizeGranuleGo's exact per-line body WITHOUT the zero fast
 // path, the reference TestQuantizeZeroSkipExact checks the skip against.
 func quantRefNoSkip(x, is float64) int32 {
 	tt := math.Abs(x) * is
@@ -583,9 +584,11 @@ func quantRefNoSkip(x, is float64) int32 {
 	return m
 }
 
-// TestQuantizeZeroSkipExact pins quantizeGranule's zero fast path bit-for-bit
-// against the full sqrt chain. The skip is only bit-exact if quantZeroMax sits
-// strictly below the true zero boundary t0 = 0.5946^(4/3), the scaled magnitude
+// TestQuantizeZeroSkipExact pins the zero fast path of whichever quantizer the
+// build links, bit-for-bit against the full sqrt chain: simd's proven bound on
+// the default build, quantZeroMax under noasm (the CI noasm job runs it on both
+// arches). Its quantZeroMax < t0 assertion guards the reference. The
+// reference skip is only bit-exact if quantZeroMax sits strictly below the true zero boundary t0 = 0.5946^(4/3), the scaled magnitude
 // at which the full chain first rounds to a nonzero value (v + 0.4054 reaches
 // 1). The test asserts that invariant directly, so a mutation raising
 // quantZeroMax to or past t0 (for example the round value 0.5) reddens it, then
@@ -768,4 +771,50 @@ func TestMinGlobalGainEdges(t *testing.T) {
 			t.Errorf("%s: oracle scan = %d, want %d (test case is wrong)", c.name, got, c.want)
 		}
 	}
+}
+
+// TestStepQTable pins stepQTable bit-for-bit against the Ldexp formula through
+// stepQ (so an index offset error shows), and checks that every exponent the
+// encoder can form under the maximum amplification state stays inside the
+// table: the forward exponent at gg = 0 and gg = 255, and noiseGranule's
+// negation of it.
+func TestStepQTable(t *testing.T) {
+	for q := -stepQOffset; q < stepQOffset; q++ {
+		got := math.Float64bits(stepQ(q))
+		want := math.Float64bits(math.Ldexp(pow2Quarter[q&3], q>>2))
+		if got != want {
+			t.Fatalf("stepQ(%d) bits %#x, want %#x", q, got, want)
+		}
+	}
+	for li, lay := range prefixCostLayouts {
+		sf := quantizeMaxScf(lay)
+		for b := range lay.nBands {
+			extra := sf.bandExtraQuarters(b, lay)
+			for _, gg := range []int{0, 255} {
+				fwd := (quantGainBase - gg) + extra
+				for _, q := range []int{fwd, -fwd} {
+					if q < -stepQOffset || q >= stepQOffset {
+						t.Errorf("%s band %d gg %d: exponent %d outside the stepQ table", prefixCostLayoutName(li), b, gg, q)
+					}
+				}
+			}
+		}
+	}
+}
+
+// quantizeMaxScf is the maximum amplification state: scf 15 below slen1End and
+// 7 above, scalefac_scale 1, preflag 1 on long layouts, subblock_gain 7.
+func quantizeMaxScf(lay *bandLayout) (sf scfState) {
+	for b := range sf.scf {
+		sf.scf[b] = 7
+		if b < lay.slen1End {
+			sf.scf[b] = 15
+		}
+	}
+	sf.subblockGain = [3]int{7, 7, 7}
+	sf.scalefacScale = 1
+	if !lay.short {
+		sf.preflag = 1
+	}
+	return sf
 }

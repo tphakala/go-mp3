@@ -9,16 +9,22 @@ import (
 // (linbits 13 escape).
 const maxQuant = 8206
 
+// quantRounding is the nint offset of the power-law quantizer, 0.5 - 0.0946:
+// m = trunc((|xr|*is)^0.75 + quantRounding). The reference quantizer, the
+// simd path and minGlobalGain all use it, so they cannot drift apart.
+const quantRounding = 0.4054
+
 // quantZeroMax is a conservative lower bound on the scaled magnitude t =
 // |xr|*is below which the power-law quantizer always rounds to exactly 0.
 // A line quantizes to 0 iff sqrt(t*sqrt(t)) + 0.4054 < 1, i.e. iff t is below
 // the true boundary t0 = 0.5946^(4/3) ~= 0.4999960. quantZeroMax sits well
 // under t0 (margin ~0.01, far above any float64 rounding), so every line the
 // zero fast path skips would quantize to 0 by the full sqrt chain too: the
-// skip is bit-identical, only cheaper. quantizeGranule uses it to avoid the two
+// skip is bit-identical, only cheaper. quantizeGranuleGo uses it to avoid the two
 // math.Sqrt on the zero tail, which is most of the spectrum in the low-bitrate
-// escalation regime (issue #62). TestQuantizeZeroSkipExact and the encoder
-// goldens pin the bit-exactness.
+// escalation regime (issue #62). The simd path derives its own proven bound
+// (simd's pow34ZeroBound), so this constant only serves the reference.
+// TestQuantizeZeroSkipExact and the encoder goldens pin the bit-exactness.
 const quantZeroMax = 0.49
 
 // pow2Quarter holds 2^0, 2^(1/4), 2^(1/2) and 2^(3/4) as exact hex float
@@ -33,19 +39,43 @@ var pow2Quarter = [4]float64{
 	0x1.ae89f995ad3adp+0,
 }
 
+// stepQOffset is the index of q = 0 in stepQTable, which covers q in
+// [-512, 512).
+const stepQOffset = 512
+
+// stepQTable holds stepQ(q) for q in [-stepQOffset, stepQOffset): the product
+// of pow2Quarter[q&3] and 2^(q>>2), formed with math.Ldexp once at init.
+// Ldexp is exact here: every result is a normal float64 (smallest 2^-128).
+//
+// Every exponent the encoder forms lies inside the table. gg is 0..255 and
+// the amplification extra is at most 116 quarter-steps (short granules:
+// 2*(1+1)*15 for the 4-bit scalefactors in the low bands plus 8*7 for
+// subblock_gain 7; at most 72 for long granules). So the forward exponent
+// (quantGainBase-gg)+extra lies in [-41, 330] and noiseGranule's negation of
+// it in [-330, 41]. An index outside [-512, 512) panics instead of returning a
+// wrong step; TestStepQTable pins the bounds.
+var stepQTable = func() (t [2 * stepQOffset]float64) {
+	for i := range t {
+		q := i - stepQOffset
+		t[i] = math.Ldexp(pow2Quarter[q&3], q>>2)
+	}
+	return t
+}()
+
 // stepQ returns 2^(q/4) exactly, q may be negative: q splits into an integer
 // part q>>2 (arithmetic shift right, which floors for negative q too) and a
 // remainder q&3 in [0,3] (Go's bitwise AND on the low two bits of a two's
 // complement value is already the non-negative floor-mod, for negative q as
-// well as positive), so pow2Quarter[q&3] scaled by 2^(q>>2) via math.Ldexp
-// reproduces 2^(q/4) exactly, with no math.Pow call.
+// well as positive), so pow2Quarter[q&3] scaled by 2^(q>>2) reproduces
+// 2^(q/4) exactly, with no math.Pow call. It reads stepQTable, which holds
+// that product precomputed.
 //
 // invStep(gg) is the gg-only special case stepQ(quantGainBase - gg). Task 2
 // (the per-band quantizer, quantizeGranule/minGlobalGain/noiseGranule)
 // generalizes on this: those need a per-band exponent, gg plus that band's
 // bandExtraQuarters amplification, not just gg alone.
 func stepQ(q int) float64 {
-	return math.Ldexp(pow2Quarter[q&3], q>>2)
+	return stepQTable[q+stepQOffset]
 }
 
 // quantGainBase is 214, not the textbook ISO constant 210: the Task 7
@@ -117,7 +147,7 @@ func (sf *scfState) bandExtraQuarters(b int, lay *bandLayout) int {
 	return 2 * (sf.scalefacScale + 1) * (sf.scf[b] + pretab)
 }
 
-// quantizeGranule quantizes xr at global gain gg (0..255) under the per-band
+// quantizeGranuleGo quantizes xr at global gain gg (0..255) under the per-band
 // scalefactor state sf into ix: for each line i in band sfb, ix[i] =
 // sign(xr[i]) * nint((|xr[i]| * stepQ((quantGainBase-gg)+sf.bandExtraQuarters(sfb)))^0.75
 // - 0.0946), the ISO annex C.1.5.4 power-law quantizer generalized with
@@ -157,7 +187,10 @@ func (sf *scfState) bandExtraQuarters(b int, lay *bandLayout) int {
 // once the value is known to be within [0, maxQuant], sidesteps that
 // entirely; the two forms agree on every line that would not have overflowed
 // anyway.
-func quantizeGranule(xr *[576]float64, gg int, sf *scfState, lay *bandLayout, ix *[576]int32) {
+//
+// This is the canonical reference: the noasm build runs it, and
+// TestQuantizeGranuleParity gates the simd path against it.
+func quantizeGranuleGo(xr *[576]float64, gg int, sf *scfState, lay *bandLayout, ix *[576]int32) {
 	i := 0
 	for sfb := range lay.nBands {
 		is := stepQ((quantGainBase - gg) + sf.bandExtraQuarters(sfb, lay))
@@ -179,7 +212,7 @@ func quantizeGranule(xr *[576]float64, gg int, sf *scfState, lay *bandLayout, ix
 			v := math.Sqrt(t * math.Sqrt(t))
 
 			var m int32
-			if nint := v + 0.4054; nint <= float64(maxQuant) {
+			if nint := v + quantRounding; nint <= float64(maxQuant) {
 				m = int32(nint)
 			} else {
 				m = maxQuant
@@ -216,7 +249,7 @@ func quantizeGranule(xr *[576]float64, gg int, sf *scfState, lay *bandLayout, ix
 // It returns 255 when no gg in 0..254 fits (including when gg = 255 itself
 // would not), so the search covers 0..254 only.
 //
-// Like quantizeGranule, the bound check compares in float64 before any
+// Like quantizeGranuleGo, the bound check compares in float64 before any
 // int32 conversion, for the same overflow-avoidance reason.
 func minGlobalGain(xr *[576]float64, sf *scfState, lay *bandLayout) int {
 	var bandMax [39]float64
@@ -238,7 +271,7 @@ func minGlobalGain(xr *[576]float64, sf *scfState, lay *bandLayout) int {
 			is := stepQ((quantGainBase - gg) + sf.bandExtraQuarters(sfb, lay))
 			t := bandMax[sfb] * is
 			v := math.Sqrt(t * math.Sqrt(t))
-			if v+0.4054 > float64(maxQuant) {
+			if v+quantRounding > float64(maxQuant) {
 				return false
 			}
 		}

@@ -220,3 +220,36 @@ func TestPrefixCostRejectsBadLayout(t *testing.T) {
 		})
 	}
 }
+
+// TestPairBoundariesProducerContract pins what the prefix-cost kernels rely on
+// and checkPrefixCostLayout does not check: pairBoundaries yields pb[0] = 0, a
+// non-decreasing sequence ending at min(layout pairs, bigValues) within the 288
+// pairs of ix, for every layout and every bigValues.
+func TestPairBoundariesProducerContract(t *testing.T) {
+	layouts := make([]*bandLayout, 0, 6)
+	for r := range 3 {
+		layouts = append(layouts, &layoutLong[r], &layoutShort[r])
+	}
+	for _, lay := range layouts {
+		pairs := 0
+		for k := range lay.nBands {
+			pairs += lay.width[k] / 2
+		}
+		for bigValues := 0; bigValues <= 288; bigValues++ {
+			pb := pairBoundaries(lay, bigValues)
+			prev := 0
+			if pb[0] != 0 {
+				t.Fatalf("nBands %d bigValues %d: pb[0] = %d, want 0", lay.nBands, bigValues, pb[0])
+			}
+			for k := 1; k <= lay.nBands; k++ {
+				if pb[k] < prev {
+					t.Fatalf("nBands %d bigValues %d: pb[%d] = %d below pb[%d] = %d", lay.nBands, bigValues, k, pb[k], k-1, prev)
+				}
+				prev = pb[k]
+			}
+			if want := min(pairs, bigValues); pb[lay.nBands] != want || want > 288 {
+				t.Fatalf("nBands %d bigValues %d: pb[nBands] = %d, want %d (<= 288)", lay.nBands, bigValues, pb[lay.nBands], want)
+			}
+		}
+	}
+}

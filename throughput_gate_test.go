@@ -130,10 +130,11 @@ func genNoise(_, n int) [][]float32 {
 	return [][]float32{l, r}
 }
 
-// encodeWithin encodes planar samples frame by frame and aborts as soon as
-// budget is exceeded. It returns the frames finished within budget, the total
-// and the elapsed time; done equals total only when every frame finished
-// within budget.
+// encodeWithin encodes planar samples frame by frame, then drains the encoder
+// (the nil call that codes the frame held back for lookahead and flushes the
+// stream), and aborts as soon as budget is exceeded. It returns the frames
+// finished within budget, the total and the elapsed time; done equals total
+// only when every frame, drain included, finished within budget.
 func encodeWithin(cfg mp3.EncoderConfig, samples [][]float32, budget time.Duration) (done, total int, elapsed time.Duration, err error) {
 	enc, err := mp3.NewEncoder(cfg)
 	if err != nil {
@@ -157,7 +158,17 @@ func encodeWithin(cfg mp3.EncoderConfig, samples [][]float32, budget time.Durati
 		}
 		done++
 	}
-	return done, total, time.Since(start), nil
+	// The encoder holds the last frame for lookahead; only the drain codes it,
+	// so its cost belongs inside the timed region.
+	// A failed or over-budget drain leaves the held frame uncoded, so it does
+	// not count as done.
+	if _, err = enc.EncodeFrame(dst[:0], nil); err != nil {
+		return max(done-1, 0), total, time.Since(start), err
+	}
+	if elapsed = time.Since(start); elapsed > budget {
+		return max(done-1, 0), total, elapsed, nil
+	}
+	return done, total, elapsed, nil
 }
 
 func TestThroughputGate(t *testing.T) {

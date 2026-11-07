@@ -165,7 +165,7 @@ func tonalSamples(nch int, amp float32) [][]float32 {
 // BenchmarkEscalationFrame's broadband noise. Stereo 128 kbps 44.1 kHz, so it
 // compares directly against that benchmark's stereo-128k-44100 cases.
 //
-// It exists because the other frame benchmarks are escape-heavy: the share of
+// It exists because most of the other frame benchmarks are escape-heavy: the share of
 // big-values pairs that take the prefix-cost kernels' escape branch (a
 // magnitude above 15, prefixcost_kernel_amd64.s) is, measured on amd64
 // over 20 frames after the warmup, exact/fast:

@@ -162,6 +162,7 @@ func (sf *scfState) bandExtraQuarters(b int, lay *bandLayout) int {
 // The band step is hoisted out of the per-line loop: one stepQ call per
 // band (bandExtraQuarters and gg are constant across a band), not one per
 // line.
+// The per-line body is quantizeBandGo, which the per-band cache also calls.
 //
 // x^0.75 is computed as sqrt(x*sqrt(x)) rather than math.Pow, per the
 // package's determinism rule; TestQuantizePowRef documents the substitution
@@ -195,34 +196,44 @@ func quantizeGranuleGo(xr *[576]float64, gg int, sf *scfState, lay *bandLayout, 
 	for sfb := range lay.nBands {
 		is := stepQ((quantGainBase - gg) + sf.bandExtraQuarters(sfb, lay))
 		end := i + lay.width[sfb]
-		for ; i < end; i++ {
-			t := math.Abs(xr[i]) * is
-			// Zero fast path: a scaled magnitude below quantZeroMax always
-			// rounds to 0, so skip the two math.Sqrt that would only confirm
-			// it (issue #62). In the escalation regime the high-frequency tail
-			// is mostly such lines, and quantizeGranule runs once per
-			// global_gain candidate, so this removes the bulk of the sqrt work.
-			// The bound is held safely below the true zero boundary, so the
-			// skipped lines are exactly the ones the full chain zeros too:
-			// bit-identical output (quantZeroMax's doc comment proves it).
-			if t < quantZeroMax {
-				ix[i] = 0
-				continue
-			}
-			v := math.Sqrt(t * math.Sqrt(t))
+		quantizeBandGo(ix[i:end], xr[i:end], is)
+		i = end
+	}
+}
 
-			var m int32
-			if nint := v + quantRounding; nint <= float64(maxQuant) {
-				m = int32(nint)
-			} else {
-				m = maxQuant
-			}
-
-			if xr[i] < 0 {
-				m = -m
-			}
-			ix[i] = m
+// quantizeBandGo quantizes one band, the per-band body of quantizeGranuleGo:
+// dst[i] = sign(src[i]) * min(trunc((|src[i]|*is)^0.75 + quantRounding), maxQuant)
+// with the operations in that exact order. quantizeBand (the simd build) and
+// the per-band cache both rely on a band's result depending only on its own
+// lines and scale, never on neighbouring bands.
+func quantizeBandGo(dst []int32, src []float64, is float64) {
+	for i, x := range src {
+		t := math.Abs(x) * is
+		// Zero fast path: a scaled magnitude below quantZeroMax always
+		// rounds to 0, so skip the two math.Sqrt that would only confirm
+		// it (issue #62). In the escalation regime the high-frequency tail
+		// is mostly such lines, and quantizeGranule runs once per
+		// global_gain candidate, so this removes the bulk of the sqrt work.
+		// The bound is held safely below the true zero boundary, so the
+		// skipped lines are exactly the ones the full chain zeros too:
+		// bit-identical output (quantZeroMax's doc comment proves it).
+		if t < quantZeroMax {
+			dst[i] = 0
+			continue
 		}
+		v := math.Sqrt(t * math.Sqrt(t))
+
+		var m int32
+		if nint := v + quantRounding; nint <= float64(maxQuant) {
+			m = int32(nint)
+		} else {
+			m = maxQuant
+		}
+
+		if x < 0 {
+			m = -m
+		}
+		dst[i] = m
 	}
 }
 

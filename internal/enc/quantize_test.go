@@ -104,42 +104,53 @@ func TestQuantizePowRef(t *testing.T) {
 	}
 }
 
-// TestQuantizeMonotone sweeps gg from 0 to 255 over a fixed 576-line
-// spectrum with magnitudes spanning 1e-3..1e6 (including the region near
-// gg=0 where invStep is astronomically large and quantizeGranule's clamp
-// engages) and requires |ix[i]| to never increase as gg rises, for every
-// line.
+// TestQuantizeMonotone sweeps gg from 0 to 255 over a 576-line spectrum with
+// magnitudes spanning 1e-3..1e6 (including the region near gg=0 where invStep
+// is astronomically large and quantizeGranule's clamp engages) and requires
+// |ix[i]| to never increase as gg rises, for every line, on every layout and
+// under zero, maximum and random scalefactor states. The exact scan's
+// bisection on monoPairFloor relies on it.
 func TestQuantizeMonotone(t *testing.T) {
-	var xr [576]float64
 	var seed uint64 = 99
 	next := func() float64 {
 		return testsignal.LCG(&seed)
 	}
-	for i := range xr {
-		u := next()
-		mag := math.Pow(10, -3+float64(9*u))
-		if u2 := next(); u2 < 0.5 {
-			mag = -mag
-		}
-		xr[i] = mag
-	}
+	for li, lay := range prefixCostLayouts {
+		sfs := []scfState{{}, quantizeMaxScf(lay), randomScfState(&seed, lay), randomScfState(&seed, lay)}
+		for si, sf := range sfs {
+			// Random magnitudes over nine decades, with the special values
+			// (signed zero, subnormals, NaN, infinities, overflowing lines)
+			// pinned at the first lines: the exact scan's bisection needs
+			// every one of them to be non-increasing in gg too.
+			var xr [576]float64
+			for i := range xr {
+				u := next()
+				mag := math.Pow(10, -3+float64(9*u))
+				if u2 := next(); u2 < 0.5 {
+					mag = -mag
+				}
+				xr[i] = mag
+			}
+			specials := [...]float64{
+				math.Copysign(0, -1), 0, math.NaN(), math.Copysign(math.NaN(), -1),
+				math.Inf(1), math.Inf(-1), 5e-324, -5e-324, 1e-310, -1e-310,
+				1e300, -1e300, math.MaxFloat64, -math.MaxFloat64,
+			}
+			copy(xr[:], specials[:])
 
-	var sf scfState
-	lay := &layoutLong[0]
-
-	var prev [576]int32
-	quantizeGranule(&xr, 0, &sf, lay, &prev)
-
-	var cur [576]int32
-	for gg := 1; gg < 256; gg++ {
-		quantizeGranule(&xr, gg, &sf, lay, &cur)
-		for i := range 576 {
-			if abs32(cur[i]) > abs32(prev[i]) {
-				t.Fatalf("line %d: |ix| rose from gg=%d to gg=%d: %d -> %d",
-					i, gg-1, gg, prev[i], cur[i])
+			var prev, cur [576]int32
+			quantizeGranule(&xr, 0, &sf, lay, &prev)
+			for gg := 1; gg < 256; gg++ {
+				quantizeGranule(&xr, gg, &sf, lay, &cur)
+				for i := range 576 {
+					if abs32(cur[i]) > abs32(prev[i]) {
+						t.Fatalf("%s sf%d line %d (xr=%v): |ix| rose from gg=%d to gg=%d: %d -> %d",
+							prefixCostLayoutName(li), si, i, xr[i], gg-1, gg, prev[i], cur[i])
+					}
+				}
+				prev = cur
 			}
 		}
-		prev = cur
 	}
 }
 
@@ -796,6 +807,12 @@ func TestStepQTable(t *testing.T) {
 					if q < -stepQOffset || q >= stepQOffset {
 						t.Errorf("%s band %d gg %d: exponent %d outside the stepQ table", prefixCostLayoutName(li), b, gg, q)
 					}
+				}
+				if extra > maxExtraQuarters {
+					t.Errorf("%s band %d: extra %d exceeds maxExtraQuarters %d", prefixCostLayoutName(li), b, extra, maxExtraQuarters)
+				}
+				if k := fwd - qMin; k < 0 || k >= qSpan {
+					t.Errorf("%s band %d gg %d: exponent %d outside the quantCache span [%d, %d)", prefixCostLayoutName(li), b, gg, fwd, qMin, qMin+qSpan)
 				}
 			}
 		}

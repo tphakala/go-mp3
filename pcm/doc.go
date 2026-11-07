@@ -65,7 +65,7 @@
 //
 // Config.RateControl selects the rate-loop strategy: the zero value is
 // mp3.RateControlExact, and mp3.RateControlFast trades a little exactness for
-// speed on loud or transient material. It applies to NewEncoder, Reset and both
+// a speedup that only light frames see. It applies to NewEncoder, Reset and both
 // one-shots.
 //
 // By default the encoder writes a leading Xing/Info + LAME gapless tag carrying

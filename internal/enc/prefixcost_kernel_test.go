@@ -224,7 +224,7 @@ func TestPrefixCostRejectsBadLayout(t *testing.T) {
 // TestPairBoundariesProducerContract pins what the prefix-cost kernels rely on
 // and checkPrefixCostLayout does not check: pairBoundaries yields pb[0] = 0, a
 // non-decreasing sequence ending at min(layout pairs, bigValues) within the 288
-// pairs of ix, for every layout and every bigValues.
+// pairs of ix, for every layout and every bigValues in 0..288.
 func TestPairBoundariesProducerContract(t *testing.T) {
 	layouts := make([]*bandLayout, 0, 6)
 	for r := range 3 {

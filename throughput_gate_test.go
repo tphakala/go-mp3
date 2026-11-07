@@ -64,22 +64,23 @@ type throughputProgram struct {
 }
 
 func throughputPrograms() []throughputProgram {
+	stereo128k := mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: 128000}
 	return []throughputProgram{
 		{
 			name:  "tonal_stereo_128k_44100",
-			cfg:   mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: 128000},
+			cfg:   stereo128k,
 			gen:   genTonal,
 			floor: floorTonal,
 		},
 		{
 			name:  "tone_noise_stereo_128k_44100",
-			cfg:   mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: 128000},
+			cfg:   stereo128k,
 			gen:   genToneNoise,
 			floor: floorDense,
 		},
 		{
 			name:  "transient_stereo_128k_44100",
-			cfg:   mp3.EncoderConfig{SampleRate: 44100, Channels: 2, Bitrate: 128000},
+			cfg:   stereo128k,
 			gen:   genTransient,
 			floor: floorTransient,
 		},

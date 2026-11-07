@@ -241,6 +241,7 @@ type Encoder struct {
 	pad         paddingState
 	gr          [2][2]granuleCoding
 	bestScratch granuleCoding // outerLoop's caller-owned best-pass scratch
+	qc          quantCache    // outerLoop's quantization cache (about 0.9 MB, reset per call)
 	esc         escState      // codeFrame's masking-driven escalation scratch (Stage 2)
 
 	resv reservoir // bit reservoir accountant: tracks main-data occupancy across frames
@@ -848,7 +849,7 @@ func (e *Encoder) codeFrame(dst []byte) []byte {
 		for ch := range e.nch {
 			budget := budgets[g*e.nch+ch]
 			lay := layoutFor(e.bt[g][ch], e.srIndex)
-			_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, &e.gr[g][ch], &e.bestScratch, e.cfg.FastRateControl)
+			_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, &e.gr[g][ch], &e.bestScratch, e.cfg.FastRateControl, &e.qc)
 		}
 	}
 
@@ -994,7 +995,7 @@ func (e *Encoder) escTryBudget(i, budget int) {
 		*gc = rec.gc
 		excess, ratio, over = rec.excess, rec.ratio, rec.over
 	} else {
-		_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, gc, &e.bestScratch, e.cfg.FastRateControl)
+		_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, gc, &e.bestScratch, e.cfg.FastRateControl, &e.qc)
 		var noise [39]float64
 		noiseGranule(&e.xr[g][ch], &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
 		excess, ratio, over = maskingMetrics(&noise, &e.xminXr[g][ch], lay)
@@ -1212,7 +1213,7 @@ func (e *Encoder) escalateForMasking(nGC, padding, area, capBytes int) {
 			atCap := diagAtCap(&gc.sf, lay)
 			var exempt [39]bool
 			for s := range lay.nBands {
-				exempt[s] = diagFloorBound(&e.xr[g][ch], lay, gc.part23Length, gc, &noise, s, atCap[s])
+				exempt[s] = diagFloorBound(&e.xr[g][ch], lay, gc.part23Length, gc, &noise, s, atCap[s], &e.qc)
 			}
 			e.diagHook(g, ch, DiagGranule{
 				Noise:            noise,
@@ -1383,7 +1384,10 @@ func diagAtCap(sf *scfState, lay *bandLayout) [39]bool {
 // minGlobalGain-pinning line prevents any noise reduction) without its
 // scalefactor ever reaching the structural cap, exactly the scenario
 // outerLoop's own futility check exists to catch.
-func diagFloorBound(xr *[576]float64, lay *bandLayout, budget int, gc *granuleCoding, noiseNow *[39]float64, s int, atCap bool) bool {
+//
+// qc is scratch: diagFloorBound resets it for xr and lay before its trial
+// coding, so the caller's cache contents do not matter.
+func diagFloorBound(xr *[576]float64, lay *bandLayout, budget int, gc *granuleCoding, noiseNow *[39]float64, s int, atCap bool, qc *quantCache) bool {
 	if atCap {
 		return true
 	}
@@ -1402,7 +1406,8 @@ func diagFloorBound(xr *[576]float64, lay *bandLayout, budget int, gc *granuleCo
 		return true // no budget to even try the bump
 	}
 	huffBudget := min(budget, maxPart23Length) - part2
-	codeGranule(xr, huffBudget, lay, &trial, false) // diagnostic: exact search
+	qc.reset(xr, lay)
+	codeGranule(xr, huffBudget, lay, &trial, false, qc) // diagnostic: exact search
 	trial.scfCompress, trial.part2Bits = idx, part2
 
 	var noiseTrial [39]float64

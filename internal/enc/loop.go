@@ -174,8 +174,13 @@ func escalateSubblockGain(sf *scfState, lay *bandLayout, w int) {
 // gc is caller-owned working state, overwritten every pass; best is
 // caller-owned scratch (the Encoder preallocates a single reusable buffer)
 // that the loop never allocates into, only copies gc's value in and back
-// out of. The returned iteration count feeds tests and diagnostics.
-func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLayout, gc, best *granuleCoding, fast bool) (iters int) {
+// out of. qc is the quantization cache: outerLoop resets it for xr and lay on
+// entry and shares it across its iterations (xr never changes inside a call,
+// and the cache is keyed by band and quantizer exponent, so scalefactor changes
+// between iterations reuse what they can). The returned iteration count feeds
+// tests and diagnostics.
+func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLayout, gc, best *granuleCoding, fast bool, qc *quantCache) (iters int) {
+	qc.reset(xr, lay)
 	var sf scfState
 	var unfixable [39]bool
 
@@ -254,7 +259,7 @@ func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLay
 		// internal min(...,maxPart23Length) can never bind on its own and
 		// part2+ri.bits <= maxPart23Length always holds.
 		huffBudget := min(budgetBits, maxPart23Length) - part2
-		codeGranule(xr, huffBudget, lay, gc, fast)
+		codeGranule(xr, huffBudget, lay, gc, fast, qc)
 		gc.scfCompress, gc.part2Bits = idx, part2
 		gc.part23Length = part2 + gc.ri.bits
 

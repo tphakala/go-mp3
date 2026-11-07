@@ -85,21 +85,26 @@ const (
 	// RateControlExact selects the smallest global_gain whose Huffman coding
 	// fits the frame's bit budget, by an upward linear scan: the finest
 	// quantization within budget, hence the best quality this encoder
-	// produces, and the historical behavior. On frames that need a large gain
-	// increase (loud, broadband, or transient material) that scan is still
-	// the encoder's dominant cost, though it skips the Huffman region search
-	// at every step a cheap sound bound proves over budget, which never
-	// changes the result. This is the default.
+	// produces, and the historical behavior. The scan starts at the first gain
+	// a sound lower bound on the Huffman bits admits (found by binary search,
+	// since the bound never increases with the gain), serves quantization from
+	// a per-pass cache, and skips the Huffman region search at every step a
+	// tighter bound proves over budget; none of that changes the result. This
+	// is the default.
 	RateControlExact RateControl = iota
-	// RateControlFast binary-searches global_gain instead of scanning,
-	// several times faster than RateControlExact on escalation-heavy frames,
-	// less on typical material.
+	// RateControlFast binary-searches global_gain instead of scanning. It is
+	// no longer the faster choice on dense frames: on the loud and broadband
+	// stereo frames of BenchmarkEscalationFrame, RateControlExact is about
+	// 2.3 times faster on amd64 and 2.6 times on arm64 (the Intel i5-7260U and
+	// Cortex-A76 hosts measured). Fast keeps a smaller edge on light frames
+	// (about 1.2 to 1.3 times on the 320 kbps mono case of
+	// BenchmarkTransientFrame) and ties on tonal material.
 	// Because the coded bit count is not strictly monotone in the gain, the
 	// search can occasionally settle one or a few steps above the exact choice: a
 	// slightly coarser quantization on the affected granules (never finer), a
 	// small and bounded quality reduction. Its output is therefore not
-	// bit-identical to RateControlExact. Prefer it when encode throughput
-	// matters more than the last fraction of quality.
+	// bit-identical to RateControlExact. Prefer RateControlExact
+	// unless a benchmark on your own material shows Fast faster.
 	RateControlFast
 )
 
@@ -134,8 +139,8 @@ type EncoderConfig struct {
 	Bitrate int
 	// RateControl selects the inner rate loop's global_gain search strategy:
 	// RateControlExact (the zero value and default) for the best quality, or
-	// RateControlFast for a large speedup at a small, bounded quality cost on
-	// some frames. See RateControl.
+	// RateControlFast, which costs a small, bounded amount of quality on some
+	// frames and is faster only on light frames. See RateControl.
 	RateControl RateControl
 }
 

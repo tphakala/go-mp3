@@ -1,6 +1,10 @@
 package enc
 
-import "github.com/tphakala/go-mp3/internal/bits"
+import (
+	mbits "math/bits"
+
+	"github.com/tphakala/go-mp3/internal/bits"
+)
 
 // impossibleCost marks a (table, magnitude) combination the table cannot
 // represent at all: a non-escape table asked for a value beyond its
@@ -497,15 +501,10 @@ func quadIndex(v, w, x, y int32) int {
 
 // quadSignBits counts how many of a count1 quad's four elements are
 // nonzero, i.e. how many sign bits l3Huffman's count1 walk reads for it
-// (internal/dec/huffman.go:270-312).
+// (internal/dec/huffman.go:270-312). That is the number of set bits in the
+// presence index quadIndex builds.
 func quadSignBits(v, w, x, y int32) int {
-	n := 0
-	for _, e := range [4]int32{v, w, x, y} {
-		if e != 0 {
-			n++
-		}
-	}
-	return n
+	return mbits.OnesCount8(uint8(quadIndex(v, w, x, y)))
 }
 
 // regionBounds converts region0Count/region1Count (ISO side-info

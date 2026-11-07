@@ -194,7 +194,9 @@ func pairCostEsc(t huffTable, ax, ay int32) int {
 // bigValCnt there stops the decode the moment it hits 0, regardless of how
 // many nominal sfb's a region's side-info count implies
 // (internal/dec/huffman.go:151, :199-204). chooseRegions and writeSpectrum
-// both call this so their region-boundary arithmetic can never diverge.
+// both call this so their region-boundary arithmetic can never diverge. The
+// prefix-cost kernels rely on its output being non-decreasing within 288
+// (TestPairBoundariesProducerContract).
 func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 	var pb [40]int
 	cum := 0

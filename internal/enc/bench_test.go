@@ -151,10 +151,10 @@ func tonalSamples(nch int, amp float32) [][]float32 {
 		for i := range out[ch] {
 			var acc float64
 			for k, bin := range tonalPartialBins {
-				phase := float64(2*math.Pi*float64(bin)*float64(i)/1152) + float64(0.7*float64(ch))
+				phase := 2*math.Pi*float64(bin)*float64(i)/1152 + float64(0.7*float64(ch))
 				acc += float64(tonalPartialWeights[k] * math.Sin(phase))
 			}
-			out[ch][i] = float32(float64(float64(amp)*acc) / sum)
+			out[ch][i] = float32(float64(amp) * acc / sum)
 		}
 	}
 	return out

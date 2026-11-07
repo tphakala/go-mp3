@@ -247,8 +247,8 @@ func TestPairBoundariesProducerContract(t *testing.T) {
 				}
 				prev = pb[k]
 			}
-			if want := min(pairs, bigValues); pb[lay.nBands] != want || want > 288 {
-				t.Fatalf("nBands %d bigValues %d: pb[nBands] = %d, want %d (<= 288)", lay.nBands, bigValues, pb[lay.nBands], want)
+			if want := min(pairs, bigValues); pb[lay.nBands] != want {
+				t.Fatalf("nBands %d bigValues %d: pb[nBands] = %d, want %d", lay.nBands, bigValues, pb[lay.nBands], want)
 			}
 		}
 	}

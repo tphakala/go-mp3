@@ -738,8 +738,8 @@ func writePair(w *bits.Writer, bt huffTable, x, y int32) {
 	f, nf = appendValue(f, nf, bt, x)
 	f, nf = appendValue(f, nf, bt, y)
 	// bits.Writer.WriteBits accepts at most 32 bits per call. The widest field
-	// over bigTables (codeword length + 2*(linbits+1)) is 45 bits, so the top
-	// nf-32 bits go first when it overflows.
+	// in bigTables is 36 bits (table 23's (15,15) codeword with both values
+	// escaped and signed), so the top nf-32 bits go first when it overflows.
 	if nf > 32 {
 		w.WriteBits(uint32(f>>32), int(nf-32))
 		nf = 32

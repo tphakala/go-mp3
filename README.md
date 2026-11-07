@@ -90,14 +90,16 @@ calls plus drain always total exactly `N+1` emitted frames.
 By default the encoder runs its rate loop in `RateControlExact` mode, which
 picks the finest quantization within each frame's bit budget. Set
 `RateControl: mp3.RateControlFast` in the `mp3.EncoderConfig`, or in
-`pcm.Config` when encoding through the `pcm` layer, to trade a little quality for
-a large speedup: it binary-searches the global gain instead of scanning it,
-several times faster on loud, broadband, or transient frames (where the exact
-scan climbs farthest; less on typical material), at the cost of occasionally
-choosing a slightly coarser gain on a small fraction of granules (never a finer
-one). In testing the fast search diverges from exact on well under 0.1% of
-granules, and only ever by a few steps of global gain, so the quality difference
-is small; the default stays exact, so nothing changes unless you opt in.
+`pcm.Config` when encoding through the `pcm` layer, to binary-search the global
+gain instead of scanning it. The exact scan prunes its start with a sound bound,
+so on loud and broadband stereo frames it is now about 2.3 to 2.6 times faster
+than the fast search; the fast search keeps only a small edge on light frames
+(about 1.2 to 1.3 times on a 320 kbps mono transient program) and ties on tonal
+material. It occasionally chooses a slightly coarser gain on a small fraction
+of granules (never a finer one): in testing it diverges from exact on well under
+0.1% of granules, and only ever by a few steps of global gain. The default stays
+exact, so nothing changes unless you opt in, and measuring your own material
+first is worthwhile.
 
 Status: it produces valid, standard-compliant CBR MPEG-1 Layer III streams
 (32/44.1/48 kHz, mono or stereo, the 14 legal CBR bitrates) with a

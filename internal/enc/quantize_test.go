@@ -587,8 +587,8 @@ func quantRefNoSkip(x, is float64) int32 {
 // TestQuantizeZeroSkipExact pins the zero fast path of whichever quantizer the
 // build links, bit-for-bit against the full sqrt chain: simd's proven bound on
 // the default build, quantZeroMax under noasm (the CI noasm job runs it on both
-// arches). Its quantZeroMax < t0 assertion guards the reference. The skip is only bit-exact if quantZeroMax sits
-// strictly below the true zero boundary t0 = 0.5946^(4/3), the scaled magnitude
+// arches). Its quantZeroMax < t0 assertion guards the reference. The
+// reference skip is only bit-exact if quantZeroMax sits strictly below the true zero boundary t0 = 0.5946^(4/3), the scaled magnitude
 // at which the full chain first rounds to a nonzero value (v + 0.4054 reaches
 // 1). The test asserts that invariant directly, so a mutation raising
 // quantZeroMax to or past t0 (for example the round value 0.5) reddens it, then

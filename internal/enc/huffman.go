@@ -114,7 +114,7 @@ type regionInfo struct {
 // inlines pairCostDirect (issue #56), not pairCost: it costs only
 // nonEscBigTables, every one of which has linbits == 0
 // (TestEscFamilyTablePartition pins that), and the escape families reach
-// their costs through escFamilyPrefixGo (issue #66; accumEscFamilyFlat and
+// their costs through escFamilyPrefix (issue #66; accumEscFamilyFlat and
 // accumEscFamilyCost now survive only as its test oracle).
 //
 // pairCost itself stays the one entry point that is correct for an arbitrary
@@ -212,8 +212,8 @@ func pairBoundaries(lay *bandLayout, bigValues int) [40]int {
 // magnitude at or above escMaxDirect, no table in the family applies a linbits
 // addend and none can find the pair unrepresentable, so every one of the eight
 // costs is the same shared codeword-plus-sign total. Since issue #66 folded the
-// production escape-family cost into escFamilyAccumGo (reached through
-// escFamilyPrefixGo), this and accumEscFamilyCost
+// production escape-family cost into escFamilyAccum (reached through
+// escFamilyPrefix), this and accumEscFamilyCost
 // survive only as the differential test oracle (escFamilyAccumScalarOld).
 //
 // Callers must test that themselves; this half does not re-check it, and
@@ -250,7 +250,7 @@ func accumEscFamilyFlat(acc *[8]int, codes []codeEntry, ax, ay int32) {
 // This function stays correct for any pair. It once split escaping from
 // non-escaping pairs (routing the flat case to accumEscFamilyFlat for an
 // inlinable fast path, issue #48); since issue #66 folded the production path
-// into escFamilyAccumGo (reached through escFamilyPrefixGo), both halves
+// into escFamilyAccum (reached through escFamilyPrefix), both halves
 // now serve only as the differential test
 // oracle (escFamilyAccumScalarOld), so the split is kept for that oracle's
 // fidelity to the historical scalar path, not for hot-path performance.
@@ -366,7 +366,7 @@ func bigValuesPrefixCostGo(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixC
 
 	// Escape families 16-23 and 24-31: the shared codeword and sign cost for
 	// each family is computed once per pair here (the codes[] gather, done once
-	// per pair rather than per table), then escFamilyPrefixGo folds in each
+	// per pair rather than per table), then escFamilyPrefix folds in each
 	// table's linbits escape term across the family's 8 lanes (issue #66,
 	// generalizing issue #37's per-family factoring). base16/base24 hold the
 	// per-pair codeword-plus-sign totals; ax/ay carry the unclamped magnitudes
@@ -392,7 +392,7 @@ func bigValuesPrefixCostGo(ix *[576]int32, pb *[40]int, lay *bandLayout, prefixC
 		base24[p] = int32(table24Codes[int(cx)*escTableDim+int(cy)].len) + sign
 	}
 
-	escFamilyPrefixGo(prefixCost, pb, lay.nBands, &ax, &ay, &base16, &base24)
+	escFamilyPrefix(prefixCost, pb, lay.nBands, &ax, &ay, &base16, &base24)
 
 	// Invalid table slots 4 and 14 carry no codes and are never selected, but
 	// rangeCost's SIMD min-reduce scans the full 32-wide band row rather than

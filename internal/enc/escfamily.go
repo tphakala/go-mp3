@@ -2,7 +2,7 @@ package enc
 
 // escFam16LinbitsI32 / escFam24LinbitsI32 are the int32 forms of the two escape
 // families' per-table linbits (escFam16Linbits / escFam24Linbits are [8]int for
-// the scalar accumEscFamily* path). escFamilyAccumGo reads these as its 8-lane
+// the scalar accumEscFamily* path). escFamilyAccum reads these as its 8-lane
 // int32 addends; deriving them here keeps them from drifting out of sync with
 // the [8]int originals.
 var (
@@ -18,7 +18,7 @@ func linbitsI32(l *[8]int) [8]int32 {
 	return o
 }
 
-// escFamilyAccumGo accumulates the escape-family big-values cost of pairs
+// escFamilyAccum accumulates the escape-family big-values cost of pairs
 // [0,len(ax)) into the two per-family 8-lane accumulators: acc16[j] for escape
 // table 16+j, acc24[j] for table 24+j. It is the escape-family half of
 // bigValuesPrefixCostGo, the pure-Go reference the fused prefix-cost kernels
@@ -40,7 +40,7 @@ func linbitsI32(l *[8]int) [8]int32 {
 // truncate-to-int32 also reduces mod 2^32, so the two agree whether or not the
 // running sum overflows (it never does here: the worst case is about
 // 288*impossibleCost ~ 3e8, far inside int32).
-func escFamilyAccumGo(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32) {
+func escFamilyAccum(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32) {
 	// Reslice to the common length so the bounds-check prover clears the ay,
 	// base16 and base24 accesses from the single len(ax) fact (they are distinct
 	// backing arrays). All four must have length n; a shorter slice panics here
@@ -83,7 +83,7 @@ func escFamilyAccumGo(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32) {
 	}
 }
 
-// escFamilyPrefixGo is the escape-family phase of bigValuesPrefixCostGo in ONE
+// escFamilyPrefix is the escape-family phase of bigValuesPrefixCostGo in ONE
 // call per granule big-values run (issue #68): it walks the coding bands
 // 0..nBands-1, keeping the two 8-lane accumulators resident across the whole
 // run, and after each band k writes the CUMULATIVE prefix cost for escape
@@ -93,12 +93,12 @@ func escFamilyAccumGo(acc16, acc24 *[8]int32, ax, ay, base16, base24 []int32) {
 // accumulator. Row 0 and columns 0..15 are never touched, so the caller's
 // non-escape table costs and the empty-prefix row 0 survive. The base16/base24
 // codebook gather stays a pre-pass in the caller.
-func escFamilyPrefixGo(prefixCost *[40][32]int32, pb *[40]int, nBands int, ax, ay, base16, base24 *[288]int32) {
+func escFamilyPrefix(prefixCost *[40][32]int32, pb *[40]int, nBands int, ax, ay, base16, base24 *[288]int32) {
 	var acc16, acc24 [8]int32
 	p := 0
 	for k := range nBands {
 		end := pb[k+1]
-		escFamilyAccumGo(&acc16, &acc24, ax[p:end], ay[p:end], base16[p:end], base24[p:end])
+		escFamilyAccum(&acc16, &acc24, ax[p:end], ay[p:end], base16[p:end], base24[p:end])
 		p = end
 		for j, t := range escFam16Tables {
 			prefixCost[k+1][t] = acc16[j]

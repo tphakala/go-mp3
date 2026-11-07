@@ -7,7 +7,7 @@ import (
 
 // escFamilyAccumScalarOld reproduces the pre-issue-66 escape-family accumulation
 // exactly (accumEscFamilyFlat for a non-escaping pair, accumEscFamilyCost
-// otherwise), as the differential oracle for escFamilyAccumGo. It mirrors
+// otherwise), as the differential oracle for escFamilyAccum. It mirrors
 // bigValuesPrefixCostGo's former inner pair loop.
 func escFamilyAccumScalarOld(ax, ay []int32) (acc16, acc24 [8]int) {
 	for p := range ax {
@@ -24,7 +24,7 @@ func escFamilyAccumScalarOld(ax, ay []int32) (acc16, acc24 [8]int) {
 }
 
 // escFamilyBaseFor precomputes the per-pair shared codeword+sign costs that
-// escFamilyAccumGo consumes (the codebook gather kept out of the accumulation
+// escFamilyAccum consumes (the codebook gather kept out of the accumulation
 // loop). Mirrors bigValuesPrefixCostGo's base16/base24 pre-pass.
 func escFamilyBaseFor(ax, ay []int32) (base16, base24 []int32) {
 	base16 = make([]int32, len(ax))
@@ -70,18 +70,18 @@ func randMag(r *rand.Rand) int32 {
 	}
 }
 
-func escFamilyAccumGoWrap(ax, ay []int32) (acc16, acc24 [8]int32) {
+func escFamilyAccumWrap(ax, ay []int32) (acc16, acc24 [8]int32) {
 	base16, base24 := escFamilyBaseFor(ax, ay)
-	escFamilyAccumGo(&acc16, &acc24, ax, ay, base16, base24)
+	escFamilyAccum(&acc16, &acc24, ax, ay, base16, base24)
 	return
 }
 
-// TestEscFamilyAccumGoMatchesScalar pins escFamilyAccumGo (the per-run
-// primitive escFamilyPrefixGo builds on) bit-for-bit to the former
+// TestEscFamilyAccumMatchesScalar pins escFamilyAccum (the per-run
+// primitive escFamilyPrefix builds on) bit-for-bit to the former
 // accumEscFamilyFlat/accumEscFamilyCost path over randomized pair runs spanning
 // every branch, so the folded uniform formula (issue #66) is proven
 // output-neutral independently of the full-encode golden gate.
-func TestEscFamilyAccumGoMatchesScalar(t *testing.T) {
+func TestEscFamilyAccumMatchesScalar(t *testing.T) {
 	r := rand.New(rand.NewPCG(1, 2))
 	for iter := range 4000 {
 		n := 1 + r.IntN(288)
@@ -92,7 +92,7 @@ func TestEscFamilyAccumGoMatchesScalar(t *testing.T) {
 			ay[p] = randMag(r)
 		}
 		want16, want24 := escFamilyAccumScalarOld(ax, ay)
-		got16, got24 := escFamilyAccumGoWrap(ax, ay)
+		got16, got24 := escFamilyAccumWrap(ax, ay)
 		for j := range 8 {
 			if int(got16[j]) != want16[j] {
 				t.Fatalf("iter %d: acc16[%d] = %d, want %d", iter, j, got16[j], want16[j])

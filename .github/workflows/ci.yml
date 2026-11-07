@@ -56,6 +56,14 @@ jobs:
       - run: go test ./... -timeout 20m
         env:
           MP3_QUALITY_BASELINE: '1'
+      # Encoder throughput gate (TestThroughputGate): encodes a few
+      # deterministic programs and fails when one runs under its realtime
+      # floor. A separate step with -p 1 so no other package's tests compete
+      # for CPU while it times the encoder. The main step above leaves
+      # MP3_THROUGHPUT_GATE unset, so the gate skips there.
+      - run: go test . -run 'TestThroughputGate' -count=1 -p 1 -v -timeout 5m
+        env:
+          MP3_THROUGHPUT_GATE: '1'
       # SIMD_DISABLE=all routes simd's quantizer to its portable Go path; output must not change.
       - run: go test ./internal/enc -run 'Golden|Quantize' -timeout 20m
         env:

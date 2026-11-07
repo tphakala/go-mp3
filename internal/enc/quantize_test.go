@@ -628,3 +628,148 @@ func TestQuantizeZeroSkipExact(t *testing.T) {
 	sweep(0.35, 0.30/575.0)     // broad: both the skip bound and t0
 	sweep(0.4997, 0.0006/575.0) // fine: densely straddles t0 (~1e-6 step)
 }
+
+// minGlobalGainScan is the upward linear scan minGlobalGain replaced with a
+// binary search, kept as the oracle: the smallest gg in 0..255 whose every
+// band fits, 255 when none does.
+func minGlobalGainScan(xr *[576]float64, sf *scfState, lay *bandLayout) int {
+	var bandMax [39]float64
+	i := 0
+	for sfb := range lay.nBands {
+		m := 0.0
+		for end := i + lay.width[sfb]; i < end; i++ {
+			m = max(m, math.Abs(xr[i]))
+		}
+		bandMax[sfb] = m
+	}
+	for gg := range 256 {
+		fits := true
+		for sfb := range lay.nBands {
+			t := bandMax[sfb] * stepQ((quantGainBase-gg)+sf.bandExtraQuarters(sfb, lay))
+			if math.Sqrt(t*math.Sqrt(t))+0.4054 > float64(maxQuant) {
+				fits = false
+				break
+			}
+		}
+		if fits {
+			return gg
+		}
+	}
+	return 255
+}
+
+// randomScfState draws a scalefactor state within the bitstream's field limits
+// (4-bit slen1 bands, 3-bit slen2 bands, 3-bit subblock gain).
+func randomScfState(seed *uint64, lay *bandLayout) scfState {
+	var sf scfState
+	for b := range lay.nScf {
+		if b < lay.slen1End {
+			sf.scf[b] = int(testsignal.LCG(seed) * 16)
+		} else {
+			sf.scf[b] = int(testsignal.LCG(seed) * 8)
+		}
+	}
+	sf.scalefacScale = int(testsignal.LCG(seed) * 2)
+	if lay.short {
+		for w := range sf.subblockGain {
+			sf.subblockGain[w] = int(testsignal.LCG(seed) * 8)
+		}
+	} else {
+		sf.preflag = int(testsignal.LCG(seed) * 2)
+	}
+	return sf
+}
+
+// TestMinGlobalGainMatchesScan requires the binary search to return exactly
+// what the upward scan does, over all six layouts, random scalefactor states
+// and log-uniform spectra, plus spectra whose loudest line sits a few ulps
+// either side of one band's fit threshold at a random gg.
+func TestMinGlobalGainMatchesScan(t *testing.T) {
+	var seed uint64 = 99
+	layouts := []*bandLayout{
+		&layoutLong[0], &layoutLong[1], &layoutLong[2],
+		&layoutShort[0], &layoutShort[1], &layoutShort[2],
+	}
+	check := func(name string, xr *[576]float64, sf *scfState, lay *bandLayout) {
+		t.Helper()
+		if got, want := minGlobalGain(xr, sf, lay), minGlobalGainScan(xr, sf, lay); got != want {
+			t.Fatalf("%s (short=%v nBands=%d): minGlobalGain = %d, scan = %d", name, lay.short, lay.nBands, got, want)
+		}
+	}
+	for _, lay := range layouts {
+		for trial := range 300 {
+			sf := randomScfState(&seed, lay)
+			var xr [576]float64
+			for i := range xr {
+				// Log-uniform magnitudes over 1e-6..1e8, with some silent lines.
+				if testsignal.LCG(&seed) < 0.2 {
+					continue
+				}
+				v := math.Pow(10, testsignal.LCG(&seed)*14-6)
+				if testsignal.LCG(&seed) < 0.5 {
+					v = -v
+				}
+				xr[i] = v
+			}
+			check("random spectrum", &xr, &sf, lay)
+
+			// Put one band's loudest line at the exact fit threshold of a
+			// random gg, then nudge it by up to 3 ulps each way.
+			var quiet [576]float64
+			sfb := trial % lay.nBands
+			gg := int(testsignal.LCG(&seed) * 255)
+			thr := math.Pow(float64(maxQuant)-0.4054, 4.0/3) / stepQ((quantGainBase-gg)+sf.bandExtraQuarters(sfb, lay))
+			start := 0
+			for b := range sfb {
+				start += lay.width[b]
+			}
+			for k := -3; k <= 3; k++ {
+				v := thr
+				for range max(k, -k) {
+					if k > 0 {
+						v = math.Nextafter(v, math.Inf(1))
+					} else {
+						v = math.Nextafter(v, 0)
+					}
+				}
+				quiet[start] = v
+				check("threshold neighbourhood", &quiet, &sf, lay)
+			}
+		}
+	}
+}
+
+// TestMinGlobalGainEdges pins the cases the search's upper bound decides:
+// nothing in 0..254 fits (255 comes back whether or not 255 fits), only gg 255
+// fits, and an empty layout.
+func TestMinGlobalGainEdges(t *testing.T) {
+	lay := &layoutLong[0]
+	var sf scfState
+	spectrum := func(v float64) *[576]float64 {
+		var xr [576]float64
+		xr[0] = v
+		return &xr
+	}
+	// The fit threshold of band 0 at gg = 255; gg = 254 needs it 2^(1/4) lower.
+	thr255 := math.Pow(float64(maxQuant)-0.4054, 4.0/3) / stepQ(quantGainBase-255)
+	cases := []struct {
+		name string
+		xr   *[576]float64
+		lay  *bandLayout
+		want int
+	}{
+		{"nothing fits, huge finite", spectrum(1e300), lay, 255},
+		{"nothing fits, +Inf", spectrum(math.Inf(1)), lay, 255},
+		{"only gg 255 fits", spectrum(0.99 * thr255), lay, 255},
+		{"silent spectrum", spectrum(0), lay, 0},
+		{"no bands", spectrum(1e300), &bandLayout{}, 0},
+	}
+	for _, c := range cases {
+		if got := minGlobalGain(c.xr, &sf, c.lay); got != c.want {
+			t.Errorf("%s: minGlobalGain = %d, want %d", c.name, got, c.want)
+		}
+		if got := minGlobalGainScan(c.xr, &sf, c.lay); got != c.want {
+			t.Errorf("%s: oracle scan = %d, want %d (test case is wrong)", c.name, got, c.want)
+		}
+	}
+}

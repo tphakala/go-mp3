@@ -63,23 +63,6 @@ func quantizeParityScf(seed *uint64, flags int, lay *bandLayout) (sf scfState) {
 	return sf
 }
 
-// quantizeMaxScf is the maximum amplification state: scf 15 below slen1End and
-// 7 above, scalefac_scale 1, preflag 1 on long layouts, subblock_gain 7.
-func quantizeMaxScf(lay *bandLayout) (sf scfState) {
-	for b := range sf.scf {
-		sf.scf[b] = 7
-		if b < lay.slen1End {
-			sf.scf[b] = 15
-		}
-	}
-	sf.subblockGain = [3]int{7, 7, 7}
-	sf.scalefacScale = 1
-	if !lay.short {
-		sf.preflag = 1
-	}
-	return sf
-}
-
 // quantizeEdgeInput builds a granule at gg whose special values sit at fixed
 // line indices 0..13 and whose other lines are scaled so that, band by band,
 // the scaled magnitude straddles the zero boundary t0, the half-integer

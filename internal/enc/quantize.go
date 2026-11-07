@@ -39,19 +39,43 @@ var pow2Quarter = [4]float64{
 	0x1.ae89f995ad3adp+0,
 }
 
+// stepQOffset is the index of q = 0 in stepQTable, which covers q in
+// [-512, 512).
+const stepQOffset = 512
+
+// stepQTable holds stepQ(q) for q in [-stepQOffset, stepQOffset): the product
+// of pow2Quarter[q&3] and 2^(q>>2), formed with math.Ldexp once at init.
+// Ldexp is exact here: every result is a normal float64 (smallest 2^-128).
+//
+// Every exponent the encoder forms lies inside the table. gg is 0..255 and
+// the amplification extra is at most 116 quarter-steps (short granules:
+// 2*(1+1)*15 for the 4-bit scalefactors in the low bands plus 8*7 for
+// subblock_gain 7; at most 72 for long granules). So the forward exponent
+// (quantGainBase-gg)+extra lies in [-41, 330] and noiseGranule's negation of
+// it in [-330, 41]. An index outside [-512, 512) panics instead of returning a
+// wrong step; TestStepQTable pins the bounds.
+var stepQTable = func() (t [2 * stepQOffset]float64) {
+	for i := range t {
+		q := i - stepQOffset
+		t[i] = math.Ldexp(pow2Quarter[q&3], q>>2)
+	}
+	return t
+}()
+
 // stepQ returns 2^(q/4) exactly, q may be negative: q splits into an integer
 // part q>>2 (arithmetic shift right, which floors for negative q too) and a
 // remainder q&3 in [0,3] (Go's bitwise AND on the low two bits of a two's
 // complement value is already the non-negative floor-mod, for negative q as
-// well as positive), so pow2Quarter[q&3] scaled by 2^(q>>2) via math.Ldexp
-// reproduces 2^(q/4) exactly, with no math.Pow call.
+// well as positive), so pow2Quarter[q&3] scaled by 2^(q>>2) reproduces
+// 2^(q/4) exactly, with no math.Pow call. It reads stepQTable, which holds
+// that product precomputed.
 //
 // invStep(gg) is the gg-only special case stepQ(quantGainBase - gg). Task 2
 // (the per-band quantizer, quantizeGranule/minGlobalGain/noiseGranule)
 // generalizes on this: those need a per-band exponent, gg plus that band's
 // bandExtraQuarters amplification, not just gg alone.
 func stepQ(q int) float64 {
-	return math.Ldexp(pow2Quarter[q&3], q>>2)
+	return stepQTable[q+stepQOffset]
 }
 
 // quantGainBase is 214, not the textbook ISO constant 210: the Task 7

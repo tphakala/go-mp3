@@ -63,7 +63,7 @@ A change that violates one is wrong even if tests pass.
 6. **The encoder is golden-neutral.** Any change to production encoder code must keep output bit-exact against the committed goldens on amd64 and arm64, with and without the `noasm` tag, unless the PR is an explicit quality-tuning PR, which re-freezes the goldens on purpose and carries a before/after `task quality` summary in its description.
 7. **Zero allocations in steady state.** `DecodeFrame`, `EncodeFrame` and the internal decode and encode paths are allocation-free after warm-up; alloc tests guard this. Error paths may allocate.
 8. **SIMD stays mp3-local and optional.** The kernels in `internal/enc` (`rangecost_kernel_*`, `prefixcost_kernel_*`: AVX2 and NEON with a pure-Go reference) are gated by the `noasm` tag: the default build links them, `-tags noasm` compiles the pure-Go dispatcher. `github.com/tphakala/simd` may be used where a generic primitive fits, but mp3-specific fused kernels (bit-exact Huffman and DSP logic) live in this repo and are never pushed up into the simd library. Each kernel carries a differential parity and fuzz test against its reference.
-9. **`chooseRegions`' tail memo stays `[40]`.** `tail`/`tailSet` in `internal/enc/huffman.go` are indexed by the region boundary `c` and, like `pb`, sized for every band boundary: `c <= lay.nBands`, and `lay.nBands` reaches 39 for a `blockLong`-typed granule over a short layout (as in `TestOuterLoopShortConverges`). The loop bounds `r0 <= 15` and `r1 <= 7` keep `c = r0+r1+2` within 24, and the production long-block path within [2, 22].
+9. **`chooseRegions`' `[40]` arrays stay `[40]`.** `pb [40]int` (from `pairBoundaries`) and `prefixCost [40][32]int32` (in `chooseRegions`, `writeSpectrum`, `bigValuesPrefixCostGo`, the escape-family step and both prefix-cost kernels) are indexed up to `lay.nBands`, which reaches 39 for a `blockLong`-typed granule over a short layout (as in `TestOuterLoopShortConverges`). A smaller first dimension panics in Go and, in the assembly kernels, writes out of bounds. The `tail`/`tailSet` memo is indexed by `c = r0+r1+2 <= 24` (`r0 <= 15`, `r1 <= 7`), so 40 is not load-bearing there; it is sized to match `pb` by convention and must never be smaller than 25.
 
 ## Layout
 
@@ -160,7 +160,7 @@ Intentional, do not flag:
 - Explicit `float32(a*b)` and `float64(a*b)` conversions that look redundant; they block FMA fusion.
 - Hex-float literal tables in `internal/enc` instead of computed values; they are what keeps output cross-arch identical.
 - `//nolint:gocognit,gocyclo` on faithful minimp3 ports and the rate loop.
-- The `[40]` tail memo dimension in `chooseRegions`, sized for every band boundary although its loop bounds keep `c` within 24.
+- The `[40]` dimension of the `tail` memo in `chooseRegions`, kept equal to `pb` although its loop bounds keep the index within 24 (the `pb` and `prefixCost` first dimensions are the load-bearing ones).
 - `math.Log`, `math.Exp` and similar in test files.
 - Tests that skip when oracle dumps, vectors or external binaries are missing; CI sets the `MP3_REQUIRE_*` variables where it matters.
 - Duplicated helpers (capped writer, decode limits) that also exist in sibling modules.

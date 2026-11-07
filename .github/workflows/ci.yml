@@ -64,9 +64,10 @@ jobs:
       fail-fast: false
       matrix:
         # Both arches again: the noasm build drops the AVX2/NEON region-cost
-        # kernels for their pure-Go reference, and the encoder goldens must stay
-        # bit-exact without the SIMD path just as they do with it. internal/enc
-        # is the only package the tag changes, so the suite is scoped to it.
+        # and prefix-cost kernels for their pure-Go references, and the
+        # encoder goldens must stay bit-exact without the SIMD path just as
+        # they do with it. internal/enc is the only package the tag changes,
+        # so the suite is scoped to it.
         runner: [ubuntu-latest, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@v7

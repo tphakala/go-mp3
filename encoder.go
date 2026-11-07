@@ -97,7 +97,7 @@ const (
 	// stereo frames of BenchmarkEscalationFrame, RateControlExact is about
 	// 2.3 times faster on amd64 and 2.6 times on arm64 (the Intel i5-7260U and
 	// Cortex-A76 hosts measured). Fast keeps a smaller edge on light frames
-	// (about 1.2 to 1.3 times on the 320 kbps mono transient of
+	// (about 1.2 to 1.3 times on the 320 kbps mono case of
 	// BenchmarkTransientFrame) and ties on tonal material.
 	// Because the coded bit count is not strictly monotone in the gain, the
 	// search can occasionally settle one or a few steps above the exact choice: a

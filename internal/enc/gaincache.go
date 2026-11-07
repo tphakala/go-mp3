@@ -101,7 +101,7 @@ func (c *quantCache) boundAt(gg int, q0 *[39]int, lay *bandLayout, limit int) in
 }
 
 // codeAt quantizes the spectrum at gg into gc.ix from the cache and sets
-// gc.part, leaving gc.ri untouched. It is requantize served from the cache.
+// gc.part, leaving gc.ri untouched. It is the quantize and partition half of recode, served from the cache.
 func (c *quantCache) codeAt(gg int, q0 *[39]int, lay *bandLayout, gc *granuleCoding) {
 	off := 0
 	for b := range lay.nBands {

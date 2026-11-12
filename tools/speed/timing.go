@@ -32,11 +32,15 @@ func (c *caseResult) xRT() float64 { return c.audioSecs / c.wall.Seconds() }
 // timeEncode encodes pcm runs times into one reused buffer and returns
 // the median and minimum encode time with the stream hash. Runs that produce
 // different streams fail the case: the encoder is deterministic, so a
-// difference means the measurement is not of one thing.
-func timeEncode(pcm [][]float32, rate, kbps, runs int) (med, fastest time.Duration, sha string, err error) {
+// difference means the measurement is not of one thing. A cancelled ctx stops
+// it before the next run.
+func timeEncode(ctx context.Context, pcm [][]float32, rate, kbps, runs int) (med, fastest time.Duration, sha string, err error) {
 	var buf []byte // sized by the first run, outside its timed section, then reused
 	times := make([]time.Duration, 0, runs)
 	for i := range runs {
+		if err := ctx.Err(); err != nil {
+			return 0, 0, "", err
+		}
 		stream, d, err := encodeStream(pcm, rate, kbps, buf[:0])
 		if err != nil {
 			return 0, 0, "", err
@@ -112,7 +116,10 @@ func (tr *timingRun) timeFile(ctx context.Context, path string) {
 			return
 		}
 		logf(tr.stderr, "%s at %d kbps\n", w.name, kbps)
-		med, fastest, sha, err := timeEncode(pcm, w.rate, kbps, tr.o.runs)
+		med, fastest, sha, err := timeEncode(ctx, pcm, w.rate, kbps, tr.o.runs)
+		if ctx.Err() != nil {
+			return
+		}
 		if err != nil {
 			logf(tr.stderr, "%s at %d kbps: %v\n", w.name, kbps, err)
 			tr.failed++

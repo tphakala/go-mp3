@@ -118,7 +118,8 @@ func encodeHash(pcm [][]float32, rate, kbps int) (string, error) {
 
 // runRecord prints one list line per input and bitrate. The output is meant
 // to be appended to a list, so it carries no header; the entries' identity is
-// the base name, hence two inputs sharing one are an error.
+// the base name, hence two inputs sharing one are an error. An interrupt stops
+// it before the next bitrate with exit 3, after the lines already printed.
 func runRecord(ctx context.Context, o *options, stdout, stderr io.Writer) int {
 	failed := 0
 	names := map[string]bool{}
@@ -146,6 +147,9 @@ func runRecord(ctx context.Context, o *options, stdout, stderr io.Writer) int {
 		}
 		pcm, _ := w.cut(o.secs)
 		for _, kbps := range o.bitrates {
+			if ctx.Err() != nil {
+				return exitInterrupted
+			}
 			sum, err := encodeHash(pcm, w.rate, kbps)
 			if err != nil {
 				logf(stderr, "%s at %d kbps: %v\n", name, kbps, err)

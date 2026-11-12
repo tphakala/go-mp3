@@ -233,15 +233,13 @@ type PsyOut struct {
 	SMR  [22]float64
 	PE   float64
 
-	// XminS, EnS, and PES are the short-path counterparts, always filled
-	// (decision 8: the short analysis runs on every granule regardless of
-	// its actual block type, mirroring increment 6's all-four-
-	// representations rule), but consumed only for a granule the encoder
-	// has chosen to code as short (increment 7's block-switch wiring,
-	// task B2). Coding order: band b = 3*sfb + w for short sfb 0..12 and
-	// window 0..2 (blocktypes.go's bandLayout convention), so XminS and
-	// EnS drop straight into a short granule's bandLayout without
-	// reordering.
+	// XminS, EnS, and PES are the short-path counterparts, written only by
+	// analyzeShort. AnalyzeGranule always fills them; analyzeLong leaves
+	// them untouched, so after analyzeLong alone they still hold whatever an
+	// earlier call wrote and must not be read. Coding order: band
+	// b = 3*sfb + w for short sfb 0..12 and window 0..2 (blocktypes.go's
+	// bandLayout convention), so XminS and EnS drop straight into a short
+	// granule's bandLayout without reordering.
 	XminS [39]float64
 	EnS   [39]float64
 	PES   float64
@@ -340,7 +338,7 @@ func (p *PsyModel) computeShortThresholds(tab *psyShortTable) {
 
 // analyzeShort runs the short-block analysis over the granule's three
 // 256-sample windows and fills out.XminS, out.EnS, out.PES. pcm is the
-// re-centered 1024-sample buffer AnalyzeGranule now receives (decision 11):
+// re-centered 1024-sample buffer described at AnalyzeGranule (decision 11):
 // the granule's own 576 samples occupy pcm[gStart:gStart+576), with gStart
 // samples of history before it and 1024-gStart-576 samples of lookahead
 // after it (224 on each side, a window centered on the granule rather than
@@ -382,19 +380,30 @@ func (p *PsyModel) analyzeShort(pcm []float64, out *PsyOut) {
 
 // AnalyzeGranule runs the full model 2 long-block analysis on a 1024-sample
 // window of one channel's PCM (float64 in [-1, 1], oldest first), plus the
-// short-path outputs (decision 8: always computed, every granule,
-// independent of the granule's actual block type). Allocation-free after
-// Reset.
+// short-path analysis, so every call fills all of out whatever the granule's
+// block type. Allocation-free after Reset. The encoder does not call it:
+// Encoder.analyzeRep runs analyzeLong on every granule and analyzeShort only
+// where the short outputs are read.
 //
 // pcm is CENTERED on the granule (design decision 11, increment 7): the
 // granule's own 576 samples occupy pcm[224:800), with 224 samples of
 // history before them and 224 samples of lookahead after, rather than the
 // pre-increment-7 causal window that ended at the granule's last sample.
-// The caller (Encoder.codeFrame) assembles this window from pcmHist, which
-// holds the one-frame PCM lookahead the centering needs.
+// Encoder.codeFrame assembles this window from pcmHist, which holds the
+// one-frame PCM lookahead the centering needs.
 func (p *PsyModel) AnalyzeGranule(pcm []float64, out *PsyOut) {
+	p.analyzeLong(pcm, out)
+	p.analyzeShort(pcm, out)
+}
+
+// analyzeLong runs the long-block analysis alone (pcm as for AnalyzeGranule):
+// it advances the spectral and threshold history and fills out.Xmin, out.En,
+// out.SMR and out.PE, leaving out's short-path fields untouched. The long
+// path carries state from one granule to the next (prevRe, prevIm, nbPrev),
+// so it must run on every granule in stream order. analyzeShort carries none
+// and can be left out for a granule whose short outputs nobody reads.
+func (p *PsyModel) analyzeLong(pcm []float64, out *PsyOut) {
 	p.analyzeSpectrum(pcm)
 	p.computeThresholds()
 	p.mapToSfb(out)
-	p.analyzeShort(pcm, out)
 }

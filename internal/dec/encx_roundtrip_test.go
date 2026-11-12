@@ -658,9 +658,9 @@ const psyXrCalibrationDensityFloor = 0.02
 //
 // This test drives the encoder's own production analysis functions
 // directly (enc.Filterbank, enc.FlipOddSubbands, enc.MDCTGranule,
-// enc.AliasReduce, enc.PsyModel.AnalyzeGranule), the same sequence
-// internal/enc.Encoder.codeFrame runs per granule-channel, but bypasses
-// Encoder/codeGranule entirely: no quantization, no scfState, nothing
+// enc.AliasReduce, enc.PsyModel.AnalyzeGranule), the same long-block
+// analysis internal/enc.Encoder.codeFrame runs per granule-channel, but
+// bypasses Encoder/codeGranule entirely: no quantization, no scfState, nothing
 // downstream of the raw xr spectrum and the psymodel's raw output. It is
 // therefore independent of whatever value enc.XminScale currently holds,
 // so comparing the measurement against it (once frozen) is not

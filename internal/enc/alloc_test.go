@@ -88,3 +88,37 @@ func TestEncodeMonoHighRateAllocs(t *testing.T) {
 		t.Fatalf("steady-state allocs = %v, want 0", avg)
 	}
 }
+
+// TestEncodeShortBlockAllocs guards zero-alloc for frames coded with short
+// blocks, which the steady programs of the two tests above never produce:
+// transientSamples replayed frame after frame keeps the encoder in a short
+// run, so EncodeFrame takes the short analysis, short MDCT, reorder and
+// short-layout coding paths on every measured call.
+func TestEncodeShortBlockAllocs(t *testing.T) {
+	e, err := New(Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	seed := uint64(1)
+	samples := transientSamples(&seed, 2, 0.8)
+
+	dst := make([]byte, 0, 4096)
+	for range 4 { // the first call only fills the lookahead; the run opens two frames later
+		if dst, err = e.EncodeFrame(dst[:0], samples); err != nil {
+			t.Fatalf("warmup EncodeFrame: %v", err)
+		}
+	}
+	avg := testing.AllocsPerRun(5, func() {
+		var encErr error
+		dst, encErr = e.EncodeFrame(dst[:0], samples)
+		if encErr != nil {
+			t.Fatalf("EncodeFrame: %v", encErr)
+		}
+		if e.bt[0][0] != blockShort || e.bt[1][1] != blockShort {
+			t.Fatalf("block types %v: the measured frame is not a short-block frame", e.bt)
+		}
+	})
+	if avg != 0 {
+		t.Fatalf("steady-state allocs = %v, want 0", avg)
+	}
+}

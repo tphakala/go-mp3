@@ -96,9 +96,10 @@ func transientSamples(seed *uint64, nch int, amp float32) [][]float32 {
 // direct comparison against BenchmarkEscalationFrame's own
 // stereo-128k-44100 case), and the same 128kbps stereo config driven with
 // transient content instead, isolating the added cost of block switching
-// (attack detection, short MDCT, subblock_gain escalation) from ordinary
-// masking-driven escalation. ns/op is per-frame time; run with a low
-// benchtime as BenchmarkEscalationFrame's doc comment recommends.
+// (attack detection, the short psychoacoustic analysis, short MDCT,
+// subblock_gain escalation) from ordinary masking-driven escalation. ns/op
+// is per-frame time; run with a low benchtime as BenchmarkEscalationFrame's
+// doc comment recommends.
 func BenchmarkTransientFrame(b *testing.B) {
 	cases := []struct {
 		name      string

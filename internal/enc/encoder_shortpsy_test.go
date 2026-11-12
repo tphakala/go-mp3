@@ -22,9 +22,13 @@ func poisonShortPsy(e *Encoder) {
 	}
 }
 
+// shortPsyOutputs is the number of values in a PsyOut's short-path outputs:
+// XminS, EnS and PES.
+const shortPsyOutputs = 2*len(PsyOut{}.XminS) + 1
+
 // shortPsyNaNs counts the NaN values among out's short-path outputs: 0 when
-// the short analysis filled them all, 2*39+1 when it left them all untouched
-// after poisonShortPsy.
+// the short analysis filled them all, shortPsyOutputs when it left them all
+// untouched after poisonShortPsy.
 func shortPsyNaNs(out *PsyOut) int {
 	n := 0
 	for b := range out.XminS {
@@ -75,6 +79,8 @@ func TestShortPsyAnalysisFollowsBlockType(t *testing.T) {
 					mixed++
 				}
 				for rep := range e.psyOuts {
+					// The reference-channel mapping is restated here, not
+					// taken from repShort, so a wrong repShort cannot hide.
 					refCh := 0
 					if rep == repR {
 						refCh = 1
@@ -85,11 +91,11 @@ func TestShortPsyAnalysisFollowsBlockType(t *testing.T) {
 					switch {
 					case short && nans == 0:
 						filled++
-					case !short && nans == 2*39+1:
+					case !short && nans == shortPsyOutputs:
 						skipped++
 					default:
 						t.Fatalf("frame %d granule %d rep %d: reference channel block type %d, %d of %d short outputs left untouched",
-							f-1, g, rep, e.bt[g][refCh], nans, 2*39+1)
+							f-1, g, rep, e.bt[g][refCh], nans, shortPsyOutputs)
 					}
 				}
 			}

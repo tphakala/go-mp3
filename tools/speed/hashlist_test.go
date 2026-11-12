@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -203,5 +204,22 @@ func TestCommittedHashListParses(t *testing.T) {
 	defer func() { _ = f.Close() }()
 	if _, err := parseHashList(f); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An unsupported rate or bitrate must be rejected before any output buffer is
+// sized from it: rate 100 at 128 kbps would size 737 KB for one frame, and a
+// typo such as -bitrates 128000 hundreds of MB, before the encoder's own error.
+func TestEncodeHashValidatesBeforeSizing(t *testing.T) {
+	pcm := [][]float32{make([]float32, 1152)}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := encodeHash(pcm, 100, 128)
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("rate 100 was accepted")
+	}
+	if grown := after.TotalAlloc - before.TotalAlloc; grown > 256<<10 {
+		t.Errorf("rejecting the rate still allocated %d bytes", grown)
 	}
 }

@@ -109,7 +109,7 @@ func parseEntry(text string) (hashEntry, error) {
 
 // encodeHash encodes pcm at kbps and returns the stream's hash.
 func encodeHash(pcm [][]float32, rate, kbps int) (string, error) {
-	stream, _, err := encodeStream(pcm, rate, kbps, make([]byte, 0, streamCap(len(pcm[0]), rate, kbps)))
+	stream, _, err := encodeStream(pcm, rate, kbps, nil)
 	if err != nil {
 		return "", err
 	}

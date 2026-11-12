@@ -29,12 +29,12 @@ type caseResult struct {
 
 func (c *caseResult) xRT() float64 { return c.audioSecs / c.wall.Seconds() }
 
-// timeEncode encodes pcm runs times into one preallocated buffer and returns
+// timeEncode encodes pcm runs times into one reused buffer and returns
 // the median and minimum encode time with the stream hash. Runs that produce
 // different streams fail the case: the encoder is deterministic, so a
 // difference means the measurement is not of one thing.
 func timeEncode(pcm [][]float32, rate, kbps, runs int) (med, fastest time.Duration, sha string, err error) {
-	buf := make([]byte, 0, streamCap(len(pcm[0]), rate, kbps))
+	var buf []byte // sized by the first run, outside its timed section, then reused
 	times := make([]time.Duration, 0, runs)
 	for i := range runs {
 		stream, d, err := encodeStream(pcm, rate, kbps, buf[:0])
@@ -46,6 +46,7 @@ func timeEncode(pcm [][]float32, rate, kbps, runs int) (med, fastest time.Durati
 			return 0, 0, "", fmt.Errorf("run %d produced a different stream (%s, run 1 %s)", i+1, sum, sha)
 		}
 		sha = sum
+		buf = stream
 		times = append(times, d)
 	}
 	return median(times), slices.Min(times), sha, nil

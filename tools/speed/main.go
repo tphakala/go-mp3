@@ -275,14 +275,19 @@ func streamCap(frames, rate, kbps int) int {
 	return (frames/mp3.FrameSize + 3) * (144000*kbps/rate + 1)
 }
 
-// encodeStream encodes pcm and appends the stream to out. Only the encode
-// loop and the drain are timed.
+// encodeStream encodes pcm and appends the stream to out; a nil out is sized
+// with streamCap once the encoder has accepted rate and kbps, so a rejected
+// configuration allocates nothing. Only the encode loop and the drain are
+// timed.
 func encodeStream(pcm [][]float32, rate, kbps int, out []byte) (stream []byte, elapsed time.Duration, err error) {
 	e, err := mp3.NewEncoder(mp3.EncoderConfig{SampleRate: rate, Channels: len(pcm), Bitrate: kbps * 1000})
 	if err != nil {
 		return out, 0, err
 	}
 	n := len(pcm[0])
+	if out == nil {
+		out = make([]byte, 0, streamCap(n, rate, kbps))
+	}
 	views := make([][]float32, len(pcm))
 	start := time.Now()
 	for pos := 0; pos < n; pos += mp3.FrameSize {

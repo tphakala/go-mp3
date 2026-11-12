@@ -107,10 +107,9 @@ func parseEntry(text string) (hashEntry, error) {
 	return e, nil
 }
 
-// encodeHash encodes w cut to secs at kbps and returns the stream's hash.
-func encodeHash(w *wavFile, secs, kbps int) (string, error) {
-	pcm, _ := w.cut(secs)
-	stream, _, err := encodeStream(pcm, w.rate, kbps, make([]byte, 0, streamCap(len(pcm[0]), w.rate, kbps)))
+// encodeHash encodes pcm at kbps and returns the stream's hash.
+func encodeHash(pcm [][]float32, rate, kbps int) (string, error) {
+	stream, _, err := encodeStream(pcm, rate, kbps, make([]byte, 0, streamCap(len(pcm[0]), rate, kbps)))
 	if err != nil {
 		return "", err
 	}
@@ -145,8 +144,9 @@ func runRecord(ctx context.Context, o *options, stdout, stderr io.Writer) int {
 			failed++
 			continue
 		}
+		pcm, _ := w.cut(o.secs)
 		for _, kbps := range o.bitrates {
-			sum, err := encodeHash(w, o.secs, kbps)
+			sum, err := encodeHash(pcm, w.rate, kbps)
 			if err != nil {
 				logf(stderr, "%s at %d kbps: %v\n", name, kbps, err)
 				failed++
@@ -180,6 +180,8 @@ type inputCache struct {
 	readErr error
 	wav     *wavFile
 	decErr  error
+	pcm     [][]float32 // wav cut to pcmSecs, reused across a file's bitrates
+	pcmSecs int
 }
 
 // load reads corpus/name unless it is the cached file.
@@ -200,6 +202,15 @@ func (c *inputCache) decoded() (*wavFile, error) {
 	return c.wav, c.decErr
 }
 
+// cutPCM returns the encoder input for secs, cutting once per file and secs.
+func (c *inputCache) cutPCM(w *wavFile, secs int) [][]float32 {
+	if c.pcm == nil || c.pcmSecs != secs {
+		c.pcm, _ = w.cut(secs)
+		c.pcmSecs = secs
+	}
+	return c.pcm
+}
+
 // verify returns the status of one entry and the text to append to its line.
 // A case counts as verified only when the input hash and the output hash both
 // match: a missing or replaced input is neither ok nor a mismatch.
@@ -217,7 +228,7 @@ func (c *inputCache) verify(corpus string, e *hashEntry) (status, detail string)
 	if err != nil {
 		return statusError, ": " + err.Error()
 	}
-	got, err := encodeHash(w, e.Secs, e.Kbps)
+	got, err := encodeHash(c.cutPCM(w, e.Secs), w.rate, e.Kbps)
 	switch {
 	case err != nil:
 		return statusError, ": " + err.Error()

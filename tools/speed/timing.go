@@ -48,8 +48,7 @@ func timeEncode(pcm [][]float32, rate, kbps, runs int) (med, fastest time.Durati
 		sha = sum
 		times = append(times, d)
 	}
-	slices.Sort(times)
-	return times[len(times)/2], times[0], sha, nil
+	return median(times), slices.Min(times), sha, nil
 }
 
 // writeRefFiles writes the cut segment and its 50 ms start into dir.

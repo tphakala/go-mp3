@@ -83,11 +83,6 @@ type options struct {
 // and `task speed` start (the same convention as tools/quality/main.go).
 const defaultList = "tools/speed/testdata/output-hashes.txt"
 
-// flagParseError marks an error the flag package has already printed.
-type flagParseError struct{ error }
-
-func (e flagParseError) Unwrap() error { return e.error }
-
 func parseOptions(args []string, stderr io.Writer) (*options, error) {
 	o := &options{}
 	flagSet := flag.NewFlagSet("speed", flag.ContinueOnError)
@@ -109,7 +104,7 @@ func parseOptions(args []string, stderr io.Writer) (*options, error) {
 	flagSet.StringVar(&o.list, "list", defaultList, "hash list for -check")
 	flagSet.StringVar(&o.corpus, "corpus", "", "corpus directory for -check")
 	if err := flagSet.Parse(args); err != nil {
-		return nil, flagParseError{err}
+		return nil, err // the flag package has already printed it
 	}
 	o.inputs = flagSet.Args()
 	set := map[string]bool{}
@@ -117,12 +112,19 @@ func parseOptions(args []string, stderr io.Writer) (*options, error) {
 
 	var err error
 	if o.bitrates, err = parseKbps(*bitrates); err != nil {
-		return nil, fmt.Errorf("-bitrates: %w", err)
+		return nil, setupError(stderr, fmt.Errorf("-bitrates: %w", err))
 	}
 	if err := o.validate(set); err != nil {
-		return nil, err
+		return nil, setupError(stderr, err)
 	}
 	return o, nil
+}
+
+// setupError reports err on stderr and returns it, so every parseOptions
+// failure is printed there once (the flag package prints its own).
+func setupError(stderr io.Writer, err error) error {
+	logf(stderr, "speed: %v\n", err)
+	return err
 }
 
 // validate rejects flag combinations that have no meaning; set names the
@@ -180,9 +182,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK
 		}
-		if _, printed := errors.AsType[flagParseError](err); !printed {
-			logf(stderr, "speed: %v\n", err)
-		}
 		return exitSetup
 	}
 	switch {
@@ -209,8 +208,7 @@ func readInput(path string) (data []byte, sha string, err error) {
 	if err != nil {
 		return nil, "", err
 	}
-	sum := sha256.Sum256(data)
-	return data, hex.EncodeToString(sum[:]), nil
+	return data, hashHex(data), nil
 }
 
 // decodeWAV parses WAV bytes. It rejects an empty file, which EncodeFrame

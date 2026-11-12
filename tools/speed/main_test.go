@@ -20,6 +20,8 @@ const (
 	flagCorpus   = "-corpus"
 	flagList     = "-list"
 	flagSecs     = "-secs"
+	flagJSON     = "-json"
+	flagRuns     = "-runs"
 	fileA        = "a.wav"
 )
 
@@ -136,6 +138,35 @@ func TestSpeedHashMatchesFrameEncode(t *testing.T) {
 			want := independentHash(t, path, rate, 2, tt.wantFrames, kbps)
 			if got != want {
 				t.Errorf("hash %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+// cut keeps secs seconds from the start, or the whole file when it is not
+// longer than that. A secs value too large to turn into a sample count means
+// "longer than the file" like any other.
+func TestCutLength(t *testing.T) {
+	const rate = 48000
+	tests := []struct {
+		name               string
+		frames, secs, want int
+	}{
+		{"whole file when secs is 0", 3 * rate, 0, 3 * rate},
+		{"cut to secs", 3 * rate, 2, 2 * rate},
+		{"file exactly secs long", 2 * rate, 2, 2 * rate},
+		{"one frame over secs", 2*rate + 1, 2, 2 * rate},
+		{"one frame under secs", 2*rate - 1, 2, 2*rate - 1},
+		{"file under one second", 100, 1, 100},
+		{"secs at the int limit", 100, math.MaxInt, 100},
+		{"secs whose sample count would wrap", 100, math.MaxInt / rate * 2, 100},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &wavFile{rate: rate, ch: [][]float64{make([]float64, tt.frames)}}
+			pcm, seg := w.cut(tt.secs)
+			if len(pcm[0]) != tt.want || len(seg[0]) != tt.want {
+				t.Errorf("kept %d and %d frames, want %d", len(pcm[0]), len(seg[0]), tt.want)
 			}
 		})
 	}

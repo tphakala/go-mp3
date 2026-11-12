@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -37,6 +38,18 @@ func TestTimeFileStopsBetweenRuns(t *testing.T) {
 	}
 	if tr.failed != 0 {
 		t.Errorf("a cancelled case was counted as %d failures", tr.failed)
+	}
+}
+
+// timeEncode itself stops before its next run. TestTimeFileStopsBetweenRuns
+// cannot tell: timeFile drops the case on a cancelled ctx whether or not the
+// remaining runs were encoded. The first Err call is run 1, the second is
+// where the cancel lands.
+func TestTimeEncodeStopsBeforeNextRun(t *testing.T) {
+	pcm := [][]float32{make([]float32, 4800)}
+	_, _, _, err := timeEncode(&cancelAfter{Context: t.Context(), n: 1}, pcm, 48000, 64, 3)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }
 

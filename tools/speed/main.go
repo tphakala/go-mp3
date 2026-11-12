@@ -83,6 +83,14 @@ type options struct {
 // and `task speed` start (the same convention as tools/quality/main.go).
 const defaultList = "tools/speed/testdata/output-hashes.txt"
 
+const (
+	// maxKbps is the highest bitrate mp3.EncoderConfig lists (encoder.go:135-136).
+	maxKbps = 320
+	// maxRefSecs bounds -ref-secs to a day of audio, far past any use, so
+	// the int64 product of seconds and sample rate in refLoops cannot wrap.
+	maxRefSecs = 24 * 60 * 60
+)
+
 func parseOptions(args []string, stderr io.Writer) (*options, error) {
 	o := &options{}
 	flagSet := flag.NewFlagSet("speed", flag.ContinueOnError)
@@ -127,8 +135,9 @@ func setupError(stderr io.Writer, err error) error {
 	return err
 }
 
-// validate rejects flag combinations that have no meaning; set names the
-// flags given explicitly on the command line.
+// validate rejects flag values outside their range and flag combinations
+// that have no meaning; set names the flags given explicitly on the command
+// line.
 func (o *options) validate(set map[string]bool) error {
 	switch {
 	case o.record && o.check:
@@ -137,8 +146,8 @@ func (o *options) validate(set map[string]bool) error {
 		return errors.New("-runs must be at least 1")
 	case o.secs < 0:
 		return errors.New("-secs must not be negative")
-	case o.refSecs < 1:
-		return errors.New("-ref-secs must be at least 1")
+	case o.refSecs < 1 || o.refSecs > maxRefSecs:
+		return fmt.Errorf("-ref-secs must be between 1 and %d", maxRefSecs)
 	}
 	if o.record || o.check {
 		for _, name := range []string{"ref", "json", "cpuprofile", "ffmpeg"} {
@@ -160,13 +169,18 @@ func (o *options) validate(set map[string]bool) error {
 	return nil
 }
 
-// parseKbps parses a comma-separated list of positive, distinct integers.
+// validKbps reports whether kbps can be a bitrate at all. The encoder decides
+// which rates it supports; this bound only keeps kbps*1000 from wrapping into
+// a rate it would accept under a different label.
+func validKbps(kbps int) bool { return kbps > 0 && kbps <= maxKbps }
+
+// parseKbps parses a comma-separated list of distinct bitrates in kbps.
 func parseKbps(s string) ([]int, error) {
 	var out []int
 	for f := range strings.SplitSeq(s, ",") {
 		v, err := strconv.Atoi(strings.TrimSpace(f))
-		if err != nil || v <= 0 {
-			return nil, fmt.Errorf("%q is not a positive integer", f)
+		if err != nil || !validKbps(v) {
+			return nil, fmt.Errorf("%q is not a bitrate in kbps (1 to %d)", f, maxKbps)
 		}
 		if slices.Contains(out, v) {
 			return nil, fmt.Errorf("%d is repeated", v)
@@ -243,17 +257,17 @@ func loadWAV(path string) (*wavFile, error) {
 }
 
 // cut returns the first secs seconds of the file (all of it when secs is 0 or
-// the file is shorter) as the encoder's float32 input, and as the float64
-// segment the reference input is written from. The encoder input goes through
+// the file is not longer than that, however large secs is) as the encoder's
+// float32 input, and as the float64 segment the reference input is written
+// from. The encoder input goes through
 // Quantize16 so it carries exactly the samples a reader of the 16-bit
 // reference WAV sees: for a 16-bit source that is the identity, and other
 // bit depths reach both encoders quantized to 16 bits.
 func (w *wavFile) cut(secs int) (pcm [][]float32, seg [][]float64) {
 	n := len(w.ch[0])
-	if secs > 0 {
-		if limit := int64(secs) * int64(w.rate); limit < int64(n) {
-			n = int(limit)
-		}
+	// Compared in whole seconds, so no secs value can overflow a sample count.
+	if secs > 0 && w.rate > 0 && secs <= n/w.rate {
+		n = secs * w.rate
 	}
 	pcm = make([][]float32, len(w.ch))
 	seg = make([][]float64, len(w.ch))

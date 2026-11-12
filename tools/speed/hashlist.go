@@ -101,8 +101,8 @@ func parseEntry(text string) (hashEntry, error) {
 	if e.Secs, err = strconv.Atoi(f[2]); err != nil || e.Secs < 0 {
 		return hashEntry{}, fmt.Errorf("secs %q is not a non-negative integer", f[2])
 	}
-	if e.Kbps, err = strconv.Atoi(f[3]); err != nil || e.Kbps <= 0 {
-		return hashEntry{}, fmt.Errorf("kbps %q is not a positive integer", f[3])
+	if e.Kbps, err = strconv.Atoi(f[3]); err != nil || !validKbps(e.Kbps) {
+		return hashEntry{}, fmt.Errorf("kbps %q is not a bitrate in kbps (1 to %d)", f[3], maxKbps)
 	}
 	return e, nil
 }
@@ -119,7 +119,8 @@ func encodeHash(pcm [][]float32, rate, kbps int) (string, error) {
 // runRecord prints one list line per input and bitrate. The output is meant
 // to be appended to a list, so it carries no header; the entries' identity is
 // the base name, hence two inputs sharing one are an error. An interrupt stops
-// it before the next bitrate with exit 3, after the lines already printed.
+// it before the next bitrate with exit 3, after the lines already printed, and
+// a line that cannot be written stops it with exit 1.
 func runRecord(ctx context.Context, o *options, stdout, stderr io.Writer) int {
 	failed := 0
 	names := map[string]bool{}
@@ -156,7 +157,12 @@ func runRecord(ctx context.Context, o *options, stdout, stderr io.Writer) int {
 				failed++
 				continue
 			}
-			logf(stdout, "%s\n", hashEntry{name, w.inSHA, o.secs, kbps, sum})
+			// The list is the product of this mode: a write that fails must
+			// not end in exit 0 with a shorter list that still parses.
+			if _, err := fmt.Fprintln(stdout, hashEntry{name, w.inSHA, o.secs, kbps, sum}); err != nil {
+				logf(stderr, "speed: writing the list: %v\n", err)
+				return exitFailed
+			}
 		}
 	}
 	if failed > 0 {

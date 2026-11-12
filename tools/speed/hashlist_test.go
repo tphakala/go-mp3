@@ -39,6 +39,7 @@ func TestParseHashList(t *testing.T) {
 		{"non-numeric secs", "a.wav " + hexA + " x 128 " + hexB + "\n"},
 		{"negative secs", "a.wav " + hexA + " -1 128 " + hexB + "\n"},
 		{"zero kbps", "a.wav " + hexA + " 30 0 " + hexB + "\n"},
+		{"kbps past the range", "a.wav " + hexA + " 30 2305843009213694080 " + hexB + "\n"},
 		{"duplicate case", "a.wav " + good + "\na.wav " + good + "\n"},
 		{"path in name", "dir/a.wav " + good + "\n"},
 		{"no entries", "# only a comment\n\n"},

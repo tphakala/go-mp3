@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -80,12 +82,14 @@ func TestRunSetupErrors(t *testing.T) {
 		{"check with an input argument", []string{flagCheck, flagCorpus, f.dir, flagList, f.list, wav}},
 		{"ref with record", []string{flagRecord, "-ref", wav}},
 		{"ref with check", []string{flagCheck, "-ref", flagCorpus, f.dir, flagList, f.list}},
-		{"json with check", []string{flagCheck, "-json", filepath.Join(f.dir, "x.json"), flagCorpus, f.dir, flagList, f.list}},
+		{"json with check", []string{flagCheck, flagJSON, filepath.Join(f.dir, "x.json"), flagCorpus, f.dir, flagList, f.list}},
 		{"no inputs", nil},
-		{"zero runs", []string{"-runs", "0", wav}},
+		{"zero runs", []string{flagRuns, "0", wav}},
 		{"negative secs", []string{flagSecs, "-1", wav}},
 		{"zero ref-secs", []string{"-ref-secs", "0", wav}},
+		{"ref-secs past the range", []string{"-ref-secs", strconv.Itoa(math.MaxInt), wav}},
 		{"zero bitrate", []string{flagBitrates, "0", wav}},
+		{"bitrate past the range", []string{flagBitrates, "2305843009213694080", wav}},
 		{"repeated bitrate", []string{flagBitrates, "64,64", wav}},
 		{"unknown flag", []string{"-nope"}},
 		{"missing list", []string{flagCheck, flagCorpus, f.dir, flagList, filepath.Join(f.dir, "none.txt")}},
@@ -147,7 +151,7 @@ func TestTimingModeOutput(t *testing.T) {
 	missing := filepath.Join(dir, "missing.wav")
 	jsonPath := filepath.Join(dir, "out.json")
 
-	args := []string{"-runs", "2", flagSecs, "1", flagBitrates, "64"}
+	args := []string{flagRuns, "2", flagSecs, "1", flagBitrates, "64"}
 	var out, errb bytes.Buffer
 	if code := run(t.Context(), append(args, path), &out, &errb); code != exitOK {
 		t.Fatalf("exit %d, want 0: %s", code, errb.String())
@@ -164,7 +168,7 @@ func TestTimingModeOutput(t *testing.T) {
 
 	out.Reset()
 	errb.Reset()
-	if code := run(t.Context(), append(args, "-json", jsonPath, missing, path), &out, &errb); code != exitFailed {
+	if code := run(t.Context(), append(args, flagJSON, jsonPath, missing, path), &out, &errb); code != exitFailed {
 		t.Errorf("with a missing input: exit %d, want 1", code)
 	}
 	if !strings.Contains(out.String(), fileA) {
@@ -187,5 +191,65 @@ func TestTimingModeOutput(t *testing.T) {
 	}
 	if strings.Contains(string(b), dir) || strings.Contains(string(b), `"ref"`) {
 		t.Errorf("JSON carries a directory or a reference block:\n%s", b)
+	}
+}
+
+// failWriter fails every write, like a full disk behind a redirect.
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+// A list line that cannot be written fails -record: exit 0 would hand back a
+// shorter list that still parses.
+func TestRecordFailsWhenListWriteFails(t *testing.T) {
+	path := sineWAV(t, t.TempDir(), fileA, 48000, 12000, 440, 0.5)
+	var errb bytes.Buffer
+	code := run(t.Context(), []string{flagRecord, flagSecs, "1", flagBitrates, "64", path}, failWriter{}, &errb)
+	if code != exitFailed {
+		t.Errorf("exit %d, want %d\nstderr: %s", code, exitFailed, errb.String())
+	}
+}
+
+// An output flag that names an input, directly or through a link, is refused
+// before anything is written, and the input keeps its bytes.
+func TestOutputOverInputIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	path := sineWAV(t, dir, fileA, 48000, 12000, 440, 0.5)
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The link cases skip on their own where the file system has no links;
+	// the direct cases always run.
+	symlink := filepath.Join(dir, "symlink.json")
+	symErr := os.Symlink(path, symlink)
+	hardlink := filepath.Join(dir, "hardlink.json")
+	hardErr := os.Link(path, hardlink)
+	for _, tt := range []struct {
+		name, flag, out string
+		linkErr         error
+	}{
+		{"json", flagJSON, path, nil},
+		{"cpuprofile", "-cpuprofile", path, nil},
+		{"json through a symlink", flagJSON, symlink, symErr},
+		{"json through a hard link", flagJSON, hardlink, hardErr},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.linkErr != nil {
+				t.Skipf("cannot make the link: %v", tt.linkErr)
+			}
+			var out, errb bytes.Buffer
+			args := []string{flagSecs, "1", flagBitrates, "64", flagRuns, "1", tt.flag, tt.out, path}
+			if code := run(t.Context(), args, &out, &errb); code != exitSetup {
+				t.Errorf("exit %d, want %d\nstderr: %s", code, exitSetup, errb.String())
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Error("the input file was overwritten")
+			}
+		})
 	}
 }

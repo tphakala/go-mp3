@@ -142,7 +142,32 @@ func (tr *timingRun) timeFile(ctx context.Context, path string) {
 	}
 }
 
+// outputOverInput reports an output path that names one of the inputs, also
+// through a link, so a mistyped -json or -cpuprofile cannot overwrite a
+// recording. An output that does not exist yet cannot be an input.
+func outputOverInput(o *options) error {
+	for _, out := range []string{o.jsonOut, o.cpuProfile} {
+		if out == "" {
+			continue
+		}
+		outInfo, err := os.Stat(out)
+		if err != nil {
+			continue
+		}
+		for _, in := range o.inputs {
+			if inInfo, err := os.Stat(in); err == nil && os.SameFile(outInfo, inInfo) {
+				return fmt.Errorf("output %s is the input %s", filepath.Base(out), filepath.Base(in))
+			}
+		}
+	}
+	return nil
+}
+
 func runTiming(ctx context.Context, o *options, stdout, stderr io.Writer) int {
+	if err := outputOverInput(o); err != nil {
+		logf(stderr, "speed: %v\n", err)
+		return exitSetup
+	}
 	tr := &timingRun{o: o, stderr: stderr}
 	if o.ref {
 		bin, err := findFFmpeg(ctx, o.ffmpeg)

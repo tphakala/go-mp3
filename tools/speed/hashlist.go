@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/tphakala/go-mp3/internal/enc"
 )
 
 // hashEntry is one case of the reference list. Its identity is (Name, Secs,
@@ -101,8 +103,8 @@ func parseEntry(text string) (hashEntry, error) {
 	if e.Secs, err = strconv.Atoi(f[2]); err != nil || e.Secs < 0 {
 		return hashEntry{}, fmt.Errorf("secs %q is not a non-negative integer", f[2])
 	}
-	if e.Kbps, err = strconv.Atoi(f[3]); err != nil || !validKbps(e.Kbps) {
-		return hashEntry{}, fmt.Errorf("kbps %q is not a bitrate in kbps (1 to %d)", f[3], maxKbps)
+	if e.Kbps, err = strconv.Atoi(f[3]); err != nil || !enc.ValidBitrateKbps(e.Kbps) {
+		return hashEntry{}, fmt.Errorf("kbps %q is not %s", f[3], legalKbps)
 	}
 	return e, nil
 }

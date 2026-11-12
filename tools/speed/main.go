@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/tphakala/go-mp3"
+	"github.com/tphakala/go-mp3/internal/enc"
 	"github.com/tphakala/go-mp3/internal/quality"
 )
 
@@ -83,13 +84,12 @@ type options struct {
 // and `task speed` start (the same convention as tools/quality/main.go).
 const defaultList = "tools/speed/testdata/output-hashes.txt"
 
-const (
-	// maxKbps is the highest bitrate mp3.EncoderConfig lists (encoder.go:135-136).
-	maxKbps = 320
-	// maxRefSecs bounds -ref-secs to a day of audio, far past any use, so
-	// the int64 product of seconds and sample rate in refLoops cannot wrap.
-	maxRefSecs = 24 * 60 * 60
-)
+// maxRefSecs bounds -ref-secs to a day of audio, far past any use, so the
+// int64 product of seconds and sample rate in refLoops cannot wrap.
+const maxRefSecs = 24 * 60 * 60
+
+// legalKbps is the text of every bitrate error.
+const legalKbps = "a legal MPEG-1 Layer III CBR bitrate in kbps (32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256 or 320)"
 
 func parseOptions(args []string, stderr io.Writer) (*options, error) {
 	o := &options{}
@@ -169,18 +169,16 @@ func (o *options) validate(set map[string]bool) error {
 	return nil
 }
 
-// validKbps reports whether kbps can be a bitrate at all. The encoder decides
-// which rates it supports; this bound only keeps kbps*1000 from wrapping into
-// a rate it would accept under a different label.
-func validKbps(kbps int) bool { return kbps > 0 && kbps <= maxKbps }
-
-// parseKbps parses a comma-separated list of distinct bitrates in kbps.
+// parseKbps parses a comma-separated list of distinct legal bitrates in kbps.
+// Checking them here makes a bad rate a setup error instead of a failure of
+// every case, and keeps a value that would wrap in kbps*1000 from reaching
+// the encoder as a different rate under its own label.
 func parseKbps(s string) ([]int, error) {
 	var out []int
 	for f := range strings.SplitSeq(s, ",") {
 		v, err := strconv.Atoi(strings.TrimSpace(f))
-		if err != nil || !validKbps(v) {
-			return nil, fmt.Errorf("%q is not a bitrate in kbps (1 to %d)", f, maxKbps)
+		if err != nil || !enc.ValidBitrateKbps(v) {
+			return nil, fmt.Errorf("%q is not %s", f, legalKbps)
 		}
 		if slices.Contains(out, v) {
 			return nil, fmt.Errorf("%d is repeated", v)

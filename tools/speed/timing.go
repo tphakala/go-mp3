@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -142,10 +143,29 @@ func (tr *timingRun) timeFile(ctx context.Context, path string) {
 	}
 }
 
-// outputOverInput reports an output path that names one of the inputs, also
-// through a link, so a mistyped -json or -cpuprofile cannot overwrite a
-// recording. An output that does not exist yet cannot be an input.
-func outputOverInput(o *options) error {
+// sameFile reports whether two paths name one file: by identity when both
+// exist (which sees through links), otherwise by absolute path. For a file
+// that does not exist yet, the path comparison does not see through a linked
+// directory or a spelling that differs only in case.
+func sameFile(a, b string) bool {
+	if ai, err := os.Stat(a); err == nil {
+		bi, err := os.Stat(b)
+		return err == nil && os.SameFile(ai, bi)
+	}
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	return errA == nil && errB == nil && absA == absB
+}
+
+// outputConflict reports an output path that would destroy something: the
+// two outputs naming one file (the JSON would land in the profile being
+// written), or an output naming one of the inputs, also through a link, so a
+// mistyped -json or -cpuprofile cannot overwrite a recording. An output that
+// does not exist yet cannot be an input.
+func outputConflict(o *options) error {
+	if o.jsonOut != "" && o.cpuProfile != "" && sameFile(o.jsonOut, o.cpuProfile) {
+		return errors.New("-json and -cpuprofile name the same file")
+	}
 	for _, out := range []string{o.jsonOut, o.cpuProfile} {
 		if out == "" {
 			continue
@@ -164,7 +184,7 @@ func outputOverInput(o *options) error {
 }
 
 func runTiming(ctx context.Context, o *options, stdout, stderr io.Writer) int {
-	if err := outputOverInput(o); err != nil {
+	if err := outputConflict(o); err != nil {
 		logf(stderr, "speed: %v\n", err)
 		return exitSetup
 	}

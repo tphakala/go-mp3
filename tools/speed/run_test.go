@@ -89,7 +89,8 @@ func TestRunSetupErrors(t *testing.T) {
 		{"zero ref-secs", []string{"-ref-secs", "0", wav}},
 		{"ref-secs past the range", []string{"-ref-secs", strconv.Itoa(math.MaxInt), wav}},
 		{"zero bitrate", []string{flagBitrates, "0", wav}},
-		{"bitrate past the range", []string{flagBitrates, "2305843009213694080", wav}},
+		{"bitrate that would wrap to a legal one", []string{flagBitrates, "2305843009213694080", wav}},
+		{"bitrate outside the legal set", []string{flagBitrates, "100", wav}},
 		{"repeated bitrate", []string{flagBitrates, "64,64", wav}},
 		{"unknown flag", []string{"-nope"}},
 		{"missing list", []string{flagCheck, flagCorpus, f.dir, flagList, filepath.Join(f.dir, "none.txt")}},
@@ -249,6 +250,38 @@ func TestOutputOverInputIsRefused(t *testing.T) {
 			}
 			if !bytes.Equal(got, want) {
 				t.Error("the input file was overwritten")
+			}
+		})
+	}
+}
+
+// -json and -cpuprofile naming one file is refused before either is created:
+// the same path, the same path with a ./ segment in it, and an existing file.
+func TestOutputsMustDiffer(t *testing.T) {
+	dir := t.TempDir()
+	path := sineWAV(t, dir, fileA, 48000, 12000, 440, 0.5)
+	fresh := filepath.Join(dir, "fresh.out")
+	respelled := dir + string(filepath.Separator) + "." + string(filepath.Separator) + "fresh.out"
+	existing := filepath.Join(dir, "existing.out")
+	if err := os.WriteFile(existing, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct{ name, json, profile string }{
+		{"same new path", fresh, fresh},
+		{"same new path spelled differently", fresh, respelled},
+		{"same existing file", existing, existing},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out, errb bytes.Buffer
+			args := []string{flagSecs, "1", flagBitrates, "64", flagRuns, "1", flagJSON, tt.json, "-cpuprofile", tt.profile, path}
+			if code := run(t.Context(), args, &out, &errb); code != exitSetup {
+				t.Errorf("exit %d, want %d\nstderr: %s", code, exitSetup, errb.String())
+			}
+			if _, err := os.Stat(fresh); err == nil {
+				t.Error("an output file was created")
+			}
+			if got, err := os.ReadFile(existing); err != nil || string(got) != "keep" {
+				t.Errorf("the existing file was touched: %q, %v", got, err)
 			}
 		})
 	}

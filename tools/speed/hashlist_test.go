@@ -17,7 +17,7 @@ const (
 func TestParseHashList(t *testing.T) {
 	t.Run("round trip", func(t *testing.T) {
 		want := []hashEntry{
-			{Name: "a.wav", InSHA: hexA, Secs: 30, Kbps: 128, OutSHA: hexB},
+			{Name: fileA, InSHA: hexA, Secs: 30, Kbps: 128, OutSHA: hexB},
 			{Name: "tone+noise-stereo-44k.wav", InSHA: hexB, Secs: 0, Kbps: 64, OutSHA: hexA},
 		}
 		text := "# header\n\n" + want[0].String() + "\n# note\n" + want[1].String() + "\n\n"
@@ -68,9 +68,9 @@ type checkFixture struct {
 func newCheckFixture(t *testing.T) *checkFixture {
 	t.Helper()
 	dir := t.TempDir()
-	f := &checkFixture{dir: dir, list: filepath.Join(dir, "list.txt"), names: []string{"a.wav", "b.wav", "c.wav"}}
+	f := &checkFixture{dir: dir, list: filepath.Join(dir, "list.txt"), names: []string{fileA, "b.wav", "c.wav"}}
 	args := make([]string, 0, 5+len(f.names))
-	args = append(args, "-record", "-secs", "1", "-bitrates", "64")
+	args = append(args, flagRecord, flagSecs, "1", flagBitrates, "64")
 	for i, name := range f.names {
 		args = append(args, sineWAV(t, dir, name, 48000, 12000, 440*float64(i+1), 0.5))
 	}
@@ -91,7 +91,7 @@ func newCheckFixture(t *testing.T) *checkFixture {
 func (f *checkFixture) check(t *testing.T) (code int, stdout string) {
 	t.Helper()
 	var out, errb bytes.Buffer
-	code = run(t.Context(), []string{"-check", "-corpus", f.dir, "-list", f.list}, &out, &errb)
+	code = run(t.Context(), []string{flagCheck, flagCorpus, f.dir, flagList, f.list}, &out, &errb)
 	if strings.Contains(out.String(), f.dir) {
 		t.Errorf("check output carries the directory path:\n%s", out.String())
 	}
@@ -187,7 +187,7 @@ func TestCheckOutcomes(t *testing.T) {
 		if err := os.Remove(filepath.Join(f.dir, "b.wav")); err != nil {
 			t.Fatal(err)
 		}
-		f.breakOutput(t, "a.wav")
+		f.breakOutput(t, fileA)
 		if code, out := f.check(t); code != exitFailed {
 			t.Errorf("exit %d, want 1:\n%s", code, out)
 		}

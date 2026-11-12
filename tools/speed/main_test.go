@@ -12,6 +12,17 @@ import (
 	"github.com/tphakala/go-mp3/internal/quality"
 )
 
+// Literals the tests repeat.
+const (
+	flagBitrates = "-bitrates"
+	flagCheck    = "-check"
+	flagRecord   = "-record"
+	flagCorpus   = "-corpus"
+	flagList     = "-list"
+	flagSecs     = "-secs"
+	fileA        = "a.wav"
+)
+
 // wavHeaderBytes is the canonical header WriteWAV16 emits (internal/quality/wav.go:18-20).
 const wavHeaderBytes = 44
 

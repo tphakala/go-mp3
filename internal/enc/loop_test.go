@@ -622,3 +622,31 @@ func TestOuterLoopShortSubblockGainIntegrated(t *testing.T) {
 			lay.win[w], gcLoose.sf.subblockGain[lay.win[w]])
 	}
 }
+
+// TestBetterPassOrdering pins betterPass's lexicographic order (excess, then
+// ratio, then over) and its strictness: an exact tie on all three is not an
+// improvement, so the earliest pass keeps the crown.
+func TestBetterPassOrdering(t *testing.T) {
+	type pass struct {
+		excess, ratio float64
+		over          int
+	}
+	cases := []struct {
+		name       string
+		cand, best pass
+		want       bool
+	}{
+		{"lower excess wins over a worse ratio and count", pass{1, 9, 9}, pass{2, 1, 1}, true},
+		{"higher excess loses despite a better ratio and count", pass{2, 1, 1}, pass{1, 9, 9}, false},
+		{"excess tie, lower ratio wins over a worse count", pass{1, 2, 9}, pass{1, 3, 1}, true},
+		{"excess tie, higher ratio loses despite a better count", pass{1, 3, 1}, pass{1, 2, 9}, false},
+		{"excess and ratio tie, fewer violators wins", pass{1, 2, 3}, pass{1, 2, 4}, true},
+		{"excess and ratio tie, more violators loses", pass{1, 2, 4}, pass{1, 2, 3}, false},
+		{"full tie is not an improvement", pass{1, 2, 3}, pass{1, 2, 3}, false},
+	}
+	for _, c := range cases {
+		if got := betterPass(c.cand.excess, c.cand.ratio, c.cand.over, c.best.excess, c.best.ratio, c.best.over); got != c.want {
+			t.Errorf("%s: betterPass = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

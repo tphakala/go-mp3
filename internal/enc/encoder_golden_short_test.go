@@ -52,8 +52,8 @@ func burstProgram(seed uint64, nch, nFrames int, floor float32, bursts []burst) 
 }
 
 // shortShapesProgram is a 17-frame stereo program over a quiet noise floor
-// whose bursts give the window state machine (blockTypeFor) every short-run
-// input shape: a burst inside the stream's first granule, bursts in two
+// whose bursts give the window state machine (blockTypeFor) these short-run
+// input shapes: a burst inside the stream's first granule, bursts in two
 // consecutive frames, a burst on channel 0 only and one on channel 1 only,
 // and, from frame 10 on, identical channels with a single burst and then two
 // consecutive ones.
@@ -86,7 +86,9 @@ func clickTrainProgram(nch, nFrames int) [][][]float32 {
 }
 
 // transientProgram is nFrames frames of transientSamples: a burst in the first
-// 192 samples of every frame and silence elsewhere.
+// 192 samples of every frame and silence elsewhere. The samples come from
+// transientSamples (bench_test.go), so a change there moves the hashes of the
+// transient rows.
 func transientProgram(nch, nFrames int) [][][]float32 {
 	seed := uint64(1)
 	p := make([][][]float32, nFrames)
@@ -128,11 +130,11 @@ func (s *shortPathShape) observe(e *Encoder) {
 }
 
 // TestEncodeGoldenShortPaths freezes sha256(full encoded stream, drained) for
-// programs that drive short-block granules through the outer loop and the
-// masking escalation: stereo short runs, channels with different block types,
-// M/S frames holding short granules, runs that bridge a quiet granule and
-// continue, a stream-start attack, and low and high bitrates on all three
-// sample rates. Never re-freeze on an arm64/amd64 mismatch (a determinism bug
+// programs that drive short-block granules through the outer loop: stereo
+// short runs, channels with different block types, M/S frames holding short
+// granules, short runs that continue or stay short one more granule (the
+// blockTypeFor bridge), a stream-start attack, and bitrates from 32 to 320
+// kbps across the three sample rates. Never re-freeze on an arm64/amd64 mismatch (a determinism bug
 // to fix).
 //
 // Each row also asserts the block-type shapes it exists for, read from the

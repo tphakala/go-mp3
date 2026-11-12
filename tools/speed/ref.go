@@ -43,16 +43,16 @@ func findFFmpeg(ctx context.Context, flagValue string) (string, error) {
 
 // refLoops returns the -stream_loop argument and the resulting seconds of
 // audio for an input of frames sample frames: ffmpeg encodes loops+1 copies
-// (TestRefLoopEncodesEveryCopy checks it where ffmpeg with libmp3lame is installed), and the number of
-// copies is the smallest that reaches minSecs.
+// (TestRefLoopEncodesEveryCopy checks it where ffmpeg with libmp3lame is
+// installed), and the number of copies is the smallest that reaches minSecs.
 func refLoops(frames, rate, minSecs int) (loops int, audioSecs float64) {
 	need := int64(minSecs) * int64(rate)
 	copies := max(1, int((need+int64(frames)-1)/int64(frames)))
 	return copies - 1, float64(copies) * float64(frames) / float64(rate)
 }
 
-// refArgs is the reference command line. Both -threads options pin ffmpeg to
-// one thread per side; -stream_loop N plays the input N+1 times; output goes
+// refArgs is the reference command line: -threads 1 on the input and on the
+// output side, -stream_loop N so the input is encoded N+1 times, and output
 // to out (os.DevNull in the tool).
 func refArgs(wav string, loops, kbps int, out string) []string {
 	return []string{

@@ -61,9 +61,9 @@ func TestRecordCheckCutAndCache(t *testing.T) {
 	}
 }
 
-// TestRunSetupErrors pins the exit code 2 of every flag combination the tool
-// rejects. Cases that name a valid list, corpus and input fail on the flag
-// itself: without the rule, they would run and exit 0 or 4 instead.
+// TestRunSetupErrors pins exit code 2 for the rejected flag combinations in
+// its table. Cases that name a valid list, corpus and input fail on the flag
+// itself.
 func TestRunSetupErrors(t *testing.T) {
 	f := newCheckFixture(t)
 	wav := filepath.Join(f.dir, fileA)

@@ -95,6 +95,9 @@ pcm/                   Streaming decoder (Read, WriteTo, SeekToSample), one-shot
 tools/oracle/          Pinned minimp3.h (sha256 checked), hooks.patch, mp3dump.c, build and dump
                        scripts; build/, dumps/, mutated/ are generated and gitignored
 tools/quality/         `task quality` CLI, the CI regression gate and testdata/baseline.json
+tools/speed/           `task speed` CLI: encoder realtime factor and output hashes on WAV files,
+                       optional ffmpeg libmp3lame timing as a black box; testdata/output-hashes.txt
+                       is the reference list its -check mode verifies against a local corpus
 scripts/               fetch-vectors.sh (ISO vectors), gen-fixtures.sh (fixtures via ffmpeg + lame)
 rules/                 gocritic ruleguard matchers (build tag `ruleguard`, lint-only)
 testdata/fixtures/     Committed LAME-encoded fixtures and two corrupt streams
@@ -134,6 +137,8 @@ task quality:smoke       # harness end to end against lame
 task quality:gate        # the lame-free regression gate CI runs
 task quality:gate:update # refresh the committed baseline (deliberate, on amd64)
 task throughput:gate     # encoder realtime-factor floors, as CI runs it
+task speed -- <flags> <wav>...        # realtime factor and output sha256 per file and bitrate; -ref adds ffmpeg libmp3lame
+task speed -- -check -corpus <dir>    # verify the committed output hashes against a local WAV corpus
 ```
 
 CI runs the test, `noasm` and compat jobs on amd64 and arm64 (`ubuntu-24.04-arm`); the arm64 legs are the FMA and float-parity gate. For local arm64 runs, cross-compile the test binaries and run them on real arm64 hardware rather than under QEMU.

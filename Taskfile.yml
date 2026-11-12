@@ -47,6 +47,9 @@ tasks:
   quality:
     desc: Compare the encoder against LAME (lame binary, or ffmpeg's libmp3lame; choose with -reference) on the synthetic corpus and write tools/quality/out/report.md (pass flags after --)
     cmds: ["go run ./tools/quality {{.CLI_ARGS}}"]
+  speed:
+    desc: Time the encoder on WAV files and print output hashes; -ref adds ffmpeg's libmp3lame, -check verifies tools/speed/testdata/output-hashes.txt against a local corpus (pass flags after --)
+    cmds: ["go run ./tools/speed {{.CLI_ARGS}}"]
   quality:smoke:
     desc: End-to-end smoke test of the quality harness against lame, mono plus stereo (fails if lame is missing)
     cmds: ["MP3_REQUIRE_LAME=1 go test ./tools/quality -run 'TestQualityHarness' -v -timeout 10m"]

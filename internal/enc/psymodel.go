@@ -235,8 +235,8 @@ type PsyOut struct {
 
 	// XminS, EnS, and PES are the short-path counterparts, written only by
 	// analyzeShort. AnalyzeGranule always fills them; analyzeLong leaves
-	// them untouched, so after analyzeLong alone they still hold whatever an
-	// earlier call wrote and must not be read. Coding order: band
+	// them untouched, so after analyzeLong alone they are not computed by
+	// that call and must not be read. Coding order: band
 	// b = 3*sfb + w for short sfb 0..12 and window 0..2 (blocktypes.go's
 	// bandLayout convention), so XminS and EnS drop straight into a short
 	// granule's bandLayout without reordering.

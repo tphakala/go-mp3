@@ -174,8 +174,8 @@ type Encoder struct {
 	// output (representation-major, granule-minor) so the M/S decision can
 	// compare all four before the coding path commits to one. Its short-path
 	// fields (XminS, EnS, PES) are current only where repShort(rep, g) holds
-	// for the frame being coded; elsewhere they keep an earlier frame's
-	// values (see analyzeRep).
+	// for the frame being coded; elsewhere they are not computed for the
+	// frame and must not be read (see analyzeRep).
 	psy      [4]PsyModel      // psychoacoustic model 2 state, one per representation
 	psyWinMS [2][1024]float64 // M (index 0) and S (index 1) windows: butterflied per-granule from pcmHist's L/R slices
 	psyOuts  [4][2]PsyOut     // [representation][granule] psymodel output
@@ -932,8 +932,10 @@ func (e *Encoder) repShort(rep, g int) bool {
 // analysis runs only when repShort(rep, g): its outputs are read under that
 // same condition, and it keeps no state between calls (PsyModel's short-path
 // scratch is rewritten by every call), so leaving it out cannot change the
-// stream. A skipped representation keeps the short outputs of an earlier
-// frame, so any new reader of XminS, EnS or PES must be guarded by repShort.
+// stream. A skipped representation's short outputs are not computed for the
+// frame, so any new reader of XminS, EnS or PES must be guarded by repShort
+// and read only a representation the frame analyzed (repL, and all four in
+// stereo).
 func (e *Encoder) analyzeRep(rep, g int, win []float64) {
 	out := &e.psyOuts[rep][g]
 	e.psy[rep].analyzeLong(win, out)

@@ -75,12 +75,13 @@ func shortShapesProgram() [][][]float32 {
 	return p
 }
 
-// clickTrainProgram is silence with a 96-sample full-scale burst at the start
-// of every granule after the first, independent per channel.
+// clickTrainProgram is silence with a full-scale burst of clickLen samples at
+// the start of every granule after the first, independent per channel.
 func clickTrainProgram(nch, nFrames int) [][][]float32 {
+	const clickLen = 96
 	bursts := make([]burst, 0, 2*nFrames)
-	for pos := 576; pos+96 <= nFrames*1152; pos += 576 {
-		bursts = append(bursts, burst{pos / 1152, burstEach, pos % 1152, 96, 1.0})
+	for pos := 576; pos+clickLen <= nFrames*1152; pos += 576 {
+		bursts = append(bursts, burst{pos / 1152, burstEach, pos % 1152, clickLen, 1.0})
 	}
 	return burstProgram(5, nch, nFrames, 0, bursts)
 }
@@ -109,12 +110,11 @@ type shortPathShape struct {
 
 // observe adds the frame e coded last.
 func (s *shortPathShape) observe(e *Encoder) {
-	hasShort := false
+	shortBefore := s.shortGC
 	for g := range 2 {
 		for ch := range e.nch {
 			if e.bt[g][ch] == blockShort {
 				s.shortGC++
-				hasShort = true
 			}
 			if e.gr[g][ch].sf.subblockGain != [3]int{} {
 				s.keptSsg++
@@ -124,7 +124,7 @@ func (s *shortPathShape) observe(e *Encoder) {
 			s.mixed++
 		}
 	}
-	if e.msFrame && hasShort {
+	if e.msFrame && s.shortGC > shortBefore {
 		s.msShort++
 	}
 }
@@ -134,8 +134,8 @@ func (s *shortPathShape) observe(e *Encoder) {
 // short runs, channels with different block types, M/S frames holding short
 // granules, short runs that continue or stay short one more granule (the
 // blockTypeFor bridge), a stream-start attack, and bitrates from 32 to 320
-// kbps across the three sample rates. Never re-freeze on an arm64/amd64 mismatch (a determinism bug
-// to fix).
+// kbps across the three sample rates. Never re-freeze on an arm64/amd64
+// mismatch (a determinism bug to fix).
 //
 // Each row also asserts the block-type shapes it exists for, read from the
 // encoder after every coded frame, so a re-frozen hash cannot hide a program
@@ -147,23 +147,24 @@ func TestEncodeGoldenShortPaths(t *testing.T) {
 		cfg     Config
 		frames  [][][]float32
 		wantHex string
-		// Shapes the row must reach at least once.
-		mixed, msShort, keptSsg bool
+		// need holds the least count of each shape the row must reach. Every
+		// row must also code a short granule, whatever need.shortGC says.
+		need shortPathShape
 	}{
 		{"44100_2ch_128kbps_shapes", Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128}, shortShapesProgram(),
-			"8287c510e2eab3fae2a5e83d29b6c857e0eaf4090b71d5e3f175843dd6a53d85", true, true, false},
+			"8287c510e2eab3fae2a5e83d29b6c857e0eaf4090b71d5e3f175843dd6a53d85", shortPathShape{mixed: 1, msShort: 1}},
 		{"48000_2ch_32kbps_shapes", Config{SampleRate: 48000, Channels: 2, BitrateKbps: 32}, shortShapesProgram(),
-			"76d5d2ee88389c014db9a860d89038cf9a90edb05c2d218b5edf234db2b19db8", true, true, false},
+			"76d5d2ee88389c014db9a860d89038cf9a90edb05c2d218b5edf234db2b19db8", shortPathShape{mixed: 1, msShort: 1}},
 		{"32000_2ch_64kbps_shapes", Config{SampleRate: 32000, Channels: 2, BitrateKbps: 64}, shortShapesProgram(),
-			"ae6c010ca7a855a8dd60a6a7880514a7e04abf77b64363de0162b491c83cf80d", true, true, false},
+			"ae6c010ca7a855a8dd60a6a7880514a7e04abf77b64363de0162b491c83cf80d", shortPathShape{mixed: 1, msShort: 1}},
 		{"48000_2ch_320kbps_clicks", Config{SampleRate: 48000, Channels: 2, BitrateKbps: 320}, clickTrainProgram(2, 8),
-			"95cdfdd3497fe66cb4fc3690b8929d8e17fb7fcf47827bc32f7eae9bdd770081", false, true, true},
+			"95cdfdd3497fe66cb4fc3690b8929d8e17fb7fcf47827bc32f7eae9bdd770081", shortPathShape{msShort: 1, keptSsg: 1}},
 		{"44100_1ch_320kbps_clicks", Config{SampleRate: 44100, Channels: 1, BitrateKbps: 320}, clickTrainProgram(1, 8),
-			"dffd54e89eeec1a198dfde07ed18f12d3c31e8799605c5a499f1bb043f87fe71", false, false, true},
+			"dffd54e89eeec1a198dfde07ed18f12d3c31e8799605c5a499f1bb043f87fe71", shortPathShape{keptSsg: 1}},
 		{"48000_2ch_32kbps_transient", Config{SampleRate: 48000, Channels: 2, BitrateKbps: 32}, transientProgram(2, 8),
-			"49f24966ba42b53875ebee4e7782c379cff0464fc173fdf10ef57b2bc8da918c", false, true, false},
+			"49f24966ba42b53875ebee4e7782c379cff0464fc173fdf10ef57b2bc8da918c", shortPathShape{msShort: 1}},
 		{"44100_1ch_64kbps_transient", Config{SampleRate: 44100, Channels: 1, BitrateKbps: 64}, transientProgram(1, 8),
-			"62fc7077b1812329df4b2160cd0a2e56e6ebddb43efe9ed9090c0bb6e9fa4304", false, false, false},
+			"62fc7077b1812329df4b2160cd0a2e56e6ebddb43efe9ed9090c0bb6e9fa4304", shortPathShape{}},
 	}
 
 	for _, c := range cases {
@@ -195,13 +196,13 @@ func TestEncodeGoldenShortPaths(t *testing.T) {
 			if shape.shortGC == 0 {
 				t.Errorf("no short granule coded: the row no longer reaches the short-block path")
 			}
-			if c.mixed && shape.mixed == 0 {
+			if shape.mixed < c.need.mixed {
 				t.Errorf("no granule with mismatched channel block types")
 			}
-			if c.msShort && shape.msShort == 0 {
+			if shape.msShort < c.need.msShort {
 				t.Errorf("no M/S frame with a short granule")
 			}
-			if c.keptSsg && shape.keptSsg == 0 {
+			if shape.keptSsg < c.need.keptSsg {
 				t.Errorf("no kept coding with a nonzero subblock_gain")
 			}
 		})

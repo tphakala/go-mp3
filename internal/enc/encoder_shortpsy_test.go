@@ -59,7 +59,8 @@ func TestShortPsyAnalysisFollowsBlockType(t *testing.T) {
 	encode := func(poison bool) []byte {
 		e := mustEncoder(t, cfg)
 		var stream []byte
-		var filled, skipped, mixed, msShort int
+		var filled, skipped int
+		var shape shortPathShape
 		for f, fr := range prog {
 			if poison {
 				poisonShortPsy(e)
@@ -73,11 +74,8 @@ func TestShortPsyAnalysisFollowsBlockType(t *testing.T) {
 			if !poison || e.frames != coded+1 {
 				continue
 			}
-			hasShort := false
+			shape.observe(e)
 			for g := range 2 {
-				if e.bt[g][0] != e.bt[g][1] {
-					mixed++
-				}
 				for rep := range e.psyOuts {
 					// The reference-channel mapping is restated here, not
 					// taken from repShort, so a wrong repShort cannot hide.
@@ -86,7 +84,6 @@ func TestShortPsyAnalysisFollowsBlockType(t *testing.T) {
 						refCh = 1
 					}
 					short := e.bt[g][refCh] == blockShort
-					hasShort = hasShort || short
 					nans := shortPsyNaNs(&e.psyOuts[rep][g])
 					switch {
 					case short && nans == 0:
@@ -99,17 +96,20 @@ func TestShortPsyAnalysisFollowsBlockType(t *testing.T) {
 					}
 				}
 			}
-			if e.msFrame && hasShort {
-				msShort++
-			}
+		}
+		if poison {
+			// The frames the drain codes are not inspected above; poisoning
+			// before it still sends a read of a still-poisoned output into
+			// the stream.
+			poisonShortPsy(e)
 		}
 		stream, err := e.EncodeFrame(stream, nil) // drain
 		if err != nil {
 			t.Fatalf("drain: EncodeFrame: %v", err)
 		}
-		if poison && (filled == 0 || skipped == 0 || mixed == 0 || msShort == 0) {
+		if poison && (filled == 0 || skipped == 0 || shape.mixed == 0 || shape.msShort == 0) {
 			t.Fatalf("program no longer exercises the gate: filled=%d skipped=%d mismatched granules=%d M/S frames with a short granule=%d",
-				filled, skipped, mixed, msShort)
+				filled, skipped, shape.mixed, shape.msShort)
 		}
 		return stream
 	}

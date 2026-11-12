@@ -175,7 +175,8 @@ type Encoder struct {
 	// compare all four before the coding path commits to one. Its short-path
 	// fields (XminS, EnS, PES) are current only where repShort(rep, g) holds
 	// for the frame being coded; elsewhere they are not computed for the
-	// frame and must not be read (see analyzeRep).
+	// frame and must not be read, so a new reader of them needs that guard
+	// (see analyzeRep).
 	psy      [4]PsyModel      // psychoacoustic model 2 state, one per representation
 	psyWinMS [2][1024]float64 // M (index 0) and S (index 1) windows: butterflied per-granule from pcmHist's L/R slices
 	psyOuts  [4][2]PsyOut     // [representation][granule] psymodel output
@@ -674,9 +675,7 @@ var forceLRForTest bool
 // AliasReduce for long/start/stop, or reorderShort into coding order for
 // short) produces the spectrum, and the four-way psychoacoustic analysis
 // runs over the re-centered pcmHist window (design decision 11) to get
-// this granule's masking thresholds and perceptual entropy (analyzeRep: the
-// long analysis for every representation, the short analysis only for a
-// representation whose reference channel is coded short in this granule).
+// this granule's masking thresholds and perceptual entropy (analyzeRep).
 // e.xminXr and e.gr.peBits are NOT written here: they are wired from the
 // chosen representation in the CODE phase, strictly after DECIDE, so an L/R
 // PE can never budget an M/S frame.
@@ -915,9 +914,9 @@ func (e *Encoder) repPE(rep, g int) float64 {
 // as a short block in granule g. repL, repM and repS reference physical
 // channel 0 (repM and repS are only ever coded when both channels already
 // agree, per blockTypesAgree's veto, so channel 0's type is as good a
-// reference as channel 1's); repR references channel 1. It is the one
-// condition under which rep's short-path outputs are computed (analyzeRep)
-// and read (repPE, and codeFrame's CODE phase through chosenRep).
+// reference as channel 1's); repR references channel 1. analyzeRep computes
+// rep's short-path outputs under this condition and repPE reads them under
+// it; codeFrame's CODE phase reads them under an equivalent block-type test.
 func (e *Encoder) repShort(rep, g int) bool {
 	ch := 0
 	if rep == repR {
@@ -932,10 +931,7 @@ func (e *Encoder) repShort(rep, g int) bool {
 // analysis runs only when repShort(rep, g): its outputs are read under that
 // same condition, and it keeps no state between calls (PsyModel's short-path
 // scratch is rewritten by every call), so leaving it out cannot change the
-// stream. A skipped representation's short outputs are not computed for the
-// frame, so any new reader of XminS, EnS or PES must be guarded by repShort
-// and read only a representation the frame analyzed (repL, and all four in
-// stereo).
+// stream.
 func (e *Encoder) analyzeRep(rep, g int, win []float64) {
 	out := &e.psyOuts[rep][g]
 	e.psy[rep].analyzeLong(win, out)

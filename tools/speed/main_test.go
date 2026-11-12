@@ -22,6 +22,7 @@ const (
 	flagSecs     = "-secs"
 	flagJSON     = "-json"
 	flagRuns     = "-runs"
+	flagRef      = "-ref"
 	fileA        = "a.wav"
 )
 

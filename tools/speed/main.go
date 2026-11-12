@@ -36,6 +36,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tphakala/go-mp3"
@@ -61,10 +62,23 @@ func logf(w io.Writer, format string, args ...any) {
 
 func main() { os.Exit(realMain()) }
 
-// realMain is separate from main so NotifyContext's stop runs on return: a
-// Ctrl-C then cancels the run and the deferred temp-dir cleanup executes.
+// signalContext returns a context that an interrupt or a termination signal
+// cancels. After the first signal the default handler is restored, so a
+// second one ends a run that does not wind down (the pattern of
+// tools/quality/main.go:44-59).
+func signalContext() (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
+}
+
+// realMain is separate from main so the signal context's stop runs on return:
+// a signal then cancels the run and the deferred temp-dir cleanup executes.
 func realMain() int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signalContext()
 	defer stop()
 	return run(ctx, os.Args[1:], os.Stdout, os.Stderr)
 }

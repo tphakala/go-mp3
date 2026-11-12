@@ -145,8 +145,9 @@ func (tr *timingRun) timeFile(ctx context.Context, path string) {
 
 // sameFile reports whether two paths name one file: by identity when both
 // exist (which sees through links), otherwise by absolute path. For a file
-// that does not exist yet, the path comparison does not see through a linked
-// directory or a spelling that differs only in case.
+// that does not exist yet, the path comparison does not see through a link
+// or a spelling that differs only in case, which is why runTiming asks again
+// once the profile file exists.
 func sameFile(a, b string) bool {
 	if ai, err := os.Stat(a); err == nil {
 		bi, err := os.Stat(b)
@@ -157,14 +158,18 @@ func sameFile(a, b string) bool {
 	return errA == nil && errB == nil && absA == absB
 }
 
+var errOutputsCollide = errors.New("-json and -cpuprofile name the same file")
+
 // outputConflict reports an output path that would destroy something: the
 // two outputs naming one file (the JSON would land in the profile being
 // written), or an output naming one of the inputs, also through a link, so a
 // mistyped -json or -cpuprofile cannot overwrite a recording. An output that
-// does not exist yet cannot be an input.
+// does not exist yet cannot be an input. Two outputs that do not exist yet are
+// compared by path only; runTiming repeats that comparison once the profile
+// exists.
 func outputConflict(o *options) error {
 	if o.jsonOut != "" && o.cpuProfile != "" && sameFile(o.jsonOut, o.cpuProfile) {
-		return errors.New("-json and -cpuprofile name the same file")
+		return errOutputsCollide
 	}
 	for _, out := range []string{o.jsonOut, o.cpuProfile} {
 		if out == "" {
@@ -192,6 +197,9 @@ func runTiming(ctx context.Context, o *options, stdout, stderr io.Writer) int {
 	if o.ref {
 		bin, err := findFFmpeg(ctx, o.ffmpeg)
 		if err != nil {
+			if ctx.Err() != nil {
+				return exitInterrupted // the probe was cut short, not refused
+			}
 			logf(stderr, "speed: -ref: %v\n", err)
 			return exitSetup
 		}
@@ -209,6 +217,13 @@ func runTiming(ctx context.Context, o *options, stdout, stderr io.Writer) int {
 			return exitSetup
 		}
 		defer func() { _ = f.Close() }()
+		// The profile exists now, so identity sees every alias of it that
+		// the path comparison in outputConflict could not. This refusal
+		// leaves behind the empty file os.Create just made.
+		if o.jsonOut != "" && sameFile(o.jsonOut, o.cpuProfile) {
+			logf(stderr, "speed: %v\n", errOutputsCollide)
+			return exitSetup
+		}
 		if err := pprof.StartCPUProfile(f); err != nil {
 			logf(stderr, "speed: %v\n", err)
 			return exitSetup

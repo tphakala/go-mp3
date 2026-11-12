@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"math"
@@ -80,8 +81,8 @@ func TestRunSetupErrors(t *testing.T) {
 		{"record with check", []string{flagRecord, flagCheck, flagCorpus, f.dir, flagList, f.list}},
 		{"check without corpus", []string{flagCheck, flagList, f.list}},
 		{"check with an input argument", []string{flagCheck, flagCorpus, f.dir, flagList, f.list, wav}},
-		{"ref with record", []string{flagRecord, "-ref", wav}},
-		{"ref with check", []string{flagCheck, "-ref", flagCorpus, f.dir, flagList, f.list}},
+		{"ref with record", []string{flagRecord, flagRef, wav}},
+		{"ref with check", []string{flagCheck, flagRef, flagCorpus, f.dir, flagList, f.list}},
 		{"json with check", []string{flagCheck, flagJSON, filepath.Join(f.dir, "x.json"), flagCorpus, f.dir, flagList, f.list}},
 		{"no inputs", nil},
 		{"zero runs", []string{flagRuns, "0", wav}},
@@ -255,8 +256,11 @@ func TestOutputOverInputIsRefused(t *testing.T) {
 	}
 }
 
-// -json and -cpuprofile naming one file is refused before either is created:
-// the same path, the same path with a ./ segment in it, and an existing file.
+// -json and -cpuprofile naming one file is refused. The same path, the same
+// path with a ./ segment in it, and an existing file are refused before either
+// output is created. Aliases of a file that does not exist yet (a dangling
+// link, a linked directory) are refused once the profile has been created and
+// before anything is written to it, which leaves that file empty.
 func TestOutputsMustDiffer(t *testing.T) {
 	dir := t.TempDir()
 	path := sineWAV(t, dir, fileA, 48000, 12000, 440, 0.5)
@@ -266,16 +270,48 @@ func TestOutputsMustDiffer(t *testing.T) {
 	if err := os.WriteFile(existing, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, tt := range []struct{ name, json, profile string }{
-		{"same new path", fresh, fresh},
-		{"same new path spelled differently", fresh, respelled},
-		{"same existing file", existing, existing},
+	// The link cases skip on their own where the file system has no links.
+	target := filepath.Join(dir, "target.json")
+	dangling := filepath.Join(dir, "dangling.prof")
+	dangleErr := os.Symlink(target, dangling)
+	target2 := filepath.Join(dir, "target2.prof")
+	dangling2 := filepath.Join(dir, "dangling2.json")
+	dangle2Err := os.Symlink(target2, dangling2)
+	realDir := filepath.Join(dir, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	aliasDir := filepath.Join(dir, "alias")
+	aliasErr := os.Symlink(realDir, aliasDir)
+	linked := filepath.Join(realDir, "o.out")
+	for _, tt := range []struct {
+		name, json, profile string
+		empty               string // the file the refusal leaves empty, if any
+		linkErr             error
+	}{
+		{"same new path", fresh, fresh, "", nil},
+		{"same new path spelled differently", fresh, respelled, "", nil},
+		{"same existing file", existing, existing, "", nil},
+		{"profile is a dangling link to the json path", target, dangling, target, dangleErr},
+		{"json is a dangling link to the profile path", dangling2, target2, target2, dangle2Err},
+		{"same new file through a linked directory", linked, filepath.Join(aliasDir, "o.out"), linked, aliasErr},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.linkErr != nil {
+				t.Skipf("cannot make the link: %v", tt.linkErr)
+			}
 			var out, errb bytes.Buffer
 			args := []string{flagSecs, "1", flagBitrates, "64", flagRuns, "1", flagJSON, tt.json, "-cpuprofile", tt.profile, path}
 			if code := run(t.Context(), args, &out, &errb); code != exitSetup {
 				t.Errorf("exit %d, want %d\nstderr: %s", code, exitSetup, errb.String())
+			}
+			if !strings.Contains(errb.String(), errOutputsCollide.Error()) {
+				t.Errorf("stderr does not name the collision: %s", errb.String())
+			}
+			if tt.empty != "" {
+				if info, err := os.Stat(tt.empty); err != nil || info.Size() != 0 {
+					t.Errorf("%s: want an empty file, got %v, %v", filepath.Base(tt.empty), info, err)
+				}
 			}
 			if _, err := os.Stat(fresh); err == nil {
 				t.Error("an output file was created")
@@ -284,5 +320,17 @@ func TestOutputsMustDiffer(t *testing.T) {
 				t.Errorf("the existing file was touched: %q, %v", got, err)
 			}
 		})
+	}
+}
+
+// An interrupt that lands while -ref is still looking for its encoder ends
+// the run as interrupted, not as a setup error.
+func TestInterruptedRefSetupIsInterrupted(t *testing.T) {
+	path := sineWAV(t, t.TempDir(), fileA, 48000, 12000, 440, 0.5)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var out, errb bytes.Buffer
+	if code := run(ctx, []string{flagRef, flagSecs, "1", flagBitrates, "64", path}, &out, &errb); code != exitInterrupted {
+		t.Errorf("exit %d, want %d\nstderr: %s", code, exitInterrupted, errb.String())
 	}
 }

@@ -197,7 +197,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 // wavFile is a decoded input and the digest of its bytes.
 type wavFile struct {
 	name  string // base name only: no directory reaches tracked files or output
-	inSHA string // SHA-256 of the file bytes, the value MANIFEST.sha256 holds
+	inSHA string // SHA-256 of the file bytes
 	rate  int
 	ch    [][]float64
 }

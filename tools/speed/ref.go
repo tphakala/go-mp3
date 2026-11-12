@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// ffmpegTimeout bounds one reference run: a 300 s input takes about a second
-// on a fast host and well under a minute on a slow one.
+// ffmpegTimeout bounds one reference run: a 300 s mono 48 kHz input at
+// 96 kbps took 1.14 s in one measured run.
 const ffmpegTimeout = 10 * time.Minute
 
 // findFFmpeg resolves the ffmpeg binary and checks that it was built with
@@ -43,7 +43,7 @@ func findFFmpeg(ctx context.Context, flagValue string) (string, error) {
 
 // refLoops returns the -stream_loop argument and the resulting seconds of
 // audio for an input of frames sample frames: ffmpeg encodes loops+1 copies
-// (checked on each host by TestRefLoopEncodesEveryCopy), and the number of
+// (TestRefLoopEncodesEveryCopy checks it where ffmpeg with libmp3lame is installed), and the number of
 // copies is the smallest that reaches minSecs.
 func refLoops(frames, rate, minSecs int) (loops int, audioSecs float64) {
 	need := int64(minSecs) * int64(rate)

@@ -125,8 +125,11 @@ type memoCase struct {
 }
 
 // memoDenseCase builds a broadband granule with a spectral tilt and per-band
-// thresholds 5 to 40 dB under the band energy, on a long layout, a short
-// layout, or a long-typed granule over a short layout (39 coding bands), at a
+// thresholds that halve the band energy int((smr+jitter)/3) times (about 3 dB
+// each; smr is 5 to 40 dB per case, jitter within 7.5 dB per band, so a
+// threshold is 0 to about 45 dB below the band energy, never above it), on a
+// long layout, a short layout, or a long-typed granule over a short layout (39
+// coding bands), at a
 // budget anywhere from starved to generous. Most of these runs amplify many
 // bands, roll back, and revisit scalefactor states.
 func memoDenseCase(seed uint64) (c memoCase) {

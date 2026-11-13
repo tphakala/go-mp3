@@ -110,8 +110,9 @@ func (m *codingMemo) get(k *scfKey, noise *[39]float64) bool {
 }
 
 // put records noise for k. The table has one slot per outerLoop iteration and
-// an iteration adds at most one entry, so it cannot fill within a call; a full
-// table drops the entry, which only costs a later hit.
+// outerLoop makes at most one put per iteration, so none of its puts finds the
+// table full (it can be full after the last one). The guard keeps put safe for
+// any other caller; a dropped entry only costs a later hit.
 func (m *codingMemo) put(k *scfKey, noise *[39]float64) {
 	if m.n == len(m.key) {
 		return

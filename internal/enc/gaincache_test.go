@@ -22,9 +22,9 @@ func band0Fills(qc *quantCache) int {
 // way, so the oracle tests cannot tell. Without pruning the scan fills one
 // band-0 cache entry per gain from minGlobalGain to the fitting gain; with it,
 // only the bisection probes and the few steps after the start do. The scan
-// start is computed on a cache of its own: firstAdmissibleGain leaves its
-// answer as the hint for the next search, and the cold-start fill count only
-// means something on a cache that has none.
+// start is computed on a cache of its own: a firstAdmissibleGain search that
+// runs past its lower end leaves its answer as the hint for the next search,
+// and the cold-start fill count only means something on a cache that has none.
 func TestExactScanFillsOnlyFromBoundStart(t *testing.T) {
 	const minGap = 40 // gains skipped; well above the ~8 probes plus the steps after the start
 	lay := &layoutLong[0]
@@ -151,9 +151,9 @@ type warmStartCall struct {
 }
 
 // warmStartCalls returns searches over xr and lay whose answers span the
-// gains: for each state, budgets that put the answer at minGlobalGain, one
-// above it, a third and two thirds of the way up, and 254 (each the bound at
-// that gain, which admits it and every later one), one less than the bound at
+// gains: for each state, budgets equal to the bound at minGlobalGain, one
+// above it, a third and two thirds of the way up, and 254 (each admits its
+// target gain, clamped to 254, and every later one), one less than the bound at
 // 254 (which admits nothing and leaves the 255 sentinel), and zero. ref is a
 // cache reset for xr and lay that is never searched.
 func warmStartCalls(ref *quantCache, xr *[576]float64, lay *bandLayout, sfs []scfState) []warmStartCall {

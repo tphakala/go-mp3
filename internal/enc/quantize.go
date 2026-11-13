@@ -249,8 +249,9 @@ func quantizeBandGo(dst []int32, src []float64, is float64) {
 // each band's worst-case quantized magnitude is itself monotonically
 // non-increasing in gg (the same reasoning TestQuantizeMonotone established
 // for Phase 3's uniform step), so whether gg clears every band's bound is
-// monotone in gg and a binary search finds the same smallest gg an upward
-// scan would, in eight probes instead of up to 256. The search is exact, not
+// monotone in gg, and the smallest gg that clears every band is the largest of
+// the bands' own smallest gains, each found by a binary search (bandMinGain) in
+// eight probes instead of an upward scan of up to 256. The search is exact, not
 // approximate, because every float64 step of the per-band test is monotone in
 // gg: the Ldexp scaling in stepQ is exact, the multiply by bandMax >= 0 and
 // both Sqrt calls are correctly rounded, and the final add is too, and a

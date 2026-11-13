@@ -24,7 +24,7 @@ const (
 // replaces most quantizer work with copies.
 //
 // It also holds each band's largest |xr| and a memo of each band's minimum
-// gain per amplification (minGain), and the answer of the last bound search
+// gain per amplification (minGain), and the answer of an earlier bound search
 // (hint). The first two depend only on xr and lay, so reset refills and clears
 // them with the rows; the hint is not one of the entries and survives reset.
 //
@@ -59,8 +59,10 @@ type quantCache struct {
 	minGainOf    [39][maxExtraQuarters + 1]uint8
 	minGainValid [39][(maxExtraQuarters + 64) / 64]uint64
 
-	// hint is the last answer of firstAdmissibleGain. It only chooses where
-	// the next search probes first, never the result, so it survives reset.
+	// hint is the answer of the last firstAdmissibleGain search that ran past
+	// its lower end (a search answered at the lower end leaves it as it was).
+	// It only chooses where the next search probes first, never the result, so
+	// it survives reset.
 	hint int
 }
 
@@ -165,7 +167,7 @@ func (c *quantCache) codeAt(gg int, q0 *[39]int, lay *bandLayout, gc *granuleCod
 // the first admitted gain; 255 stands in as an always-admitted sentinel
 // because the exact scan always codes it.
 //
-// hint (the previous search's answer) only picks where the probes start, so
+// hint (the answer of an earlier search) only picks where the probes start, so
 // the answer is the same with any hint, including none.
 func (c *quantCache) firstAdmissibleGain(gg0, effBudget int, q0 *[39]int, lay *bandLayout) int {
 	if gg0 >= 255 || c.boundAt(gg0, q0, lay, effBudget) <= effBudget {
@@ -173,8 +175,8 @@ func (c *quantCache) firstAdmissibleGain(gg0, effBudget int, q0 *[39]int, lay *b
 	}
 	// The answer lies in [lo, hi]: lo-1 is rejected, hi is admitted (or is the
 	// 255 sentinel). Consecutive searches usually land near each other, so
-	// probe the previous answer first and gallop away from it before
-	// bisecting what is left. The bound is monotone, so every probe narrows
+	// probe the hint first and gallop away from it before bisecting what is
+	// left. The bound is monotone, so every probe narrows
 	// the same interval a plain bisection would and the result is the same.
 	lo, hi := gg0+1, 255
 	if h := c.hint; h >= lo && h < hi {

@@ -697,13 +697,37 @@ func randomScfState(seed *uint64, lay *bandLayout) scfState {
 // TestMinGlobalGainMatchesScan requires the binary search to return exactly
 // what the upward scan does, over all six layouts, random scalefactor states
 // and log-uniform spectra, plus spectra whose loudest line sits a few ulps
-// either side of one band's fit threshold at a random gg.
+// either side of one band's fit threshold at a random gg. The same cache's
+// memoized minGain must agree on every one of them, across a sequence of
+// scalefactor states served from one reset, and across spectra that change in
+// place at one address (check resets the cache for each new content).
 func TestMinGlobalGainMatchesScan(t *testing.T) {
 	var seed uint64 = 99
+	qc := new(quantCache)
 	check := func(name string, xr *[576]float64, sf *scfState, lay *bandLayout) {
 		t.Helper()
-		if got, want := minGlobalGain(xr, sf, lay), minGlobalGainScan(xr, sf, lay); got != want {
+		want := minGlobalGainScan(xr, sf, lay)
+		if got := minGlobalGain(xr, sf, lay); got != want {
 			t.Fatalf("%s (short=%v nBands=%d): minGlobalGain = %d, scan = %d", name, lay.short, lay.nBands, got, want)
+		}
+		qc.reset(xr, lay)
+		if got := qc.minGain(sf, lay); got != want {
+			t.Fatalf("%s (short=%v nBands=%d): minGain = %d, scan = %d", name, lay.short, lay.nBands, got, want)
+		}
+	}
+	// checkSequence runs minGain over several scalefactor states on one reset,
+	// so a band's memo slot is filled by one state and read by the others, and
+	// the first state is asked for again once the memo is full.
+	checkSequence := func(name string, xr *[576]float64, states []scfState, lay *bandLayout) {
+		t.Helper()
+		qc.reset(xr, lay)
+		for round := range 2 {
+			for i := range states {
+				want := minGlobalGainScan(xr, &states[i], lay)
+				if got := qc.minGain(&states[i], lay); got != want {
+					t.Fatalf("%s (short=%v nBands=%d) round %d state %d: minGain = %d, scan = %d", name, lay.short, lay.nBands, round, i, got, want)
+				}
+			}
 		}
 	}
 	for _, lay := range prefixCostLayouts {
@@ -722,6 +746,24 @@ func TestMinGlobalGainMatchesScan(t *testing.T) {
 				xr[i] = v
 			}
 			check("random spectrum", &xr, &sf, lay)
+
+			// Scalefactor states at the extremes of what the memo indexes
+			// (zero and the maximum amplification, extra = maxExtraQuarters
+			// on a short layout), plus two beyond it that no outerLoop state
+			// produces: past maxExtraQuarters, and below zero.
+			states := make([]scfState, 3, 9)
+			states[0], states[2] = sf, quantizeMaxScf(lay)
+			for range 4 {
+				states = append(states, randomScfState(&seed, lay))
+			}
+			over, under := quantizeMaxScf(lay), scfState{}
+			for b := range over.scf {
+				over.scf[b] = 40
+				under.scf[b] = -1
+			}
+			over.subblockGain = [3]int{9, 12, 14}
+			states = append(states, over, under)
+			checkSequence("random spectrum, state sequence", &xr, states, lay)
 
 			// Put one band's loudest line at the exact fit threshold of a
 			// random gg, then nudge it by up to 3 ulps each way.
@@ -774,9 +816,14 @@ func TestMinGlobalGainEdges(t *testing.T) {
 		{"silent spectrum", spectrum(0), lay, 0},
 		{"no bands", spectrum(1e300), &bandLayout{}, 0},
 	}
+	qc := new(quantCache)
 	for _, c := range cases {
 		if got := minGlobalGain(c.xr, &sf, c.lay); got != c.want {
 			t.Errorf("%s: minGlobalGain = %d, want %d", c.name, got, c.want)
+		}
+		qc.reset(c.xr, c.lay)
+		if got := qc.minGain(&sf, c.lay); got != c.want {
+			t.Errorf("%s: minGain = %d, want %d", c.name, got, c.want)
 		}
 		if got := minGlobalGainScan(c.xr, &sf, c.lay); got != c.want {
 			t.Errorf("%s: oracle scan = %d, want %d (test case is wrong)", c.name, got, c.want)

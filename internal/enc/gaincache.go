@@ -23,6 +23,11 @@ const (
 // quantization depends only on its lines and q), so serving them from here
 // replaces most quantizer work with copies.
 //
+// It also holds each band's largest |xr| and a memo of each band's minimum
+// gain per amplification (minGain), and the answer of an earlier bound search
+// (hint). The first two depend only on xr and lay, so reset refills and clears
+// them with the rows; the hint is not one of the entries and survives reset.
+//
 // Keys are (band, q), never the global_gain or the scalefactor state: two gains
 // and two scalefactor states that yield the same exponent for a band yield the
 // same lines for it. A band's lines depend only on its own xr lines and q, not
@@ -45,12 +50,52 @@ type quantCache struct {
 	valid [39][(qSpan + 63) / 64]uint64
 	bound [39][qSpan]uint16
 	ix    [qSpan][576]int32
+
+	// bandMax is each band's largest |xr|, and minGainOf[b][e] band b's
+	// bandMinGain at e extra quarter-steps where minGainValid has bit e set:
+	// minGain's memo. Both depend only on xr and lay, so reset refills the one
+	// and clears the other.
+	bandMax      [39]float64
+	minGainOf    [39][maxExtraQuarters + 1]uint8
+	minGainValid [39][(maxExtraQuarters + 64) / 64]uint64
+
+	// hint is the answer of the last firstAdmissibleGain search that ran past
+	// its lower end (a search answered at the lower end leaves it as it was).
+	// It only chooses where the next search probes first, never the result, so
+	// it survives reset.
+	hint int
 }
 
-// reset binds the cache to xr and lay and drops every entry.
+// reset binds the cache to xr and lay and drops every entry. It keeps hint.
 func (c *quantCache) reset(xr *[576]float64, lay *bandLayout) {
 	c.xr, c.lay = xr, lay
 	c.valid = [39][(qSpan + 63) / 64]uint64{}
+	bandMaxima(xr, lay, &c.bandMax)
+	c.minGainValid = [39][(maxExtraQuarters + 64) / 64]uint64{}
+}
+
+// minGain is minGlobalGain(c.xr, sf, c.lay), with each band's own minimum
+// gain remembered per amplification: across the iterations of one outerLoop
+// call the scalefactor state changes a few bands at a time, so most bands ask
+// for an amplification they have asked for before. lay must be the layout the
+// cache was reset for (codeGranule checks it first).
+func (c *quantCache) minGain(sf *scfState, lay *bandLayout) int {
+	gg := 0
+	for b := range lay.nBands {
+		e := sf.bandExtraQuarters(b, lay)
+		if uint(e) > maxExtraQuarters {
+			// Outside what outerLoop produces: no memo slot.
+			gg = max(gg, bandMinGain(c.bandMax[b], e))
+			continue
+		}
+		word, bit := e>>6, uint64(1)<<(e&63)
+		if c.minGainValid[b][word]&bit == 0 {
+			c.minGainOf[b][e] = uint8(bandMinGain(c.bandMax[b], e))
+			c.minGainValid[b][word] |= bit
+		}
+		gg = max(gg, int(c.minGainOf[b][e]))
+	}
+	return gg
 }
 
 // check panics if the cache is not bound to xr and lay. codeGranule calls it
@@ -121,11 +166,42 @@ func (c *quantCache) codeAt(gg int, q0 *[39]int, lay *bandLayout, gc *granuleCod
 // increases with gg (monoPairFloor's doc comment), so a binary search finds
 // the first admitted gain; 255 stands in as an always-admitted sentinel
 // because the exact scan always codes it.
+//
+// hint (the answer of an earlier search) only picks where the probes start, so
+// the answer is the same with any hint, including none.
 func (c *quantCache) firstAdmissibleGain(gg0, effBudget int, q0 *[39]int, lay *bandLayout) int {
 	if gg0 >= 255 || c.boundAt(gg0, q0, lay, effBudget) <= effBudget {
 		return gg0
 	}
+	// The answer lies in [lo, hi]: lo-1 is rejected, hi is admitted (or is the
+	// 255 sentinel). Consecutive searches usually land near each other, so
+	// probe the hint first and gallop away from it before bisecting what is
+	// left. The bound is monotone, so every probe narrows
+	// the same interval a plain bisection would and the result is the same.
 	lo, hi := gg0+1, 255
+	if h := c.hint; h >= lo && h < hi {
+		if c.boundAt(h, q0, lay, effBudget) <= effBudget {
+			hi = h
+			for step := 1; hi-step >= lo; step *= 2 {
+				if c.boundAt(hi-step, q0, lay, effBudget) <= effBudget {
+					hi -= step
+				} else {
+					lo = hi - step + 1
+					break
+				}
+			}
+		} else {
+			lo = h + 1
+			for step := 1; lo+step-1 < hi; step *= 2 {
+				if p := lo + step - 1; c.boundAt(p, q0, lay, effBudget) <= effBudget {
+					hi = p
+					break
+				} else {
+					lo = p + 1
+				}
+			}
+		}
+	}
 	for lo < hi {
 		mid := (lo + hi) / 2
 		if c.boundAt(mid, q0, lay, effBudget) <= effBudget {
@@ -134,5 +210,6 @@ func (c *quantCache) firstAdmissibleGain(gg0, effBudget int, q0 *[39]int, lay *b
 			lo = mid + 1
 		}
 	}
+	c.hint = lo
 	return lo
 }

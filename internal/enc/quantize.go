@@ -263,6 +263,16 @@ func quantizeBandGo(dst []int32, src []float64, is float64) {
 // int32 conversion, for the same overflow-avoidance reason.
 func minGlobalGain(xr *[576]float64, sf *scfState, lay *bandLayout) int {
 	var bandMax [39]float64
+	bandMaxima(xr, lay, &bandMax)
+	gg := 0
+	for sfb := range lay.nBands {
+		gg = max(gg, bandMinGain(bandMax[sfb], sf.bandExtraQuarters(sfb, lay)))
+	}
+	return gg
+}
+
+// bandMaxima writes each band's largest |xr| into bandMax.
+func bandMaxima(xr *[576]float64, lay *bandLayout, bandMax *[39]float64) {
 	i := 0
 	for sfb := range lay.nBands {
 		m := 0.0
@@ -274,18 +284,20 @@ func minGlobalGain(xr *[576]float64, sf *scfState, lay *bandLayout) int {
 		}
 		bandMax[sfb] = m
 	}
+}
 
+// bandMinGain returns the smallest gg (0..254) at which a band whose largest
+// magnitude is bandMax and whose amplification is extra quarter-steps stays
+// within maxQuant, or 255 when none does. The band's test is monotone in gg
+// (see minGlobalGain), so the first gg that passes every band is the largest
+// of the bands' own first passing gains.
+func bandMinGain(bandMax float64, extra int) int {
 	// gg = 255 is returned whether or not it fits, so the search covers 0..254.
 	return sort.Search(255, func(gg int) bool {
-		for sfb := range lay.nBands {
-			is := stepQ((quantGainBase - gg) + sf.bandExtraQuarters(sfb, lay))
-			t := bandMax[sfb] * is
-			v := math.Sqrt(t * math.Sqrt(t))
-			if v+quantRounding > float64(maxQuant) {
-				return false
-			}
-		}
-		return true
+		is := stepQ((quantGainBase - gg) + extra)
+		t := bandMax * is
+		v := math.Sqrt(t * math.Sqrt(t))
+		return !(v+quantRounding > float64(maxQuant))
 	})
 }
 

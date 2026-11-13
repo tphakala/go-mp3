@@ -102,7 +102,7 @@ func codeGranule(xr *[576]float64, budgetBits int, lay *bandLayout, gc *granuleC
 	qc.check(xr, lay)
 
 	q0 := bandExponentBase(&gc.sf, lay)
-	gg := searchGlobalGainExact(qc, &q0, effBudget, minGlobalGain(xr, &gc.sf, lay), lay, gc)
+	gg := searchGlobalGainExact(qc, &q0, effBudget, qc.minGain(&gc.sf, lay), lay, gc)
 
 	for gc.ri.bits > effBudget && zeroTopSfb(&gc.ix, lay) {
 		gc.part = partitionSpectrum(&gc.ix)

@@ -351,10 +351,10 @@ func replaySignal(name string, sampleRate, channels, nFrames int) [][]float32 {
 }
 
 // TestExactScanMatchesOracleOnEncoderGranules replays real encoder granules
-// through production codeGranule (exact mode) and the frozen linear oracle at
-// budgets around the coding the encoder chose, including slack above it: a
-// skip that wrongly rejects a fitting gain shows up as a different coding.
-// The synthetic sweeps in TestCodeGranuleExactMatchesOracle cannot reach the
+// through production codeGranule and the frozen linear oracle at budgets
+// around the coding the encoder chose, including slack above it: a skip that
+// wrongly rejects a fitting gain shows up as a different coding. The
+// synthetic sweeps in TestCodeGranuleExactMatchesOracle cannot reach the
 // spectra and scalefactor states a live encoder produces.
 func TestExactScanMatchesOracleOnEncoderGranules(t *testing.T) {
 	if testing.Short() {
@@ -384,7 +384,7 @@ func TestExactScanMatchesOracleOnEncoderGranules(t *testing.T) {
 						want := granuleCoding{sf: g.gc.sf, blockType: g.gc.blockType}
 						got := want
 						codeGranuleLinear(&xr, budget, g.gc.lay, &want)
-						codeGranuleFresh(&xr, budget, g.gc.lay, &got, false)
+						codeGranuleFresh(&xr, budget, g.gc.lay, &got)
 						if got != want {
 							t.Fatalf("granule %d budget %d: exact gg=%d bits=%d, oracle gg=%d bits=%d",
 								i, budget, got.globalGain, got.ri.bits, want.globalGain, want.ri.bits)
@@ -396,4 +396,39 @@ func TestExactScanMatchesOracleOnEncoderGranules(t *testing.T) {
 			})
 		}
 	}
+}
+
+// probeSpectrum builds one randomized signal of the given shape at scale amp.
+func probeSpectrum(seed *uint64, shape int, amp float64) [576]float64 {
+	switch shape {
+	case 0: // full-scale low-frequency taper
+		return fullScaleSpectrum(seed, amp)
+	case 1: // flat broadband
+		return flatSpectrum(seed, amp)
+	case 2: // tonal: energy in a few bands (the count1-boundary culprit)
+		return tonalSpectrum(seed, amp)
+	default: // random sparse: each line kept with prob ~0.3
+		var xr [576]float64
+		for i := range xr {
+			if testsignal.LCG(seed) < 0.3 {
+				xr[i] = testsignal.LCGSigned(seed) * amp
+			}
+		}
+		return xr
+	}
+}
+
+// probeSF draws a randomized scalefactor state: scalefac_scale and a random
+// per-band scf profile, independently.
+func probeSF(seed *uint64) scfState {
+	var sf scfState
+	if testsignal.LCG(seed) < 0.5 {
+		sf.scalefacScale = 1
+	}
+	if testsignal.LCG(seed) < 0.5 {
+		for b := range 21 {
+			sf.scf[b] = int(testsignal.LCG(seed) * 4)
+		}
+	}
+	return sf
 }

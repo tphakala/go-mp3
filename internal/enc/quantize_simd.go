@@ -4,7 +4,10 @@ package enc
 
 import "github.com/tphakala/simd/f64"
 
-// quantizeGranule is the default build's quantizer. It computes exactly
+// quantizeGranule is the default build's whole-granule quantizer. It has no
+// caller in the encoder, which quantizes one band at a time through
+// quantizeBand below (quantCache.ensure, gaincache.go); the parity tests and
+// the linear rate-loop oracle in the tests use it. It computes exactly
 // quantizeGranuleGo's result through one f64.QuantizePow34Bands call, because
 // simd performs the same operations in the same order:
 //   - the same five separately rounded float64 operations, never fused;
@@ -13,10 +16,9 @@ import "github.com/tphakala/simd/f64"
 //   - the zero skip uses simd's own proven bound in place of quantZeroMax and
 //     never changes a result.
 //
-// One call per granule amortizes the wrapper's validation. scales stays on the
-// stack because simd dispatches with a direct call; the encoder alloc tests
-// pin that. TestQuantizeGranuleParity and FuzzQuantizeGranuleParity gate the
-// result against quantizeGranuleGo.
+// One call per granule amortizes the wrapper's validation.
+// TestQuantizeGranuleParity and FuzzQuantizeGranuleParity gate the result
+// against quantizeGranuleGo.
 func quantizeGranule(xr *[576]float64, gg int, sf *scfState, lay *bandLayout, ix *[576]int32) {
 	var scales [39]float64
 	for sfb := range lay.nBands {

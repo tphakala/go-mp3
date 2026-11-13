@@ -28,8 +28,8 @@ const (
 )
 
 // Realtime-factor floors, chosen from measurements on real hardware at
-// main (95f79ed), default RateControlExact, 3 s programs, run one at a
-// time (nuc7: amd64; rpi5: Cortex-A76 arm64):
+// main (95f79ed), 3 s programs, run one at a time (nuc7: amd64; rpi5:
+// Cortex-A76 arm64):
 //
 //	program      nuc7    rpi5
 //	tonal        21.9x   12.0x

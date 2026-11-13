@@ -179,7 +179,7 @@ func escalateSubblockGain(sf *scfState, lay *bandLayout, w int) {
 // and the cache is keyed by band and quantizer exponent, so scalefactor changes
 // between iterations reuse what they can). The returned iteration count feeds
 // tests and diagnostics.
-func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLayout, gc, best *granuleCoding, fast bool, qc *quantCache) (iters int) {
+func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLayout, gc, best *granuleCoding, qc *quantCache) (iters int) {
 	qc.reset(xr, lay)
 	var sf scfState
 	var unfixable [39]bool
@@ -259,7 +259,7 @@ func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLay
 		// internal min(...,maxPart23Length) can never bind on its own and
 		// part2+ri.bits <= maxPart23Length always holds.
 		huffBudget := min(budgetBits, maxPart23Length) - part2
-		codeGranule(xr, huffBudget, lay, gc, fast, qc)
+		codeGranule(xr, huffBudget, lay, gc, qc)
 		gc.scfCompress, gc.part2Bits = idx, part2
 		gc.part23Length = part2 + gc.ri.bits
 

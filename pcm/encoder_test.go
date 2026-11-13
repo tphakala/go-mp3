@@ -20,8 +20,6 @@ func TestNewEncoderRejectsBadConfig(t *testing.T) {
 		{"zero channels", Config{SampleRate: 44100, Bitrate: 128000}},
 		{"negative bitrate", Config{SampleRate: 44100, Channels: 2, Bitrate: -1}},
 		{"non-rate bitrate", Config{SampleRate: 44100, Channels: 2, Bitrate: 123000}},
-		{"bad rate control", Config{SampleRate: 44100, Channels: 2, Bitrate: 128000, RateControl: mp3.RateControl(2)}},
-		{"negative rate control", Config{SampleRate: 44100, Channels: 2, Bitrate: 128000, RateControl: mp3.RateControl(-1)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

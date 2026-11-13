@@ -29,7 +29,7 @@ func TestExactScanFillsOnlyFromBoundStart(t *testing.T) {
 			qc.reset(&xr, lay)
 
 			var got, want granuleCoding
-			codeGranule(&xr, budget, lay, &got, false, qc)
+			codeGranule(&xr, budget, lay, &got, qc)
 			codeGranuleLinear(&xr, budget, lay, &want)
 			if got != want {
 				t.Fatalf("%s budget %d: gain %d, oracle %d", s.name, budget, got.globalGain, want.globalGain)
@@ -71,8 +71,8 @@ func TestOuterLoopResetsCacheOnEntry(t *testing.T) {
 			xr[i] = (testsignal.LCG(&s) - 0.5) * 2000
 		}
 		var gc, best, fresh, freshBest granuleCoding
-		outerLoop(&xr, &xmin, 1500, lay, &gc, &best, false, qc)
-		outerLoop(&xr, &xmin, 1500, lay, &fresh, &freshBest, false, new(quantCache))
+		outerLoop(&xr, &xmin, 1500, lay, &gc, &best, qc)
+		outerLoop(&xr, &xmin, 1500, lay, &fresh, &freshBest, new(quantCache))
 		if gc != fresh {
 			t.Fatalf("seed %d: outerLoop on a reused cache gave gain %d, a fresh cache gave %d", seed, gc.globalGain, fresh.globalGain)
 		}
@@ -96,13 +96,13 @@ func TestQuantCacheCheckPanics(t *testing.T) {
 	qc := new(quantCache)
 	qc.reset(&a, lay)
 	var gc granuleCoding
-	if panics(func() { codeGranule(&a, 3000, lay, &gc, false, qc) }) {
+	if panics(func() { codeGranule(&a, 3000, lay, &gc, qc) }) {
 		t.Fatal("codeGranule panicked on the spectrum and layout the cache was reset for")
 	}
-	if !panics(func() { codeGranule(&b, 3000, lay, &gc, false, qc) }) {
+	if !panics(func() { codeGranule(&b, 3000, lay, &gc, qc) }) {
 		t.Error("codeGranule accepted a cache reset for a different spectrum")
 	}
-	if !panics(func() { codeGranule(&a, 3000, &layoutLong[1], &gc, false, qc) }) {
+	if !panics(func() { codeGranule(&a, 3000, &layoutLong[1], &gc, qc) }) {
 		t.Error("codeGranule accepted a cache reset for a different layout")
 	}
 }

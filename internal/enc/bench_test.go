@@ -28,14 +28,10 @@ func BenchmarkEscalationFrame(b *testing.B) {
 		{"stereo-32k-48000", Config{SampleRate: 48000, Channels: 2, BitrateKbps: 32}},
 	}
 	for _, tc := range cases {
-		for _, rc := range rateControlModes {
-			cfg := tc.cfg
-			cfg.FastRateControl = rc.fast
-			b.Run(tc.name+"/"+rc.name, func(b *testing.B) {
-				seed := uint64(1)
-				benchFrames(b, cfg, planarSamples(&seed, cfg.Channels, 0.7))
-			})
-		}
+		b.Run(tc.name, func(b *testing.B) {
+			seed := uint64(1)
+			benchFrames(b, tc.cfg, planarSamples(&seed, tc.cfg.Channels, 0.7))
+		})
 	}
 }
 
@@ -59,16 +55,6 @@ func benchFrames(b *testing.B, cfg Config, samples [][]float32) {
 			b.Fatalf("EncodeFrame: %v", err)
 		}
 	}
-}
-
-// rateControlModes drives the frame benchmarks in both global_gain search
-// modes so benchstat can read the fast path's speedup directly off one run.
-var rateControlModes = []struct {
-	name string
-	fast bool
-}{
-	{"exact", false},
-	{"fast", true},
 }
 
 // transientSamples builds an nch x 1152 planar float32 buffer with a loud
@@ -111,20 +97,16 @@ func BenchmarkTransientFrame(b *testing.B) {
 		{"stereo-128k-transient-44100", Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128}, true},
 	}
 	for _, tc := range cases {
-		for _, rc := range rateControlModes {
-			cfg := tc.cfg
-			cfg.FastRateControl = rc.fast
-			b.Run(tc.name+"/"+rc.name, func(b *testing.B) {
-				seed := uint64(1)
-				var samples [][]float32
-				if tc.transient {
-					samples = transientSamples(&seed, cfg.Channels, 0.8)
-				} else {
-					samples = planarSamples(&seed, cfg.Channels, 0.7)
-				}
-				benchFrames(b, cfg, samples)
-			})
-		}
+		b.Run(tc.name, func(b *testing.B) {
+			seed := uint64(1)
+			var samples [][]float32
+			if tc.transient {
+				samples = transientSamples(&seed, tc.cfg.Channels, 0.8)
+			} else {
+				samples = planarSamples(&seed, tc.cfg.Channels, 0.7)
+			}
+			benchFrames(b, tc.cfg, samples)
+		})
 	}
 }
 
@@ -169,19 +151,17 @@ func tonalSamples(nch int, amp float32) [][]float32 {
 // It exists because most of the other frame benchmarks are escape-heavy: the share of
 // big-values pairs that take the prefix-cost kernels' escape branch (a
 // magnitude above 15, prefixcost_kernel_amd64.s) is, measured on amd64
-// over 20 frames after the warmup, exact/fast:
+// over 20 frames after the warmup:
 //
-//	BenchmarkEscalationFrame stereo-128k-44100        73.0% / 47.9%
-//	BenchmarkEscalationFrame stereo-32k-48000         99.6% / 65.1%
-//	BenchmarkTransientFrame  mono-320k-44100          79.7% / 63.5%
-//	BenchmarkTransientFrame  stereo-128k-broadband    73.0% / 47.9%
-//	BenchmarkTransientFrame  stereo-128k-transient    16.6% / 21.1%
-//	BenchmarkTonalFrame      stereo-128k-44100 (here) 16.3% / 15.1%
+//	BenchmarkEscalationFrame stereo-128k-44100        73.0%
+//	BenchmarkEscalationFrame stereo-32k-48000         99.6%
+//	BenchmarkTransientFrame  mono-320k-44100          79.7%
+//	BenchmarkTransientFrame  stereo-128k-broadband    73.0%
+//	BenchmarkTransientFrame  stereo-128k-transient    16.6%
+//	BenchmarkTonalFrame      stereo-128k-44100 (here) 16.3%
 func BenchmarkTonalFrame(b *testing.B) {
-	for _, rc := range rateControlModes {
-		cfg := Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128, FastRateControl: rc.fast}
-		b.Run("stereo-128k-44100/"+rc.name, func(b *testing.B) {
-			benchFrames(b, cfg, tonalSamples(cfg.Channels, 0.5))
-		})
-	}
+	cfg := Config{SampleRate: 44100, Channels: 2, BitrateKbps: 128}
+	b.Run("stereo-128k-44100", func(b *testing.B) {
+		benchFrames(b, cfg, tonalSamples(cfg.Channels, 0.5))
+	})
 }

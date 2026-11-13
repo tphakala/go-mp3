@@ -63,11 +63,6 @@
 // between input frames and, on the default tagged path, writes nothing to the
 // sink once it sees cancellation.
 //
-// Config.RateControl selects the rate-loop strategy: the zero value is
-// mp3.RateControlExact, and mp3.RateControlFast trades a little exactness for
-// a speedup that only light frames see. It applies to NewEncoder, Reset and both
-// one-shots.
-//
 // By default the encoder writes a leading Xing/Info + LAME gapless tag carrying
 // the encoder delay and padding, so decoding an encoded stream (with this
 // package, ffmpeg, or mpg123) is sample-accurate: the decoded output has exactly

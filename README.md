@@ -87,20 +87,6 @@ it codes whichever real frame the encoder is still holding for its
 lookahead (if any), then the final silence flush frame, so `N` non-nil
 calls plus drain always total exactly `N+1` emitted frames.
 
-By default the encoder runs its rate loop in `RateControlExact` mode, which
-picks the finest quantization within each frame's bit budget. Set
-`RateControl: mp3.RateControlFast` in the `mp3.EncoderConfig`, or in
-`pcm.Config` when encoding through the `pcm` layer, to binary-search the global
-gain instead of scanning it. The exact scan prunes its start with a sound bound,
-so on loud and broadband stereo frames it is now about 2.3 to 2.6 times faster
-than the fast search; the fast search keeps only a small edge on light frames
-(about 1.2 to 1.3 times on the 320 kbps mono case of BenchmarkTransientFrame) and ties on tonal
-material. It occasionally chooses a slightly coarser gain on a small fraction
-of granules (never a finer one): in testing it diverges from exact on well under
-0.1% of granules, and only ever by a few steps of global gain. The default stays
-exact, so nothing changes unless you opt in, and measuring your own material
-first is worthwhile.
-
 Status: it produces valid, standard-compliant CBR MPEG-1 Layer III streams
 (32/44.1/48 kHz, mono or stereo, the 14 legal CBR bitrates) with a
 psychoacoustic model, a bit reservoir, per-frame M/S joint stereo, and
@@ -125,9 +111,8 @@ sample-accurate with no manual delay drop: the decoded output has exactly the
 input length. `EncodeInterleaved` always writes the tag; the streaming encoder
 writes it when its sink is an `io.WriteSeeker` (it back-patches the leading
 frame at `Close`), and leaves a plain `io.Writer` stream tagless.
-`Config.OmitGaplessTag` opts out. `pcm.Config.RateControl` selects the rate
-loop as above. `pcm.EncodeInterleavedContext(ctx, w, cfg, pcm)` is the
-cancellable one-shot: it checks `ctx` between input frames and, with the tag
+`Config.OmitGaplessTag` opts out. `pcm.EncodeInterleavedContext(ctx, w, cfg, pcm)`
+is the cancellable one-shot: it checks `ctx` between input frames and, with the tag
 on, writes nothing to `w` once it sees cancellation (with `OmitGaplessTag` the
 frames encoded so far are already on `w`, a truncated stream to discard). The
 streaming encoder has no context method; write in frame-sized chunks and check
@@ -137,8 +122,8 @@ your context between `Write` calls.
 
 Encoding cost depends on the material: tonal and sparse audio is cheap, dense
 broadband audio costs the most because the rate loop has to search harder.
-Realtime factor (seconds of audio encoded per second of wall time) on one core
-with the default `RateControlExact`, for 6 second synthetic stereo programs at
+Realtime factor (seconds of audio encoded per second of wall time) on one core,
+for 6 second synthetic stereo programs at
 128 kbps and 44.1 kHz unless noted:
 
 | Program                              | Intel NUC7 (i5-7260U) | Raspberry Pi 5 |

@@ -7,10 +7,20 @@ import (
 	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
+// recode quantizes xr at gg under gc's scalefactor state, partitions the
+// result, and chooses region boundaries, writing straight into gc: one step
+// of the linear oracle below, through the whole-granule quantizer rather than
+// the quantization cache.
+func recode(xr *[576]float64, gg int, lay *bandLayout, gc *granuleCoding) {
+	quantizeGranule(xr, gg, &gc.sf, lay, &gc.ix)
+	gc.part = partitionSpectrum(&gc.ix)
+	gc.ri = regionsFor(&gc.ix, gc.part, lay, gc.blockType)
+}
+
 // codeGranuleLinear is a verbatim copy of the ORIGINAL codeGranule inner rate
 // loop: the exact linear global_gain scan (gg++ from minGlobalGain until
 // ri.bits fits, else 255) followed by the spectral-truncation fallback. It is
-// the frozen oracle the production exact path (codeGranule with fast=false, via
+// the frozen oracle the production search (codeGranule, via
 // searchGlobalGainExact) is proven byte-identical against by
 // TestCodeGranuleExactMatchesOracle, so a future refactor of the exact search
 // cannot silently drift. Keep this function frozen; it is the oracle, not a
@@ -91,7 +101,7 @@ func bisectSweepSpectra() []sweepSpectrum {
 	// Extremes: a dense spectrum so loud that minGlobalGain sits at the top of
 	// the range and the clamp engages, one so quiet that everything quantizes
 	// to zero at most gains, and one very loud line over a quiet floor (the
-	// shape that makes the fast search's top-of-range fallback fire).
+	// shape whose bit count rises again at the top of the gain range).
 	seed := uint64(99)
 	loud := flatSpectrum(&seed, 20)
 	loud[100] = 3e6
@@ -148,11 +158,10 @@ var bisectBlockTypes = []struct {
 var bisectBudgets = []int{0, 100, 120, 300, 800, 2000, 3500, 4095, 5676}
 
 // TestCodeGranuleExactMatchesOracle is the golden-neutrality guard for the
-// DEFAULT rate-control mode (RateControlExact): production codeGranule with
-// fast=false must produce a byte-identical granuleCoding to the frozen linear
-// oracle across block type x sample-rate layout x signal shape x scalefactor
-// state x budget (tight, forcing the truncation fallback, through generous).
-// Unlike the earlier long-block-only sweep, this now also drives the
+// rate loop's global_gain search: production codeGranule must produce a
+// byte-identical granuleCoding to the frozen linear oracle across block type x
+// sample-rate layout x signal shape x scalefactor state x budget (tight,
+// forcing the truncation fallback, through generous). Unlike the earlier long-block-only sweep, this now also drives the
 // short/start/stop chooseRegionsWS path, so the exact path is guarded on every
 // block type the live encoder emits.
 func TestCodeGranuleExactMatchesOracle(t *testing.T) {
@@ -176,7 +185,7 @@ func TestCodeGranuleExactMatchesOracle(t *testing.T) {
 						want.blockType, got.blockType = blk.bt, blk.bt
 						want.sf, got.sf = st.sf, st.sf
 						codeGranuleLinear(&xr, budget, lay, &want)
-						codeGranule(&xr, budget, lay, &got, false, qc)
+						codeGranule(&xr, budget, lay, &got, qc)
 
 						total++
 						if exactScanStart(qc, &xr, &st.sf, lay, budget) > minGlobalGain(&xr, &st.sf, lay) {
@@ -206,59 +215,6 @@ func TestCodeGranuleExactMatchesOracle(t *testing.T) {
 func exactScanStart(qc *quantCache, xr *[576]float64, sf *scfState, lay *bandLayout, budget int) int {
 	q0 := bandExponentBase(sf, lay)
 	return qc.firstAdmissibleGain(minGlobalGain(xr, sf, lay), min(budget, maxPart23Length), &q0, lay)
-}
-
-// TestCodeGranuleFastContract checks the opt-in RateControlFast path against
-// the exact path over the same sweep. The fast (binary) search is not
-// bit-identical, so instead of equality it asserts the three properties that
-// make it a safe speed/quality trade: every fast coding still fits the budget
-// (codeGranule's own guarantee), the fast global_gain is never FINER than the
-// exact one (it can only settle equal or coarser, so it never improves quality
-// by accident and never overflows), and where the two land on the same gg the
-// coding is byte-identical. Divergences are expected and counted;
-// TestCodeGranuleFastDivergence characterizes their magnitude.
-func TestCodeGranuleFastContract(t *testing.T) {
-	spectra := bisectSweepSpectra()
-	sfStates := bisectSweepSFStates()
-
-	total, diverged := 0, 0
-	for _, blk := range bisectBlockTypes {
-		for srIndex := range layoutLong {
-			lay := layoutFor(blk.bt, srIndex)
-			for _, s := range spectra {
-				for _, st := range sfStates {
-					for _, budget := range bisectBudgets {
-						eff := min(budget, maxPart23Length)
-						xr := s.xr
-
-						var exactGC, fastGC granuleCoding
-						exactGC.blockType, fastGC.blockType = blk.bt, blk.bt
-						exactGC.sf, fastGC.sf = st.sf, st.sf
-						codeGranuleFresh(&xr, budget, lay, &exactGC, false)
-						codeGranuleFresh(&xr, budget, lay, &fastGC, true)
-
-						total++
-						if fastGC.ri.bits > eff {
-							t.Fatalf("fast overflowed budget at block=%s sr=%d signal=%s sf=%s budget=%d: ri.bits=%d > eff=%d",
-								blk.name, srIndex, s.name, st.name, budget, fastGC.ri.bits, eff)
-						}
-						if fastGC.globalGain < exactGC.globalGain {
-							t.Fatalf("fast selected FINER gain than exact at block=%s sr=%d signal=%s sf=%s budget=%d: fast=%d exact=%d",
-								blk.name, srIndex, s.name, st.name, budget, fastGC.globalGain, exactGC.globalGain)
-						}
-						if fastGC.globalGain == exactGC.globalGain && fastGC != exactGC {
-							t.Fatalf("fast and exact share gg=%d but differ at block=%s sr=%d signal=%s sf=%s budget=%d",
-								fastGC.globalGain, blk.name, srIndex, s.name, st.name, budget)
-						}
-						if fastGC.globalGain != exactGC.globalGain {
-							diverged++
-						}
-					}
-				}
-			}
-		}
-	}
-	t.Logf("fast contract held over %d cases; fast diverged from exact (coarser gg) on %d", total, diverged)
 }
 
 // startTables are the floor tables TestExactScanStartSoundAndSensitive models

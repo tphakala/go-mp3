@@ -9,7 +9,7 @@ import (
 func outerRun(t *testing.T, xr *[576]float64, xmin *[39]float64, budget int) (gc *granuleCoding, iters int) {
 	t.Helper()
 	var g, best granuleCoding
-	iters = outerLoop(xr, xmin, budget, &layoutLong[0], &g, &best, false, new(quantCache))
+	iters = outerLoop(xr, xmin, budget, &layoutLong[0], &g, &best, new(quantCache))
 	return &g, iters
 }
 
@@ -101,7 +101,7 @@ func TestOuterLoopContract(t *testing.T) {
 	if !ok {
 		t.Fatal("baseline chooseScalefacCompress failed")
 	}
-	codeGranuleFresh(&xr, 3500-part2, lay, &zeroGC, false)
+	codeGranuleFresh(&xr, 3500-part2, lay, &zeroGC)
 	zeroGC.scfCompress, zeroGC.part2Bits = idx, part2
 	var baseline [39]float64
 	noiseGranule(&xr, &zeroGC.ix, zeroGC.globalGain, &zeroGC.sf, lay, &baseline)
@@ -214,7 +214,7 @@ func TestOuterLoopAmplifiesViolator(t *testing.T) {
 	if !ok {
 		t.Fatal("baseline chooseScalefacCompress failed")
 	}
-	codeGranuleFresh(&xr, 3500-part2, lay, &zeroGC, false)
+	codeGranuleFresh(&xr, 3500-part2, lay, &zeroGC)
 	zeroGC.scfCompress, zeroGC.part2Bits = idx, part2
 	var baseline [39]float64
 	noiseGranule(&xr, &zeroGC.ix, zeroGC.globalGain, &zeroGC.sf, lay, &baseline)
@@ -325,7 +325,7 @@ func TestOuterLoopPreflagReexpression(t *testing.T) {
 	if !ok {
 		t.Fatal("baseline chooseScalefacCompress failed")
 	}
-	codeGranuleFresh(&xr, 3500-part2, lay, &zeroGC, false)
+	codeGranuleFresh(&xr, 3500-part2, lay, &zeroGC)
 	zeroGC.scfCompress, zeroGC.part2Bits = idx, part2
 	var baseline [39]float64
 	noiseGranule(&xr, &zeroGC.ix, zeroGC.globalGain, &zeroGC.sf, lay, &baseline)
@@ -393,10 +393,10 @@ func TestOuterLoopAllocs(t *testing.T) {
 	lay := &layoutLong[0]
 	var gc, best granuleCoding
 	qc := new(quantCache)
-	outerLoop(&xr, &xmin, 1500, lay, &gc, &best, false, qc) // warmup
+	outerLoop(&xr, &xmin, 1500, lay, &gc, &best, qc) // warmup
 
 	n := testing.AllocsPerRun(20, func() {
-		outerLoop(&xr, &xmin, 1500, lay, &gc, &best, false, qc)
+		outerLoop(&xr, &xmin, 1500, lay, &gc, &best, qc)
 	})
 	if n != 0 {
 		t.Fatalf("outerLoop allocates: %v allocs per run, want 0", n)
@@ -489,7 +489,7 @@ func TestOuterLoopShortConverges(t *testing.T) {
 	}
 
 	var gc, best granuleCoding
-	iters := outerLoop(&xr, &xmin, 3500, lay, &gc, &best, false, new(quantCache))
+	iters := outerLoop(&xr, &xmin, 3500, lay, &gc, &best, new(quantCache))
 	if iters >= outerLoopMaxIters {
 		t.Fatalf("loop ran to the cap (%d iters)", iters)
 	}
@@ -593,7 +593,7 @@ func TestOuterLoopShortSubblockGainIntegrated(t *testing.T) {
 	// The real, integrated run: outerLoop must reach past that ceiling by
 	// actually using subblock_gain.
 	var gc, best granuleCoding
-	iters := outerLoop(&xr, &xmin, 8000, lay, &gc, &best, false, new(quantCache))
+	iters := outerLoop(&xr, &xmin, 8000, lay, &gc, &best, new(quantCache))
 	if iters >= outerLoopMaxIters {
 		t.Fatalf("loop ran to the cap (%d iters)", iters)
 	}
@@ -616,7 +616,7 @@ func TestOuterLoopShortSubblockGainIntegrated(t *testing.T) {
 	xminLoose := xmin
 	xminLoose[w] = 1.0
 	var gcLoose, bestLoose granuleCoding
-	outerLoop(&xr, &xminLoose, 8000, lay, &gcLoose, &bestLoose, false, new(quantCache))
+	outerLoop(&xr, &xminLoose, 8000, lay, &gcLoose, &bestLoose, new(quantCache))
 	if gcLoose.sf.subblockGain[lay.win[w]] != 0 {
 		t.Fatalf("loose target: subblock_gain[window %d] = %d, want 0 (scf+scale alone should have sufficed)",
 			lay.win[w], gcLoose.sf.subblockGain[lay.win[w]])

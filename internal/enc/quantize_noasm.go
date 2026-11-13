@@ -2,8 +2,9 @@
 
 package enc
 
-// quantizeGranule is the noasm build's quantizer: the pure-Go reference
-// quantizeGranuleGo. This build links no simd code.
+// quantizeGranule is the noasm build's whole-granule quantizer: the pure-Go
+// reference quantizeGranuleGo. Like the default build's, it has no caller in
+// the encoder. This build links no simd code.
 func quantizeGranule(xr *[576]float64, gg int, sf *scfState, lay *bandLayout, ix *[576]int32) {
 	quantizeGranuleGo(xr, gg, sf, lay, ix)
 }

@@ -10,10 +10,10 @@ import (
 
 // codeGranuleFresh runs codeGranule against a freshly reset quantization
 // cache, for tests that code one spectrum once.
-func codeGranuleFresh(xr *[576]float64, budget int, lay *bandLayout, gc *granuleCoding, fast bool) {
+func codeGranuleFresh(xr *[576]float64, budget int, lay *bandLayout, gc *granuleCoding) {
 	qc := new(quantCache)
 	qc.reset(xr, lay)
-	codeGranule(xr, budget, lay, gc, fast, qc)
+	codeGranule(xr, budget, lay, gc, qc)
 }
 
 // TestFrameHeaderKnownBytes hand-computes the packed header bytes for a
@@ -155,7 +155,7 @@ func TestCodeGranuleFits(t *testing.T) {
 	budgets := []int{120, 300, 3000}
 	for _, budget := range budgets {
 		var gc granuleCoding
-		codeGranuleFresh(&xr, budget, lay, &gc, false)
+		codeGranuleFresh(&xr, budget, lay, &gc)
 		if gc.ri.bits > budget {
 			t.Fatalf("budget %d: ri.bits = %d, exceeds budget", budget, gc.ri.bits)
 		}
@@ -180,7 +180,7 @@ func TestCodeGranuleBudgetCap(t *testing.T) {
 	lay := &layoutLong[2] // 32000 Hz, matching the worked example's rate
 
 	var gc granuleCoding
-	codeGranuleFresh(&xr, 5676, lay, &gc, false)
+	codeGranuleFresh(&xr, 5676, lay, &gc)
 	if gc.ri.bits > maxPart23Length {
 		t.Fatalf("budgetBits=5676: ri.bits = %d, want <= %d (the part_2_3_length field cap)", gc.ri.bits, maxPart23Length)
 	}
@@ -217,7 +217,7 @@ func TestAssembleFrameLength(t *testing.T) {
 					var gr [2][2]granuleCoding
 					for g := range 2 {
 						for ch := range m.nch {
-							codeGranuleFresh(&xr, budget, lay, &gr[g][ch], false)
+							codeGranuleFresh(&xr, budget, lay, &gr[g][ch])
 						}
 					}
 
@@ -384,7 +384,7 @@ func frameTestCodings(t *testing.T) *[2][2]granuleCoding {
 	seed := uint64(2026)
 	for g := range 2 {
 		xr := fullScaleSpectrum(&seed, 12000)
-		codeGranuleFresh(&xr, budget, lay, &gr[g][0], false)
+		codeGranuleFresh(&xr, budget, lay, &gr[g][0])
 	}
 	return &gr
 }

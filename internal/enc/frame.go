@@ -60,9 +60,9 @@ const maxPart23Length = 4095
 
 // regionsFor dispatches to chooseRegions for a long granule or
 // chooseRegionsWS for a window-switching one (start/short/stop,
-// gc.blockType != blockLong): the single seam the exact search
-// (searchGlobalGainExact) and codeGranule's truncation fallback both call, so a
-// window-switching granule always gets the fixed two-table region split the
+// gc.blockType != blockLong): the single seam that the exact search
+// (searchGlobalGainExact) and codeGranule's truncation fallback both call, so
+// a window-switching granule always gets the fixed two-table region split the
 // decoder actually implies (ISO 2.4.2.7, design decision 5) rather than the
 // long-block exhaustive search, which searches a region-count encoding a
 // window-switching granule's side info never carries.

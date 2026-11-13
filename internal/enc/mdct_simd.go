@@ -19,8 +19,7 @@ import "github.com/tphakala/simd/f64"
 // from +0.0 in ascending n, never fused (its documented contract,
 // github.com/tphakala/simd v1.16.0, f64/vecmat.go): the same products in the
 // same order as the per-subband loop the noasm build runs, hence the same
-// bits. TestMDCTParity pins that. 18 calls of 32 columns measured faster
-// than 32 calls of 18 columns (BenchmarkMDCTGranule).
+// bits. TestMDCTParity pins that.
 //
 // The window products are stored, not added, so they cannot fuse; the
 // float64() wrap is kept for uniformity. The scale is a lone rounded product.

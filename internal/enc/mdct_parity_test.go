@@ -75,7 +75,7 @@ func TestMDCTParity(t *testing.T) {
 	for trial := range 96 {
 		scale := math.Pow(10, float64(trial%12)-6)
 		for bi := range mdctParityBlocks {
-			checkMDCTParity(t, &seed, scale, bi, trial%4 == 3)
+			checkMDCTParity(t, &seed, scale, bi, trial/12%2 == 1)
 		}
 	}
 }

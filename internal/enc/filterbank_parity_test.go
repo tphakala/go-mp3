@@ -117,7 +117,7 @@ func TestFilterbankParity(t *testing.T) {
 	var seed uint64 = 7
 	for trial := range 48 {
 		scale := math.Pow(10, float64(trial%12)-6)
-		checkFilterbankParity(t, &seed, scale, 6, trial%4 == 3)
+		checkFilterbankParity(t, &seed, scale, 6, trial/12%2 == 1)
 	}
 }
 

@@ -44,37 +44,11 @@ func FlipOddSubbands(s *[18][32]float64) {
 // Exported for the same cross-package test reason as FlipOddSubbands.
 //
 // MDCTGranule is a thin wrapper over mdctGranuleWindowed with the long sine
-// window; the shared 36-point kernel and its float64()-wrap FMA-blocking
-// discipline are documented on mdctGranuleWindowed below.
+// window. That shared 36-point kernel is build specific (mdct_simd.go,
+// mdct_noasm.go); each form documents how it keeps the per-line addition
+// order and the unfused products.
 func MDCTGranule(prev, cur *[18][32]float64, xr *[576]float64) {
 	mdctGranuleWindowed(prev, cur, xr, &MDCTWindow)
-}
-
-// mdctGranuleWindowed is the shared 36-point forward-MDCT body behind
-// MDCTGranule (blockLong, window = &MDCTWindow) and MDCTGranuleBlock's
-// blockStart (&MDCTWindowStart) and blockStop (&MDCTWindowStop) cases: only
-// the window differs across the three block types that share this 36-point
-// kernel, so the loop itself is factored out here, byte-identical in
-// statement shape, float64() wraps and left-to-right accumulation order to
-// MDCTGranule's original body (TestMdctGolden unchanged is the proof for
-// the blockLong case).
-func mdctGranuleWindowed(prev, cur *[18][32]float64, xr *[576]float64, window *[36]float64) {
-	for b := range 32 {
-		var z [36]float64
-		for i := range 18 {
-			z[i] = float64(prev[i][b] * window[i])
-		}
-		for i := range 18 {
-			z[18+i] = float64(cur[i][b] * window[18+i])
-		}
-		for k := range 18 {
-			sum := 0.0
-			for n := range 36 {
-				sum += float64(mdctCos[k][n] * z[n])
-			}
-			xr[b*18+k] = sum * mdctScale
-		}
-	}
 }
 
 // mdctScaleShort is the output scale MDCTGranuleBlock's short-block path
@@ -120,8 +94,9 @@ func MDCTGranuleBlock(prev, cur *[18][32]float64, xr *[576]float64, blockType in
 // subband b, the interleave l3ImdctShort (internal/dec/imdct.go) expects
 // once Task A2's reorder feeds it through the decoder's own grbuf layout.
 //
-// Float discipline: the same left-to-right, float64()-wrapped accumulation
-// discipline as mdctGranuleWindowed (see MDCTGranule's doc comment); the
+// Float discipline: each line is accumulated left to right from +0.0 with
+// a float64() wrap on every product, the barrier against arm64 fusing the
+// multiply into the add (the noasm mdctGranuleWindowed does the same); the
 // z-population line's float64() wrap is likewise kept for package-wide
 // uniformity rather than because it is a proven FMA barrier there.
 func mdctGranuleShort(prev, cur *[18][32]float64, xr *[576]float64) {

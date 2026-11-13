@@ -50,6 +50,10 @@ consulted at any point.
 The quantizer's line loop runs through `f64.QuantizePow34Bands` from
 github.com/tphakala/simd (MIT, same author), a generic implementation of the
 ISO annex C power law, gated bit-identical against the in-repo reference.
+The filterbank's partial sums and matrixing and the long, start and stop block
+MDCT's inner products run through `f64.VecMat` from the same library, a
+generic row-vector times matrix product, with the ISO tables unchanged and the
+result gated bit-identical against the in-repo reference.
 
 ## Float parity fallback sites
 

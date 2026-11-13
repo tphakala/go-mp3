@@ -54,6 +54,11 @@ The filterbank's partial sums and matrixing and the long, start and stop block
 MDCT's inner products run through `f64.VecMat` from the same library, a
 generic row-vector times matrix product, with the ISO tables unchanged and the
 result gated bit-identical against the in-repo reference.
+The psychoacoustic model's FFT butterfly stages run through
+`f64.ButterflyComplexStage` and its spreading convolutions through
+`f64.VecMat` from the same library, a generic radix-2 stage and the same
+row-vector times matrix product, with the twiddle and spreading tables
+unchanged and the result gated bit-identical against the in-repo reference.
 
 ## Float parity fallback sites
 

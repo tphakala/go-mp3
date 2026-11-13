@@ -1309,7 +1309,7 @@ var fftTwIm256 = [128]float64{
 	-0x1.92155f7a36689p-06, // [127]
 }
 
-// fftBitrev1024[i] is i's 10-bit reversal (fftForward's input permutation).
+// fftBitrev1024[i] is i's 10-bit reversal (the input permutation fftBitReverse applies).
 var fftBitrev1024 = [1024]uint16{ //nolint:dupl // generated literal table: dupl's clone detector flags same-shape array literals as duplicates even though the values and element type differ from hannWindow1024
 	0,    // [0]
 	512,  // [1]

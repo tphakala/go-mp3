@@ -934,7 +934,7 @@ func TestPsyShortSpreadingEffect(t *testing.T) {
 	sineGen(4*shortBin, 0.5)(0, pcm)
 	for w, center := range shortWindowCenters {
 		p.analyzeShortWindow(pcm, center)
-		p.computeShortThresholds(tab)
+		p.computeShortThresholds()
 		b := int(tab.partOfLine[shortBin])
 		if b < 2 || b > tab.nParts-3 {
 			t.Fatalf("bin %d partition %d too close to an edge for this test", shortBin, b)
@@ -971,7 +971,7 @@ func TestPsyShortNoiseFloor(t *testing.T) {
 		pcm[i] = testsignal.LCGSigned(&seed) * 0.5
 	}
 	p.analyzeShortWindow(pcm, shortWindowCenters[0])
-	p.computeShortThresholds(tab)
+	p.computeShortThresholds()
 	var sumDB float64
 	cnt := 0
 	for b := 5; b < tab.nParts-5; b++ {
@@ -1012,7 +1012,7 @@ func TestPsyShortThresholdFloor(t *testing.T) {
 		gen(pcm)
 		for _, center := range shortWindowCenters {
 			p.analyzeShortWindow(pcm, center)
-			p.computeShortThresholds(tab)
+			p.computeShortThresholds()
 			for b := range tab.nParts {
 				if p.nbS[b] < tab.qthr[b] {
 					t.Fatalf("part %d: nbS = %g below qthr = %g", b, p.nbS[b], tab.qthr[b])

@@ -77,6 +77,7 @@ type PsyModel struct {
 	fftReS, fftImS [256]float64
 	r2S            [129]float64
 	eS, nbS        [psyMaxPartsS]float64
+	ecbS           [psyMaxPartsS]float64
 }
 
 // Reset prepares the model for a fresh stream at srIndex (0 = 44100,
@@ -149,7 +150,8 @@ func (p *PsyModel) analyzeSpectrum(pcm []float64) {
 
 // computeThresholds derives the per-partition masking threshold nb from
 // the current spectrum (r2, cw): partition energies and energy-weighted
-// unpredictability, spreading convolution in fixed index order, tonality
+// unpredictability, spreading convolution in fixed index order (spread,
+// build specific: psymodel_simd.go, psymodel_noasm.go), tonality
 // tb = clamp(-0.299 - 0.43*ln(cb/ecb), 0, 1) via plog, required SNR
 // tb*15.5 + (1-tb)*5.5 dB (flat TMN) converted through pexp2, spreading
 // normalization, the two-frame pre-echo cap min(raw, 2*nb1, 16*nb2), and
@@ -168,15 +170,9 @@ func (p *PsyModel) computeThresholds() {
 		p.ct[b] += float64(p.cw[i] * p.r2[i])
 	}
 
+	p.spread()
 	for b := range n {
-		var ecb, cbs float64
-		sp := &tab.sprd[b]
-		for bb := range n {
-			ecb += float64(p.e[bb] * sp[bb])
-			cbs += float64(p.ct[bb] * sp[bb])
-		}
-		p.ecb[b] = ecb
-		p.cbs[b] = cbs
+		ecb, cbs := p.ecb[b], p.cbs[b]
 
 		tb := 0.0
 		if ecb > 0 {
@@ -303,15 +299,18 @@ func (p *PsyModel) analyzeShortWindow(pcm []float64, center int) {
 }
 
 // computeShortThresholds derives one window's per-partition energy eS and
-// masking threshold nbS from the current r2S: partition energies,
-// Schroeder spreading, the fixed NMT-dominated required SNR (psyShortBC;
-// decision 8, resolve-at-impl item 7: no unpredictability measure exists
-// at 256-line resolution, so there is no per-partition tonality estimate
-// to blend against TMN), and the absolute-threshold floor qthr. There is
-// no pre-echo cap here (contrast computeThresholds's rpelev/rpelev2): a
-// short granule's own existence IS the pre-echo response, so there is no
-// cross-window or cross-granule threshold history to cap against.
-func (p *PsyModel) computeShortThresholds(tab *psyShortTable) {
+// masking threshold nbS from the current r2S, over the short table of the
+// model's own rate: partition energies, Schroeder spreading (spreadShort,
+// build specific like spread), the fixed NMT-dominated required SNR
+// (psyShortBC; decision 8, resolve-at-impl item 7: no unpredictability
+// measure exists at 256-line resolution, so there is no per-partition
+// tonality estimate to blend against TMN), and the absolute-threshold floor
+// qthr. There is no pre-echo cap here (contrast computeThresholds's
+// rpelev/rpelev2): a short granule's own existence IS the pre-echo
+// response, so there is no cross-window or cross-granule threshold history
+// to cap against.
+func (p *PsyModel) computeShortThresholds() {
+	tab := &psyShortTables[p.srIndex]
 	n := tab.nParts
 	for b := range n {
 		p.eS[b] = 0
@@ -320,13 +319,9 @@ func (p *PsyModel) computeShortThresholds(tab *psyShortTable) {
 		b := tab.partOfLine[i]
 		p.eS[b] += p.r2S[i]
 	}
+	p.spreadShort()
 	for b := range n {
-		var ecb float64
-		sp := &tab.sprd[b]
-		for bb := range n {
-			ecb += float64(p.eS[bb] * sp[bb])
-		}
-		nb := float64(ecb*tab.norm[b]) * psyShortBC
+		nb := float64(p.ecbS[b]*tab.norm[b]) * psyShortBC
 		if nb < tab.qthr[b] {
 			nb = tab.qthr[b]
 		}
@@ -352,7 +347,7 @@ func (p *PsyModel) analyzeShort(pcm []float64, out *PsyOut) {
 	for w := range 3 {
 		center := gStart + 192*w - 32
 		p.analyzeShortWindow(pcm, center)
-		p.computeShortThresholds(tab)
+		p.computeShortThresholds()
 
 		freq := 0
 		for s := range 13 {

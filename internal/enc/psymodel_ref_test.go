@@ -133,7 +133,7 @@ func TestPsyShortThresholdsMatchReference(t *testing.T) {
 	for _, center := range shortWindowCenters {
 		p.analyzeShortWindow(pcm, center)
 		wantE, wantNb := refShortThresholds(tab, p.r2S[:])
-		p.computeShortThresholds(tab)
+		p.computeShortThresholds()
 		for b := range tab.nParts {
 			if wantE[b] != 0 {
 				if r := math.Abs((p.eS[b] - wantE[b]) / wantE[b]); r > refTol {

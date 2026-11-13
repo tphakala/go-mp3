@@ -64,7 +64,7 @@ jobs:
       - run: go test . -run 'TestThroughputGate' -count=1 -p 1 -v -timeout 5m
         env:
           MP3_THROUGHPUT_GATE: '1'
-      # SIMD_DISABLE=all routes simd's quantizer, filterbank and MDCT kernels to its portable Go path; output must not change.
+      # SIMD_DISABLE=all routes simd's quantizer, filterbank, MDCT, FFT stage and spreading kernels to its portable Go path; output must not change.
       - run: go test ./internal/enc -run 'Golden|Quantize|Parity' -timeout 20m
         env:
           SIMD_DISABLE: 'all'
@@ -76,9 +76,10 @@ jobs:
       fail-fast: false
       matrix:
         # Both arches again: the noasm build drops the AVX2/NEON region-cost
-        # and prefix-cost kernels and the simd quantizer, filterbank and MDCT
-        # kernels for their pure-Go references, and the encoder goldens must
-        # stay bit-exact without the SIMD path just as they do with it.
+        # and prefix-cost kernels and the simd quantizer, filterbank, MDCT, FFT
+        # stage and spreading kernels for their pure-Go references, and the
+        # encoder goldens must stay bit-exact without the SIMD path just as
+        # they do with it.
         # internal/enc is the only package the tag changes, so the suite is
         # scoped to it.
         runner: [ubuntu-latest, ubuntu-24.04-arm]

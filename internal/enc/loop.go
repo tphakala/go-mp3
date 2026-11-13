@@ -66,16 +66,14 @@ func betterPass(excess, ratio float64, over int, bestExcess, bestRatio float64, 
 }
 
 // maskingMetrics reduces a granule-channel's per-band noise (already
-// computed against xmin, e.g. via noiseGranule) to the same three
-// candidate-pass quantities outerLoop's own iteration loop computes
-// internally every pass and orders by betterPass: excess (total
+// computed against xmin, e.g. via noiseGranule) to the three
+// candidate-pass quantities betterPass orders by: excess (total
 // noise-over-xmin energy summed across violating bands), ratio (the
 // worst single-band noise/xmin ratio), and over (the violating-band
-// count). Factored out (additively; outerLoop's own loop is untouched,
-// preserving its arm64-verified bytes) so codeFrame's masking-driven
-// budget escalation (Task 3 Step 3) can compare codings produced at
-// different budget grants with the exact ordering outerLoop already
-// trusts within one budget.
+// count). outerLoop measures every pass with it, and codeFrame's
+// masking-driven budget escalation (Task 3 Step 3) uses it to compare
+// codings produced at different budget grants with the exact ordering
+// outerLoop trusts within one budget.
 func maskingMetrics(noise, xmin *[39]float64, lay *bandLayout) (excess, ratio float64, over int) {
 	for sfb := range lay.nBands {
 		if noise[sfb] <= xmin[sfb] {
@@ -177,10 +175,15 @@ func escalateSubblockGain(sf *scfState, lay *bandLayout, w int) {
 // out of. qc is the quantization cache: outerLoop resets it for xr and lay on
 // entry and shares it across its iterations (xr never changes inside a call,
 // and the cache is keyed by band and quantizer exponent, so scalefactor changes
-// between iterations reuse what they can). The returned iteration count feeds
-// tests and diagnostics.
-func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLayout, gc, best *granuleCoding, qc *quantCache) (iters int) {
+// between iterations reuse what they can). memo is the coding memo: outerLoop
+// begins it on entry, records the noise of every scalefactor state it codes,
+// and takes the noise of a state it reaches again from there instead of
+// coding and measuring it a second time; nil disables it, with the same
+// result. The returned iteration count feeds tests and diagnostics, and counts
+// an iteration served from the memo like any other.
+func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLayout, gc, best *granuleCoding, qc *quantCache, memo *codingMemo) (iters int) {
 	qc.reset(xr, lay)
+	memo.begin(xr, lay)
 	var sf scfState
 	var unfixable [39]bool
 
@@ -259,12 +262,15 @@ func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLay
 		// internal min(...,maxPart23Length) can never bind on its own and
 		// part2+ri.bits <= maxPart23Length always holds.
 		huffBudget := min(budgetBits, maxPart23Length) - part2
-		codeGranule(xr, huffBudget, lay, gc, qc)
+		// Set before coding: codeGranule derives part23Length from part2Bits.
 		gc.scfCompress, gc.part2Bits = idx, part2
-		gc.part23Length = part2 + gc.ri.bits
 
+		// A scalefactor state this call has already coded takes its noise
+		// from the memo instead of being coded and measured again. fromMemo
+		// then says that gc is not a coding of sf: its lines, regions and gain
+		// are still those of the last state that was coded.
 		var noise [39]float64
-		noiseGranule(xr, &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
+		fromMemo := memo.codeOrRecall(xr, huffBudget, lay, gc, qc, &noise)
 
 		if pendingBand >= 0 {
 			target := pendingBand
@@ -282,20 +288,16 @@ func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLay
 			}
 		}
 
-		var excess, ratio float64
-		over := 0
-		for sfb := range lay.nBands {
-			if noise[sfb] <= xmin[sfb] {
-				continue
-			}
-			over++
-			excess += noise[sfb] - xmin[sfb]
-			if r := noise[sfb] / xmin[sfb]; r > ratio {
-				ratio = r
-			}
+		excess, ratio, over := maskingMetrics(&noise, xmin, lay)
+
+		// gc is read only when this pass becomes the best pass or ends the
+		// loop; a pass served from the memo is coded for real first.
+		accept := !bestSet || betterPass(excess, ratio, over, bestExcess, bestRatio, bestOver)
+		if fromMemo && (accept || over == 0) {
+			memo.recode(xr, huffBudget, lay, gc, qc)
 		}
 
-		if !bestSet || betterPass(excess, ratio, over, bestExcess, bestRatio, bestOver) {
+		if accept {
 			*best = *gc
 			bestSet = true
 			bestExcess, bestRatio, bestOver = excess, ratio, over

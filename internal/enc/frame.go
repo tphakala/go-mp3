@@ -576,7 +576,7 @@ func AppendFrameShortPin(dst []byte, bitrateIndex, srIndex, nch int, blockTypes 
 			gc.blockType = bt
 
 			var best granuleCoding
-			outerLoop(&xr[g][ch], &xmin[g][ch], budget, lay, gc, &best, qc)
+			outerLoop(&xr[g][ch], &xmin[g][ch], budget, lay, gc, &best, qc, nil)
 		}
 	}
 

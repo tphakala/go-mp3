@@ -241,6 +241,7 @@ type Encoder struct {
 	gr          [2][2]granuleCoding
 	bestScratch granuleCoding // outerLoop's caller-owned best-pass scratch
 	qc          quantCache    // outerLoop's quantization cache (about 0.9 MB, reset per call)
+	memo        codingMemo    // outerLoop's coding memo (about 50 KB, begun per call)
 	esc         escState      // codeFrame's masking-driven escalation scratch (Stage 2)
 
 	resv reservoir // bit reservoir accountant: tracks main-data occupancy across frames
@@ -853,7 +854,7 @@ func (e *Encoder) codeFrame(dst []byte) []byte {
 		for ch := range e.nch {
 			budget := budgets[g*e.nch+ch]
 			lay := layoutFor(e.bt[g][ch], e.srIndex)
-			_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, &e.gr[g][ch], &e.bestScratch, &e.qc)
+			_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, &e.gr[g][ch], &e.bestScratch, &e.qc, &e.memo)
 		}
 	}
 
@@ -1022,7 +1023,7 @@ func (e *Encoder) escTryBudget(i, budget int) {
 		*gc = rec.gc
 		excess, ratio, over = rec.excess, rec.ratio, rec.over
 	} else {
-		_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, gc, &e.bestScratch, &e.qc)
+		_ = outerLoop(&e.xr[g][ch], &e.xminXr[g][ch], budget, lay, gc, &e.bestScratch, &e.qc, &e.memo)
 		var noise [39]float64
 		noiseGranule(&e.xr[g][ch], &gc.ix, gc.globalGain, &gc.sf, lay, &noise)
 		excess, ratio, over = maskingMetrics(&noise, &e.xminXr[g][ch], lay)

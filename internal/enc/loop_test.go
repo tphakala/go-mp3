@@ -9,7 +9,7 @@ import (
 func outerRun(t *testing.T, xr *[576]float64, xmin *[39]float64, budget int) (gc *granuleCoding, iters int) {
 	t.Helper()
 	var g, best granuleCoding
-	iters = outerLoop(xr, xmin, budget, &layoutLong[0], &g, &best, new(quantCache))
+	iters = outerLoop(xr, xmin, budget, &layoutLong[0], &g, &best, new(quantCache), nil)
 	return &g, iters
 }
 
@@ -392,14 +392,28 @@ func TestOuterLoopAllocs(t *testing.T) {
 	}
 	lay := &layoutLong[0]
 	var gc, best granuleCoding
-	qc := new(quantCache)
-	outerLoop(&xr, &xmin, 1500, lay, &gc, &best, qc) // warmup
+	qc, memo := new(quantCache), new(codingMemo)
+	outerLoop(&xr, &xmin, 1500, lay, &gc, &best, qc, memo) // warmup
 
 	n := testing.AllocsPerRun(20, func() {
-		outerLoop(&xr, &xmin, 1500, lay, &gc, &best, qc)
+		outerLoop(&xr, &xmin, 1500, lay, &gc, &best, qc, memo)
 	})
 	if n != 0 {
 		t.Fatalf("outerLoop allocates: %v allocs per run, want 0", n)
+	}
+
+	// The memo's paths: a granule that revisits scalefactor states and codes
+	// one of them again.
+	c := memoCapCase(memoRecodeSeeds[0])
+	outerLoop(&c.xr, &c.xmin, c.budget, c.lay, &gc, &best, qc, memo)
+	if memo.codings == memo.n {
+		t.Fatal("test setup: the cap case no longer codes a memoized state again")
+	}
+	n = testing.AllocsPerRun(20, func() {
+		outerLoop(&c.xr, &c.xmin, c.budget, c.lay, &gc, &best, qc, memo)
+	})
+	if n != 0 {
+		t.Fatalf("outerLoop allocates on the memo paths: %v allocs per run, want 0", n)
 	}
 }
 
@@ -489,7 +503,7 @@ func TestOuterLoopShortConverges(t *testing.T) {
 	}
 
 	var gc, best granuleCoding
-	iters := outerLoop(&xr, &xmin, 3500, lay, &gc, &best, new(quantCache))
+	iters := outerLoop(&xr, &xmin, 3500, lay, &gc, &best, new(quantCache), nil)
 	if iters >= outerLoopMaxIters {
 		t.Fatalf("loop ran to the cap (%d iters)", iters)
 	}
@@ -593,7 +607,7 @@ func TestOuterLoopShortSubblockGainIntegrated(t *testing.T) {
 	// The real, integrated run: outerLoop must reach past that ceiling by
 	// actually using subblock_gain.
 	var gc, best granuleCoding
-	iters := outerLoop(&xr, &xmin, 8000, lay, &gc, &best, new(quantCache))
+	iters := outerLoop(&xr, &xmin, 8000, lay, &gc, &best, new(quantCache), nil)
 	if iters >= outerLoopMaxIters {
 		t.Fatalf("loop ran to the cap (%d iters)", iters)
 	}
@@ -616,7 +630,7 @@ func TestOuterLoopShortSubblockGainIntegrated(t *testing.T) {
 	xminLoose := xmin
 	xminLoose[w] = 1.0
 	var gcLoose, bestLoose granuleCoding
-	outerLoop(&xr, &xminLoose, 8000, lay, &gcLoose, &bestLoose, new(quantCache))
+	outerLoop(&xr, &xminLoose, 8000, lay, &gcLoose, &bestLoose, new(quantCache), nil)
 	if gcLoose.sf.subblockGain[lay.win[w]] != 0 {
 		t.Fatalf("loose target: subblock_gain[window %d] = %d, want 0 (scf+scale alone should have sufficed)",
 			lay.win[w], gcLoose.sf.subblockGain[lay.win[w]])

@@ -71,8 +71,8 @@ func TestOuterLoopResetsCacheOnEntry(t *testing.T) {
 			xr[i] = (testsignal.LCG(&s) - 0.5) * 2000
 		}
 		var gc, best, fresh, freshBest granuleCoding
-		outerLoop(&xr, &xmin, 1500, lay, &gc, &best, qc)
-		outerLoop(&xr, &xmin, 1500, lay, &fresh, &freshBest, new(quantCache))
+		outerLoop(&xr, &xmin, 1500, lay, &gc, &best, qc, nil)
+		outerLoop(&xr, &xmin, 1500, lay, &fresh, &freshBest, new(quantCache), nil)
 		if gc != fresh {
 			t.Fatalf("seed %d: outerLoop on a reused cache gave gain %d, a fresh cache gave %d", seed, gc.globalGain, fresh.globalGain)
 		}
@@ -80,7 +80,9 @@ func TestOuterLoopResetsCacheOnEntry(t *testing.T) {
 }
 
 // TestQuantCacheCheckPanics requires codeGranule to refuse a cache that was
-// reset for another spectrum or layout instead of reading its entries.
+// reset for another spectrum or layout instead of reading its entries, and
+// codingMemo.codeOrRecall to refuse a memo begun for another spectrum or
+// layout.
 func TestQuantCacheCheckPanics(t *testing.T) {
 	var a, b [576]float64
 	for i := range a {
@@ -104,5 +106,18 @@ func TestQuantCacheCheckPanics(t *testing.T) {
 	}
 	if !panics(func() { codeGranule(&a, 3000, &layoutLong[1], &gc, qc) }) {
 		t.Error("codeGranule accepted a cache reset for a different layout")
+	}
+
+	memo := new(codingMemo)
+	memo.begin(&a, lay)
+	var noise [39]float64
+	if panics(func() { memo.codeOrRecall(&a, 3000, lay, &gc, qc, &noise) }) {
+		t.Fatal("codeOrRecall panicked on the spectrum and layout the memo was begun for")
+	}
+	if !panics(func() { memo.codeOrRecall(&b, 3000, lay, &gc, qc, &noise) }) {
+		t.Error("codeOrRecall accepted a memo begun for a different spectrum")
+	}
+	if !panics(func() { memo.codeOrRecall(&a, 3000, &layoutLong[1], &gc, qc, &noise) }) {
+		t.Error("codeOrRecall accepted a memo begun for a different layout")
 	}
 }

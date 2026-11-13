@@ -566,7 +566,7 @@ func AppendFrameScfPin(dst []byte, bitrateIndex, srIndex, padding, mode int, xr 
 func AppendFrameShortPin(dst []byte, bitrateIndex, srIndex, nch int, blockTypes *[2][2]int, xr *[2][2][576]float64, xmin *[2][2][39]float64) []byte {
 	budget := granuleBudgetBits(bitrateIndex, srIndex, 0, nch)
 
-	qc := new(quantCache)
+	qc, memo := new(quantCache), new(codingMemo)
 	var gr [2][2]granuleCoding
 	for g := range 2 {
 		for ch := range nch {
@@ -576,7 +576,7 @@ func AppendFrameShortPin(dst []byte, bitrateIndex, srIndex, nch int, blockTypes 
 			gc.blockType = bt
 
 			var best granuleCoding
-			outerLoop(&xr[g][ch], &xmin[g][ch], budget, lay, gc, &best, qc)
+			outerLoop(&xr[g][ch], &xmin[g][ch], budget, lay, gc, &best, qc, memo)
 		}
 	}
 

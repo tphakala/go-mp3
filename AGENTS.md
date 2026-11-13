@@ -29,7 +29,7 @@ Non-goals: Layer I and II decoding, VBR encoding.
 
 Constants: `FrameSize` = 1152, `DefaultBitrate` = 128000, `EncoderDelay` = 528, `TotalDelay` = 1057. Sentinels `ErrEncoderNotInitialized`, `ErrEncoderFinalized`.
 
-The pipeline is the analysis filterbank, forward MDCT and alias reduction, a power-law quantizer with ISO B.7 Huffman, framing plus inner rate control plus a bit reservoir, psychoacoustic model 2, per-frame M/S joint stereo, and attack-driven short blocks. The inner rate loop picks each granule's global_gain by an exact upward scan: the smallest gain whose coding fits the budget. The scan starts at the first gain a partition-free lower bound on the Huffman bits (`monoPairFloor` summed over the pairs, `internal/enc/part3bound.go`) admits, found by binary search because that bound never increases with the gain, serves quantization from a per-outerLoop-call `quantCache` keyed by (band, quantizer exponent) (`gaincache.go`), and skips the region search at steps a tighter sound bound (`part3LowerBound`) proves over budget; none of it changes the output.
+The pipeline is the analysis filterbank, forward MDCT and alias reduction, a power-law quantizer with ISO B.7 Huffman, framing plus inner rate control plus a bit reservoir, psychoacoustic model 2, per-frame M/S joint stereo, and attack-driven short blocks. The inner rate loop picks each granule's global_gain by an exact upward scan: the smallest gain whose coding fits the budget. The scan starts at the first gain a partition-free lower bound on the Huffman bits (`monoPairFloor` summed over the pairs, `internal/enc/part3bound.go`) admits, found by binary search because that bound never increases with the gain, serves quantization from a per-outerLoop-call `quantCache` keyed by (band, quantizer exponent) (`gaincache.go`), and skips the region search at steps a tighter sound bound (`part3LowerBound`) proves over budget. The outer loop keeps a per-call `codingMemo` (`loopmemo.go`) keyed by the packed scalefactor state and takes the per-band noise of a state it reaches again from there instead of coding and measuring it again (a recalled pass that becomes the best pass or ends the loop is coded again); none of it changes the output.
 
 The raw frame encoder's stream is tagless (no Xing or LAME header). The `pcm` encoder (`pcm.EncodeInterleaved`, and `pcm.NewEncoder` when its sink is an `io.WriteSeeker`) writes a Xing/Info + LAME gapless tag by default, so an encode then decode round trip is sample-accurate; `pcm.Config.OmitGaplessTag` opts out.
 
@@ -85,7 +85,8 @@ internal/enc/          Clean-room encoder: filterbank, mdct, psymodel (model 2),
                        the quantizer's simd dispatch in quantize_simd.go, its noasm reference in
                        quantize_noasm.go; the filterbank and MDCT simd forms in filterbank_simd.go
                        and mdct_simd.go, their noasm forms in filterbank_noasm.go and mdct_noasm.go;
-                       gaincache.go (the exact scan's per-band quantization cache) and the
+                       gaincache.go (the exact scan's per-band quantization cache), loopmemo.go
+                       (the outer loop's per-call memo of scalefactor states already coded) and the
                        monotone bit bound in part3bound.go
 internal/quality/      Harness metrics: alignment, SNR family, log-spectral distance, pre-echo,
                        synthetic programs, WAV I/O

@@ -53,20 +53,17 @@ func (fb *Filterbank) Reset() {
 // subband-sample time t. in has length 576; samples are already scaled by
 // PCMScale by the caller.
 //
-// Float discipline: matrixStep's accumulate, sum += float64(fbMatrix[b][j]
-// * y[j]), carries an explicit float64() conversion that is the load-bearing
-// barrier against arm64 fusing the multiply into an FMA with the
-// accumulator (a bare local assignment does not block that; the compiler
-// fuses across statements). window's product, z[i] = float64(fb.x[i] *
-// fbWindow[i]), feeds a store into z[i], not an adjacent +/-, so its
-// float64() wrap is not a barrier there; this was verified empirically
-// (GOARCH=arm64 go build -gcflags=-S produces byte-identical codegen for
-// that line with or without the wrap). The wrap is kept anyway, as
-// defensive uniformity across the package rather than a correctness
-// requirement. The partial sums in step 3 are plain adds of already-rounded
-// float64 values with no multiply involved, so they need no wrapping.
-// Accumulation in matrixStep runs left to right in index order, fixing the
-// association order for determinism across amd64 and arm64.
+// Float discipline: window's product, z[i] = float64(fb.x[i] * fbWindow[i]),
+// feeds a store into z[i], not an adjacent +/-, so its float64() wrap is not
+// a fusion barrier; this was verified empirically (GOARCH=arm64 go build
+// -gcflags=-S produces byte-identical codegen for that line with or without
+// the wrap). The wrap is kept anyway, as defensive uniformity across the
+// package rather than a correctness requirement. partialSums and matrixStep
+// are build specific (filterbank_simd.go, filterbank_noasm.go); each keeps
+// every output's sum starting at +0.0 and running in ascending index order
+// with unfused products, which is what makes the result identical on amd64
+// and arm64 and in both builds. TestFilterbankParity pins that against a
+// step-by-step reference.
 func (fb *Filterbank) AnalyzeGranule(in []float64, out *[18][32]float64) {
 	var z [512]float64
 	var y [64]float64
@@ -91,33 +88,10 @@ func (fb *Filterbank) shiftIn(in []float64) {
 }
 
 // window multiplies the shift register by the analysis window, one product
-// per sample, into z (out-pointer form, matching matrixStep; issue #31).
+// per sample, into z (out-pointer form, matching partialSums and matrixStep;
+// issue #31).
 func (fb *Filterbank) window(z *[512]float64) {
 	for i := range 512 {
 		z[i] = float64(fb.x[i] * fbWindow[i])
-	}
-}
-
-// partialSums implements the ISO C.1.3 "partial calculation" step: 64 sums,
-// each of 8 windowed samples spaced 64 apart, into y (out-pointer form).
-func partialSums(z *[512]float64, y *[64]float64) {
-	for j := range 64 {
-		sum := 0.0
-		for k := range 8 {
-			sum += z[j+k*64]
-		}
-		y[j] = sum
-	}
-}
-
-// matrixStep implements the ISO C.1.3 matrixing step: each of the 32
-// subband samples is the dot product of y with one row of fbMatrix.
-func matrixStep(y *[64]float64, out *[32]float64) {
-	for b := range 32 {
-		sum := 0.0
-		for j := range 64 {
-			sum += float64(fbMatrix[b][j] * y[j])
-		}
-		out[b] = sum
 	}
 }

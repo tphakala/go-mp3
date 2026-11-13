@@ -70,10 +70,10 @@ func betterPass(excess, ratio float64, over int, bestExcess, bestRatio float64, 
 // candidate-pass quantities betterPass orders by: excess (total
 // noise-over-xmin energy summed across violating bands), ratio (the
 // worst single-band noise/xmin ratio), and over (the violating-band
-// count). outerLoop measures every pass with it, and codeFrame's
-// masking-driven budget escalation (Task 3 Step 3) uses it to compare
-// codings produced at different budget grants with the exact ordering
-// outerLoop trusts within one budget.
+// count). outerLoop measures every pass that survives its futility check
+// with it, and codeFrame's masking-driven budget escalation (Task 3 Step 3)
+// uses it to compare codings produced at different budget grants with the
+// exact ordering outerLoop trusts within one budget.
 func maskingMetrics(noise, xmin *[39]float64, lay *bandLayout) (excess, ratio float64, over int) {
 	for sfb := range lay.nBands {
 		if noise[sfb] <= xmin[sfb] {
@@ -118,9 +118,12 @@ func escalateSubblockGain(sf *scfState, lay *bandLayout, w int) {
 // outerLoop runs the ISO distortion-control loop for one granule-channel:
 // repeatedly it (a) picks scalefac_compress for the current scalefactor
 // state and runs the inner rate loop (codeGranule) within budget-part2,
-// (b) measures per-band noise against xmin, (c) empirically checks
-// whether the amplification applied at the tail of the PREVIOUS iteration
-// actually reduced its own band's noise (the futility check below), (d)
+// (b) measures per-band noise against xmin (a state this call has already
+// coded recalls its noise from the memo instead of (a)'s coding and this
+// measurement, and is coded again only when that pass is accepted or ends the
+// loop; see below), (c) empirically checks whether the amplification
+// applied at the tail of the PREVIOUS iteration actually reduced its own
+// band's noise (the futility check below), (d)
 // keeps the best pass seen so far (betterPass), (e) amplifies ONLY the
 // single worst violating fixable band by one scalefactor unit, escalating
 // scalefac_scale (ceil re-expression) when that band is at its slen cap,
@@ -137,7 +140,7 @@ func escalateSubblockGain(sf *scfState, lay *bandLayout, w int) {
 // band that anchors the anti-overflow floor cannot be improved by
 // scalefactor amplification alone, no matter how many units are spent on
 // it. So every iteration, after the previous iteration amplified some
-// band and this iteration re-measured noise against it, outerLoop
+// band and this iteration measured or recalled noise against it, outerLoop
 // compares that band's new noise to its noise just before the
 // amplification: if it did not strictly decrease, the band is floor-bound
 // and gets marked unfixable (worstViolator then skips it, exactly like a
@@ -169,16 +172,19 @@ func escalateSubblockGain(sf *scfState, lay *bandLayout, w int) {
 // preflag re-expression only applies to long granules (a short granule's
 // preflag is always 0).
 //
-// gc is caller-owned working state, overwritten every pass; best is
-// caller-owned scratch (the Encoder preallocates a single reusable buffer)
-// that the loop never allocates into, only copies gc's value in and back
-// out of. qc is the quantization cache: outerLoop resets it for xr and lay on
+// gc is caller-owned working state: every pass sets its sf, scfCompress and
+// part2Bits; a pass the memo does not serve also overwrites its coding, and a
+// served pass leaves it stale until that pass is accepted or ends the loop and
+// is coded again. best is caller-owned scratch (the Encoder preallocates a single reusable
+// buffer) that the loop never allocates into, only copies gc's value in and
+// back out of. qc is the quantization cache: outerLoop resets it for xr and lay on
 // entry and shares it across its iterations (xr never changes inside a call,
 // and the cache is keyed by band and quantizer exponent, so scalefactor changes
 // between iterations reuse what they can). memo is the coding memo: outerLoop
 // begins it on entry, records the noise of every scalefactor state it codes,
 // and takes the noise of a state it reaches again from there instead of
-// coding and measuring it a second time; nil disables it, with the same
+// coding and measuring it a second time (it codes that state again only when
+// the pass is accepted or ends the loop); nil disables it, with the same
 // result. The returned iteration count feeds tests and diagnostics, and counts
 // an iteration served from the memo like any other.
 func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLayout, gc, best *granuleCoding, qc *quantCache, memo *codingMemo) (iters int) {
@@ -202,7 +208,7 @@ func outerLoop(xr *[576]float64, xmin *[39]float64, budgetBits int, lay *bandLay
 	// pendingBand/pendingNoise carry the band amplified at the tail of the
 	// PREVIOUS iteration (if any) and its noise just before that
 	// amplification, so THIS iteration's futility check has a baseline to
-	// compare the re-measured noise against. -1 means nothing is pending:
+	// compare this iteration's noise against. -1 means nothing is pending:
 	// either this is iteration 1, the previous amplification attempt found
 	// the band already at its scalefac_scale cap and only set unfixable
 	// directly (touching no scf, nothing to verify), or the previous

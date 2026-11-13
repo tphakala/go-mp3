@@ -212,8 +212,7 @@ func quantizeBandGo(dst []int32, src []float64, is float64) {
 		// Zero fast path: a scaled magnitude below quantZeroMax always
 		// rounds to 0, so skip the two math.Sqrt that would only confirm
 		// it (issue #62). In the escalation regime the high-frequency tail
-		// is mostly such lines, and quantizeGranule runs once per
-		// global_gain candidate, so this removes the bulk of the sqrt work.
+		// is mostly such lines, so this removes the bulk of the sqrt work.
 		// The bound is held safely below the true zero boundary, so the
 		// skipped lines are exactly the ones the full chain zeros too:
 		// bit-identical output (quantZeroMax's doc comment proves it).

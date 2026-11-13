@@ -100,8 +100,7 @@ func bisectSweepSpectra() []sweepSpectrum {
 
 	// Extremes: a dense spectrum so loud that minGlobalGain sits at the top of
 	// the range and the clamp engages, one so quiet that everything quantizes
-	// to zero at most gains, and one very loud line over a quiet floor (the
-	// shape whose bit count rises again at the top of the gain range).
+	// to zero at most gains, and one very loud line over a quiet floor.
 	seed := uint64(99)
 	loud := flatSpectrum(&seed, 20)
 	loud[100] = 3e6

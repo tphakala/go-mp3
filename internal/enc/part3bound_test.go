@@ -351,10 +351,10 @@ func replaySignal(name string, sampleRate, channels, nFrames int) [][]float32 {
 }
 
 // TestExactScanMatchesOracleOnEncoderGranules replays real encoder granules
-// through production codeGranule (exact mode) and the frozen linear oracle at
-// budgets around the coding the encoder chose, including slack above it: a
-// skip that wrongly rejects a fitting gain shows up as a different coding.
-// The synthetic sweeps in TestCodeGranuleExactMatchesOracle cannot reach the
+// through production codeGranule and the frozen linear oracle at budgets
+// around the coding the encoder chose, including slack above it: a skip that
+// wrongly rejects a fitting gain shows up as a different coding. The
+// synthetic sweeps in TestCodeGranuleExactMatchesOracle cannot reach the
 // spectra and scalefactor states a live encoder produces.
 func TestExactScanMatchesOracleOnEncoderGranules(t *testing.T) {
 	if testing.Short() {

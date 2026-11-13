@@ -259,12 +259,15 @@ func TestFirstAdmissibleGainWarmStart(t *testing.T) {
 	}
 }
 
-// TestFirstAdmissibleGainColdSearchIsPlainBisection requires a search on a
-// cache with no earlier answer to probe no more gains than a plain bisection
-// of [gg0+1, 255] after the gg0 probe: the initial hint must not send it
-// galloping from a gain outside that interval. The answer is the same either
-// way, so only the cache's fill count shows it.
-func TestFirstAdmissibleGainColdSearchIsPlainBisection(t *testing.T) {
+// TestFirstAdmissibleGainProbeCounts counts the band-0 cache entries a search
+// fills, which is the number of gains it probes. A search on a cache with no
+// earlier answer must probe no more than a plain bisection of [gg0+1, 255]
+// after the gg0 probe: the initial hint must not send it galloping from a gain
+// outside that interval. The same search repeated after reset (which keeps the
+// hint) must probe only gg0, the previous answer and one gain below it,
+// fewer than the cold search. The answer is the same either way, so only the
+// fill counts show whether the hint is stored, kept across reset and used.
+func TestFirstAdmissibleGainProbeCounts(t *testing.T) {
 	lay := &layoutLong[0]
 	var sf scfState
 	checked := 0
@@ -275,13 +278,24 @@ func TestFirstAdmissibleGainColdSearchIsPlainBisection(t *testing.T) {
 			qc.reset(&xr, lay)
 			q0 := bandExponentBase(&sf, lay)
 			gg0 := minGlobalGain(&xr, &sf, lay)
-			got := qc.firstAdmissibleGain(gg0, min(budget, maxPart23Length), &q0, lay)
-			if got == gg0 {
-				continue // answered by the gg0 probe alone
+			eff := min(budget, maxPart23Length)
+			got := qc.firstAdmissibleGain(gg0, eff, &q0, lay)
+			if got == gg0 || got == 255 {
+				continue // answered by the gg0 probe alone, or the sentinel, which a hint never steers to
 			}
-			if limit, filled := 1+bits.Len(uint(255-gg0)), band0Fills(qc); filled > limit {
+			cold := band0Fills(qc)
+			if limit := 1 + bits.Len(uint(255-gg0)); cold > limit {
 				t.Errorf("%s budget %d: %d band-0 entries filled by a cold search over [%d, 255], a plain bisection needs at most %d",
-					s.name, budget, filled, gg0+1, limit)
+					s.name, budget, cold, gg0+1, limit)
+			}
+
+			qc.reset(&xr, lay)
+			if again := qc.firstAdmissibleGain(gg0, eff, &q0, lay); again != got {
+				t.Fatalf("%s budget %d: the repeated search answered %d, the first %d", s.name, budget, again, got)
+			}
+			if warm := band0Fills(qc); warm > 3 || warm >= cold {
+				t.Errorf("%s budget %d: %d band-0 entries filled by a search that repeats the previous answer after reset, want at most 3 and fewer than the cold search's %d",
+					s.name, budget, warm, cold)
 			}
 			checked++
 		}

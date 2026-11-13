@@ -8,6 +8,15 @@ import (
 	"github.com/tphakala/go-mp3/internal/testsignal"
 )
 
+// band0Fills counts the band-0 entries qc has filled since its last reset.
+func band0Fills(qc *quantCache) int {
+	n := 0
+	for _, w := range qc.valid[0] {
+		n += bits.OnesCount64(w)
+	}
+	return n
+}
+
 // TestExactScanFillsOnlyFromBoundStart pins that the production exact scan
 // starts at the bound, not at minGlobalGain: the output is identical either
 // way, so the oracle tests cannot tell. Without pruning the scan fills one
@@ -41,13 +50,7 @@ func TestExactScanFillsOnlyFromBoundStart(t *testing.T) {
 				t.Fatalf("%s budget %d: gain %d, oracle %d", s.name, budget, got.globalGain, want.globalGain)
 			}
 
-			filled := 0
-			for k := range qSpan {
-				if qc.valid[0][k>>6]>>(k&63)&1 != 0 {
-					filled++
-				}
-			}
-			if filled >= start-gg0 {
+			if filled := band0Fills(qc); filled >= start-gg0 {
 				t.Errorf("%s budget %d: %d band-0 entries filled for a scan start %d above minGlobalGain %d: the scan did not start at the bound",
 					s.name, budget, filled, start, gg0)
 			}
@@ -276,13 +279,7 @@ func TestFirstAdmissibleGainColdSearchIsPlainBisection(t *testing.T) {
 			if got == gg0 {
 				continue // answered by the gg0 probe alone
 			}
-			filled := 0
-			for k := range qSpan {
-				if qc.valid[0][k>>6]>>(k&63)&1 != 0 {
-					filled++
-				}
-			}
-			if limit := 1 + bits.Len(uint(255-gg0)); filled > limit {
+			if limit, filled := 1+bits.Len(uint(255-gg0)), band0Fills(qc); filled > limit {
 				t.Errorf("%s budget %d: %d band-0 entries filled by a cold search over [%d, 255], a plain bisection needs at most %d",
 					s.name, budget, filled, gg0+1, limit)
 			}

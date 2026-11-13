@@ -2,7 +2,8 @@ package enc
 
 // This file is the deterministic FFT for the psychoacoustic model:
 // an iterative in-place radix-2 decimation-in-time transform, driven
-// entirely by the literal tables in ffttables.go. Determinism: butterflies
+// entirely by the literal tables in ffttables.go (the simd build reads
+// init-time copies of them in stage order). Determinism: butterflies
 // use only +, -, * with every product feeding a +/- rounded to float64
 // before it, never fused into an FMA, in a fixed iteration order, so the
 // output is bit-identical on every architecture (TestFFTGolden is the
